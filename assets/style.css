@@ -320,7 +320,7 @@ small, .small { font-size: 0.9rem; }
 
 /* ---------- formula ---------- */
 .formula {
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--mono);
   font-size: 1.3rem;
   text-align: center;
   padding: 1.3rem 1rem;
