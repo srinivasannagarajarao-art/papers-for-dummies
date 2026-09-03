@@ -42,40 +42,45 @@
   </blockquote>
 
   <h2>Papers</h2>
-  <ul class="card-list">
-    <li>
-      <a class="card" href="attention/">
-        <div class="meta">Vaswani et al. · 2017 · EN / தமிழ் / हिंदी</div>
-        <h3>Attention Is All You Need</h3>
-        <p>
-          The transformer. Attention is a dictionary lookup with fuzzy keys —
-          everything else is plumbing. 60 lines of NumPy, four demos that prove
-          each claim by breaking it, and full walkthroughs in English, Tamil and Hindi.
-        </p>
+
+  <div class="paper-tree">
+
+    <div class="paper-dir">
+      <p class="paper-dir-name">ai-ml/</p>
+
+      <a class="paper-entry" href="attention/">
+        <span class="paper-entry-path">
+          <span class="paper-entry-title">attention-is-all-you-need</span>
+          <span class="paper-entry-langs">[en] [ta] [hi]</span>
+        </span>
+        <span class="paper-entry-pitch">
+          Vaswani et al., 2017. Attention is a dictionary lookup with fuzzy
+          keys — everything else is plumbing. 60 lines of NumPy, four demos
+          that prove each claim by breaking it.
+        </span>
       </a>
-    </li>
-    <li>
-      <a class="card soon" href="#">
-        <div class="meta">Coming soon</div>
-        <h3>KV Caching &amp; the Generation Loop</h3>
-        <p>
+
+      <a class="paper-entry soon" href="#">
+        <span class="paper-entry-path">
+          <span class="paper-entry-title">kv-caching-and-the-generation-loop</span>
+        </span>
+        <span class="paper-entry-pitch">
           Why LLM inference is affordable at all. Falls directly out of the
-          causal mask: row <em>i</em> never changes when you append row
-          <em>i+1</em>, so stop recomputing it.
-        </p>
+          causal mask. Not written yet.
+        </span>
       </a>
-    </li>
-    <li>
-      <a class="card soon" href="#">
-        <div class="meta">Coming soon</div>
-        <h3>LoRA: Low-Rank Adaptation</h3>
-        <p>
-          Fine-tuning without touching the base weights. A rank decomposition
-          you can explain in one diagram.
-        </p>
+
+      <a class="paper-entry soon" href="#">
+        <span class="paper-entry-path">
+          <span class="paper-entry-title">lora-low-rank-adaptation</span>
+        </span>
+        <span class="paper-entry-pitch">
+          Fine-tuning without touching the base weights. Not written yet.
+        </span>
       </a>
-    </li>
-  </ul>
+    </div>
+
+  </div>
 
   <footer class="site-footer">
     <span class="site-footer-owner">
