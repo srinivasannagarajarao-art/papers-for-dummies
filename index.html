@@ -3,24 +3,30 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Srinivasan Nagaraja Rao</title>
+<title>Papers for Dummies</title>
 <meta name="description" content="Software engineer learning AI engineering in public. Papers for Dummies — research papers explained the way programmers actually think.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
 <body>
 
-<header class="site">
-  <div class="wrap">
-    <a class="brand" href="./">Srinivasan</a>
-    <nav class="site">
-      <a href="papers/" >Papers for Dummies</a>
-      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" target="_blank" rel="noopener">GitHub</a>
-    </nav>
-  </div>
-</header>
+<section class="page-header">
+  <h1 class="project-name">Papers for Dummies</h1>
+  <h2 class="project-tagline">ML papers explained for engineers who ship code</h2>
+  <a href="papers/attention/" class="btn">Start with Attention</a>
+  <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" class="btn" target="_blank" rel="noopener">View on GitHub</a>
+</section>
 
-<main class="wrap">
+<nav class="topnav"><div class="inner">
+  <a href="./" aria-current="page">Home</a>
+  <a href="papers/">Papers</a>
+  <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" target="_blank" rel="noopener">GitHub</a>
+</div></nav>
+
+<section class="main-content">
 
   <h1>Srinivasan Nagaraja Rao</h1>
   <p class="lede">
@@ -39,11 +45,7 @@
     thing I actually understand: <strong>running code you can break on purpose.</strong>
   </p>
 
-  <h2>Papers for Dummies</h2>
-  <p class="muted" style="margin-top:-.4rem">
-    Research papers, explained for working engineers who'd rather read a
-    stack trace than a summation.
-  </p>
+  <h2>The papers</h2>
 
   <ul class="card-list">
     <li>
@@ -81,25 +83,28 @@
     inside that exact confusion, while I still remember what was confusing.
   </p>
 
-  <div class="note">
+  <blockquote>
     <strong>The method:</strong> every explainer here follows the same shape —
     translate the idea into code you already understand, then
     <em>deliberately break it</em> and watch what fails. You debug for a
     living. Reverse-engineering from broken behaviour is faster than
     re-reading section 3.2 for the fifth time.
-  </div>
+  </blockquote>
 
-</main>
-
-<footer class="site">
-  <div class="wrap">
-    <p>
+  <footer class="site-footer">
+    <span class="site-footer-owner">
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">papers-for-dummies</a>
+      is maintained by
+      <a href="https://github.com/srinivasannagarajarao-art">srinivasannagarajarao-art</a>.
+    </span>
+    <span class="site-footer-credits">
       Written while learning. If something here is wrong,
-      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues" target="_blank" rel="noopener">tell me</a> —
-      I'd rather be corrected than confident.
-    </p>
-  </div>
-</footer>
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">tell me</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</section>
 
 </body>
 </html>

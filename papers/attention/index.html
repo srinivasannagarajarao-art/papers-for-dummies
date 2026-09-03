@@ -5,32 +5,33 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Attention Is All You Need — for programmers</title>
 <meta name="description" content="The transformer paper explained as code. Attention is a dictionary lookup with fuzzy keys. Runnable NumPy, four demos that prove it by breaking it. English, Tamil and Hindi.">
-<link rel="stylesheet" href="../../assets/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Tamil:wght@400;600&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&family=Noto+Sans+Tamil:wght@400;600&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
 <body>
 
-<header class="site">
-  <div class="wrap">
-    <a class="brand" href="../../">Srinivasan</a>
-    <nav class="site">
-      <a href="../" aria-current="page">Papers for Dummies</a>
-      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" target="_blank" rel="noopener">GitHub</a>
-    </nav>
-  </div>
-</header>
+<section class="page-header">
+  <h1 class="project-name">Attention Is All You Need</h1>
+  <h2 class="project-tagline">Vaswani et al., 2017 — explained as a program</h2>
+  <a href="attention_from_scratch.py" class="btn" download>Download the code</a>
+  <a href="../" class="btn">More papers</a>
+</section>
 
-<main class="wrap">
+<nav class="topnav"><div class="inner">
+  <a href="../../">Home</a>
+  <a href="../" aria-current="page">Papers</a>
+  <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" target="_blank" rel="noopener">GitHub</a>
+</div></nav>
+
+<section class="main-content">
 
   <a class="backlink" href="../">&larr; Papers for Dummies</a>
 
-  <h1>Attention Is All You Need</h1>
   <p class="lede">
-    Vaswani et al., 2017 — the transformer paper. Explained as a program,
-    because that's the only way I could understand it.
+    Explained as a program, because that's the only way I could understand it.
   </p>
 
   <div class="langbar" role="tablist" aria-label="Language">
@@ -129,7 +130,7 @@ for token in sentence:       # strictly sequential — can't parallelize
 
   <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
 
-<pre class="output"><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
+<pre><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
 d_k = 64   → raw score std:  5.73  → max softmax weight: 0.8319
 d_k = 512  → raw score std: 25.12  → max softmax weight: <span class="hl">1.0000  ← dead</span>
 
@@ -161,7 +162,7 @@ after dividing by √d_k, every case sits at std ≈ 1 <span class="ok">✓</spa
 
   <p><strong>Proof, from the running code:</strong></p>
 
-<pre class="output"><code>without positional encoding, output sets identical? <span class="hl">True</span>   ← order invisible
+<pre><code>without positional encoding, output sets identical? <span class="hl">True</span>   ← order invisible
 with    positional encoding, output sets identical? <span class="ok">False</span>  ← order now matters</code></pre>
 
   <p>That single <code>+ pe</code> is the only thing giving a transformer any notion of word order.</p>
@@ -173,7 +174,7 @@ with    positional encoding, output sets identical? <span class="ok">False</span
     score that softmax would happily give weight to.
   </p>
 
-<pre class="output"><code>[[1.    0.    0.    0.    0.   ]   ← "the" sees only itself
+<pre><code>[[1.    0.    0.    0.    0.   ]   ← "the" sees only itself
  [0.29  0.71  0.    0.    0.   ]
  [0.283 0.36  0.357 0.    0.   ]
  [0.317 0.267 0.261 0.155 0.   ]
@@ -316,7 +317,7 @@ for token in sentence:       # வரிசையாகத்தான் — pa
 
   <p><strong>என் பேச்சை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
 
-<pre class="output"><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
+<pre><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
 d_k = 64   → raw score std:  5.73  → max softmax weight: 0.8319
 d_k = 512  → raw score std: 25.12  → max softmax weight: <span class="hl">1.0000  ← செத்துவிட்டது</span>
 
@@ -347,7 +348,7 @@ d_k = 512  → raw score std: 25.12  → max softmax weight: <span class="hl">1.
 
   <p><strong>Code-ல் நிரூபணம்:</strong></p>
 
-<pre class="output"><code>positional encoding இல்லாமல் → விடை ஒன்றுதானா? <span class="hl">True</span>   ← வரிசை தெரியவில்லை
+<pre><code>positional encoding இல்லாமல் → விடை ஒன்றுதானா? <span class="hl">True</span>   ← வரிசை தெரியவில்லை
 positional encoding-உடன்     → விடை ஒன்றுதானா? <span class="ok">False</span>  ← இப்போது தெரிகிறது</code></pre>
 
   <p>அந்த ஒரு <code>+ pe</code> மட்டும்தான் Transformer-க்கு வார்த்தை வரிசையைச் சொல்கிறது.</p>
@@ -359,7 +360,7 @@ positional encoding-உடன்     → விடை ஒன்றுதான�
     சாதாரண score, softmax அதற்கும் weight கொடுத்துவிடும்!
   </p>
 
-<pre class="output"><code>[[1.    0.    0.    0.    0.   ]   ← "the" தன்னை மட்டும் பார்க்கிறது
+<pre><code>[[1.    0.    0.    0.    0.   ]   ← "the" தன்னை மட்டும் பார்க்கிறது
  [0.29  0.71  0.    0.    0.   ]
  [0.283 0.36  0.357 0.    0.   ]
  [0.317 0.267 0.261 0.155 0.   ]
@@ -496,7 +497,7 @@ for token in sentence:       # क्रम में ही — parallel नह
 
   <p><strong>मेरी बात मत मानिए। यह रहा असली output:</strong></p>
 
-<pre class="output"><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
+<pre><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
 d_k = 64   → raw score std:  5.73  → max softmax weight: 0.8319
 d_k = 512  → raw score std: 25.12  → max softmax weight: <span class="hl">1.0000  ← मर गया</span>
 
@@ -526,7 +527,7 @@ d_k = 512  → raw score std: 25.12  → max softmax weight: <span class="hl">1.
 
   <p><strong>Code से प्रमाण:</strong></p>
 
-<pre class="output"><code>positional encoding के बिना → नतीजा एक जैसा? <span class="hl">True</span>   ← क्रम दिखता ही नहीं
+<pre><code>positional encoding के बिना → नतीजा एक जैसा? <span class="hl">True</span>   ← क्रम दिखता ही नहीं
 positional encoding के साथ  → नतीजा एक जैसा? <span class="ok">False</span>  ← अब क्रम मायने रखता है</code></pre>
 
   <p>वह एक <code>+ pe</code> ही Transformer को शब्दों का क्रम बताता है।</p>
@@ -538,7 +539,7 @@ positional encoding के साथ  → नतीजा एक जैसा? <
     softmax उसे भी weight दे देगा!
   </p>
 
-<pre class="output"><code>[[1.    0.    0.    0.    0.   ]   ← "the" सिर्फ़ ख़ुद को देखता है
+<pre><code>[[1.    0.    0.    0.    0.   ]   ← "the" सिर्फ़ ख़ुद को देखता है
  [0.29  0.71  0.    0.    0.   ]
  [0.283 0.36  0.357 0.    0.   ]
  [0.317 0.267 0.261 0.155 0.   ]
@@ -673,16 +674,20 @@ def causal_mask(n):
   cost budgeting, retrieval quality. None of it is research maths.
 </p>
 
-</main>
+  <footer class="site-footer">
+    <span class="site-footer-owner">
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">papers-for-dummies</a>
+      is maintained by
+      <a href="https://github.com/srinivasannagarajarao-art">srinivasannagarajarao-art</a>.
+    </span>
+    <span class="site-footer-credits">
+      Written while learning. If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">tell me</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
 
-<footer class="site">
-  <div class="wrap">
-    <p>
-      Written while learning. If something here is wrong, tell me — I'd rather
-      be corrected than confident.
-    </p>
-  </div>
-</footer>
+</section>
 
 <script>
 // Language tabs. Remembers your choice, and respects ?lang= in the URL.
