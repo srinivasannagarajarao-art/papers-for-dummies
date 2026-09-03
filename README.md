@@ -1,4 +1,6 @@
-# srinivasan.dev
+# srinivasannagarajarao-art.github.io
+
+Live at **https://srinivasannagarajarao-art.github.io**
 
 Personal site + **Papers for Dummies** — ML papers explained for working engineers.
 
