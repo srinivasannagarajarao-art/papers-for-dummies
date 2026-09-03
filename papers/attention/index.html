@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attention Is All You Need — for programmers</title>
+<meta name="description" content="The transformer paper explained as code. Attention is a dictionary lookup with fuzzy keys. Runnable NumPy, four demos that prove it by breaking it. English, Tamil and Hindi.">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Tamil:wght@400;600&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="../../">srinivasan.dev</a>
+    <nav class="site">
+      <a href="../" aria-current="page">Papers for Dummies</a>
+      <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <a class="backlink" href="../">&larr; Papers for Dummies</a>
+
+  <h1>Attention Is All You Need</h1>
+  <p class="lede">
+    Vaswani et al., 2017 — the transformer paper. Explained as a program,
+    because that's the only way I could understand it.
+  </p>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+
+  <p>
+    I'm a software engineer. I've shipped models, done the MLOps, and I still
+    couldn't read this paper. The maths wasn't the problem — the
+    <em>framing</em> was. Nobody told me the core idea is something I've written
+    a thousand times.
+  </p>
+
+  <h2>Attention is a dictionary lookup</h2>
+
+  <p>You know this:</p>
+
+<pre><code>d = {"cat": vec_a, "dog": vec_b}
+result = d["cat"]        # exact match, or KeyError</code></pre>
+
+  <p>
+    Attention is that, except the match is <em>fuzzy</em> and the result is a
+    <strong>blend</strong>:
+  </p>
+
+<pre><code>def attention(query, keys, values):
+    scores  = [dot(query, k) for k in keys]   # how well does query match each key?
+    weights = softmax(scores)                 # turn into percentages summing to 1
+    return sum(w * v for w, v in zip(weights, values))   # weighted blend</code></pre>
+
+  <p>That's the whole paper's beating heart. Three lines.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Library analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query</strong></td><td>What am I looking for?</td><td>The question you ask</td></tr>
+      <tr><td><strong>Key</strong></td><td>What do I advertise about myself?</td><td>The book's title</td></tr>
+      <tr><td><strong>Value</strong></td><td>What do I hand over if picked?</td><td>The book's contents</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why this beat the RNN</h2>
+
+  <p>An RNN is a <code>for</code> loop:</p>
+
+<pre><code>state = init
+for token in sentence:       # strictly sequential — can't parallelize
+    state = update(state, token)</code></pre>
+
+  <p>
+    Two problems. Token 50 sees token 1 only through 49 rounds of lossy
+    state-squeezing. And your GPU sits idle, because step <em>n</em> needs step
+    <em>n−1</em> to finish first.
+  </p>
+
+  <p>
+    Attention is a matrix multiply. Every token talks to every other token in
+    one shot. Path length between any two tokens: <strong>1</strong>. And it
+    parallelizes perfectly. That's the title — throw out the recurrence, keep
+    only attention, and it works better <em>and</em> trains faster.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">Attention(Q, K, V) = softmax(QK<sup>T</sup> / √d<sub>k</sub>) V</div>
+
+  <p>Read it right-to-left, as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>Q</code></td><td>(n, d<sub>k</sub>)</td><td>n queries stacked as rows — batch your lookups</td></tr>
+      <tr><td><code>QK<sup>T</sup></code></td><td>(n, n)</td><td><strong>Score matrix.</strong> Cell [i][j] = how much token i should care about token j</td></tr>
+      <tr><td><code>/ √d<sub>k</sub></code></td><td>scalar</td><td>Numerical hygiene — see below</td></tr>
+      <tr><td><code>softmax</code></td><td>row-wise</td><td>Each row becomes percentages summing to 1</td></tr>
+      <tr><td><code>@ V</code></td><td>(n, d<sub>v</sub>)</td><td>Blend the values using those percentages</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Why divide by √d<sub>k</sub>?</h3>
+  <p>
+    Dot products of d<sub>k</sub>-dimensional vectors grow with d<sub>k</sub>.
+    Big numbers into softmax → one weight becomes 0.9999, the rest ≈ 0 →
+    gradients die → training stops. Dividing keeps the variance ≈ 1.
+  </p>
+  <p>It's numerical hygiene, like normalising before a float comparison. Not deep.</p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre class="output"><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
+d_k = 64   → raw score std:  5.73  → max softmax weight: 0.8319
+d_k = 512  → raw score std: 25.12  → max softmax weight: <span class="hl">1.0000  ← dead</span>
+
+after dividing by √d_k, every case sits at std ≈ 1 <span class="ok">✓</span></code></pre>
+
+  <h2>Multi-head: eight questions at once</h2>
+  <p>
+    One attention pass computes <em>one</em> weighted average — it can only
+    track one kind of relationship. Eight heads track eight (syntax,
+    coreference, position…) simultaneously.
+  </p>
+  <p>
+    The model doesn't get wider: d<sub>model</sub>=512 with 8 heads means each
+    head works in 64 dims. Same total compute, split eight ways. Like sharding
+    a query across 8 workers with different indexes, then merging.
+  </p>
+
+  <h2>Position: the thing attention can't do</h2>
+  <p>
+    Attention is a <strong>set operation</strong>. A weighted sum doesn't care
+    about order — so "cat ate food" and "food ate cat" produce
+    <em>identical</em> output. An RNN got order for free from its loop. We threw
+    the loop away.
+  </p>
+  <p>
+    The fix: add a unique sine/cosine wave pattern to each position before
+    attention. Not learned — just computed.
+  </p>
+
+  <p><strong>Proof, from the running code:</strong></p>
+
+<pre class="output"><code>without positional encoding, output sets identical? <span class="hl">True</span>   ← order invisible
+with    positional encoding, output sets identical? <span class="ok">False</span>  ← order now matters</code></pre>
+
+  <p>That single <code>+ pe</code> is the only thing giving a transformer any notion of word order.</p>
+
+  <h2>The causal mask: how GPT is stopped from cheating</h2>
+  <p>
+    Set forbidden positions to <code>−∞</code> before the softmax, so they come
+    out as exactly 0. Not <code>0</code> — because 0 is a perfectly ordinary
+    score that softmax would happily give weight to.
+  </p>
+
+<pre class="output"><code>[[1.    0.    0.    0.    0.   ]   ← "the" sees only itself
+ [0.29  0.71  0.    0.    0.   ]
+ [0.283 0.36  0.357 0.    0.   ]
+ [0.317 0.267 0.261 0.155 0.   ]
+ [0.228 0.134 0.172 0.153 0.314]]  ← "it" sees everything before it</code></pre>
+
+  <div class="note">
+    <strong>Remove the mask → BERT. Keep it → GPT.</strong> Same code otherwise.
+    That's the whole architectural difference between the two model families
+    everyone talks about.
+  </div>
+
+  <h2>Everything else is wrapping</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Piece</th><th>What it really is</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Residual</strong> <code>x + f(x)</code></td><td>A skip link. The sublayer proposes a <em>diff</em>, not a replacement. Same reasoning as ResNet — gradients need a short path back.</td></tr>
+      <tr><td><strong>LayerNorm</strong></td><td>Normalise each token's vector. Numerical hygiene again.</td></tr>
+      <tr><td><strong>Feedforward</strong></td><td>A plain 2-layer MLP, 512→2048→512, applied per position.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Attention <em>mixes</em> information between tokens. The FFN
+    <em>processes</em> it within each token. Mix, process, mix, process — that
+    alternation is the entire stack.
+  </p>
+
+<pre><code>def block(x):
+    x = layernorm(x + multi_head_attention(x))   # tokens talk to each other
+    x = layernorm(x + feedforward(x))            # each token thinks alone
+    return x                                      # shape unchanged → stackable</code></pre>
+
+  <p>Stack six. That's the encoder. That's the paper.</p>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு software engineer. Models ship செய்திருக்கிறேன், MLOps
+    செய்திருக்கிறேன் — இருந்தும் இந்தக் கட்டுரையைப் படிக்க முடியவில்லை.
+    கணிதம் பிரச்சனை இல்லை. <em>அணுகுமுறை</em>தான் பிரச்சனை. இதன் மையக் கருத்து
+    நான் ஆயிரம் முறை எழுதியிருக்கும் ஒன்றுதான் என்று யாரும் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (attention, query, key,
+    value…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும்
+    நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில்,
+    சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>Attention என்பது ஒரு dictionary lookup</h2>
+
+  <p>இது உங்களுக்குத் தெரியும்:</p>
+
+<pre><code>d = {"cat": vec_a, "dog": vec_b}
+result = d["cat"]        # சரியாகப் பொருந்த வேண்டும், இல்லையேல் KeyError</code></pre>
+
+  <p>
+    Attention-ம் இதுதான் — ஆனால் பொருத்தம் <em>மென்மையானது (fuzzy)</em>,
+    விடை ஒரு <strong>கலவை</strong>:
+  </p>
+
+<pre><code>def attention(query, keys, values):
+    scores  = [dot(query, k) for k in keys]   # query ஒவ்வொரு key-உடன் எவ்வளவு பொருந்துகிறது?
+    weights = softmax(scores)                 # சதவீதமாக்கு (கூட்டினால் 1)
+    return sum(w * v for w, v in zip(weights, values))   # எடையிட்ட கலவை</code></pre>
+
+  <p class="thanglish">
+    Attention-um idhu dhaan — aana matching <em>fuzzy</em>, answer oru
+    <strong>kalavai</strong>. Moonu line dhaan. Idhu dhaan full paper-oda idhayam.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>நூலக உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query</strong></td><td>நான் என்ன தேடுகிறேன்?</td><td>நீங்கள் கேட்கும் கேள்வி</td></tr>
+      <tr><td><strong>Key</strong></td><td>நான் என்னைப் பற்றி என்ன விளம்பரம் செய்கிறேன்?</td><td>புத்தகத்தின் தலைப்பு</td></tr>
+      <tr><td><strong>Value</strong></td><td>தேர்ந்தெடுத்தால் என்ன தருவேன்?</td><td>புத்தகத்தின் உள்ளடக்கம்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>RNN-ஐ ஏன் இது வென்றது?</h2>
+
+  <p>RNN ஒரு <code>for</code> loop மாதிரி:</p>
+
+<pre><code>state = init
+for token in sentence:       # வரிசையாகத்தான் — parallel முடியாது
+    state = update(state, token)</code></pre>
+
+  <p>
+    இரண்டு பிரச்சனைகள். 50-வது வார்த்தை, முதல் வார்த்தையைப் பார்க்க வேண்டுமென்றால்
+    49 முறை state-ஐக் கடந்து வர வேண்டும் — ஒவ்வொரு முறையும் கொஞ்சம் தகவல்
+    இழக்கப்படுகிறது. மேலும் GPU சும்மா உட்கார்ந்திருக்கும், ஏனெனில் step
+    <em>n</em>-க்கு step <em>n−1</em> முதலில் முடிய வேண்டும்.
+  </p>
+
+  <p>
+    Attention ஒரு matrix multiply. எல்லா வார்த்தைகளும் ஒரே நேரத்தில்
+    பேசிக்கொள்கின்றன. இரு வார்த்தைகளுக்கு இடையேயான பாதை நீளம்:
+    <strong>1</strong>. முழுமையாக parallel. இதுதான் தலைப்பின் அர்த்தம் —
+    recurrence-ஐத் தூக்கி எறியுங்கள், attention மட்டும் வையுங்கள்.
+  </p>
+
+  <p class="thanglish">
+    Attention oru matrix multiply. Ellaa words-um ore neram pesikkidhu. Rendu
+    words-kku idaila path length: 1. Fully parallel. Idhu dhaan title-oda artham.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">Attention(Q, K, V) = softmax(QK<sup>T</sup> / √d<sub>k</sub>) V</div>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>செயல்</th></tr></thead>
+    <tbody>
+      <tr><td><code>Q @ K.T</code></td><td><strong>மதிப்பெண்.</strong> [i][j] = வார்த்தை i, வார்த்தை j-ஐ எவ்வளவு கவனிக்க வேண்டும். Dot product = ஒற்றுமை அளவு.</td></tr>
+      <tr><td><code>/ √d<sub>k</sub></code></td><td><strong>அளவீடு.</strong> கீழே விளக்கம்</td></tr>
+      <tr><td><code>softmax</code></td><td><strong>சதவீதமாக்கு.</strong> ஒவ்வொரு வரியும் கூட்டினால் 1.0</td></tr>
+      <tr><td><code>@ V</code></td><td><strong>கலவை.</strong> அந்த சதவீதங்களை வைத்து values-ஐ கலக்கு</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>√d<sub>k</sub>-ஆல் ஏன் வகுக்க வேண்டும்?</h3>
+  <p>
+    d<sub>k</sub> பரிமாணங்கள் கொண்ட vectors-ன் dot product, d<sub>k</sub>-க்கு
+    ஏற்ப வளர்கிறது. பெரிய எண்களை softmax-ல் போட்டால் ஒரு weight மட்டும் 0.9999
+    ஆகி, மற்றவை பூஜ்ஜியமாகி, <strong>gradient இறந்துவிடும் — training நிற்கும்.</strong>
+    வகுத்தால் variance ≈ 1-ஆகவே இருக்கும்.
+  </p>
+  <p>இது ஆழமான கணிதம் அல்ல. வெறும் <strong>எண் சுகாதாரம்</strong> மட்டுமே.</p>
+
+  <p><strong>என் பேச்சை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre class="output"><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
+d_k = 64   → raw score std:  5.73  → max softmax weight: 0.8319
+d_k = 512  → raw score std: 25.12  → max softmax weight: <span class="hl">1.0000  ← செத்துவிட்டது</span>
+
+√d_k-ஆல் வகுத்த பிறகு எல்லாவற்றிலும் std ≈ 1 <span class="ok">✓</span></code></pre>
+
+  <h2>Multi-head: ஒரே நேரத்தில் எட்டு கேள்விகள்</h2>
+  <p>
+    ஒரு attention pass ஒரே ஒரு weighted average-ஐத்தான் கணக்கிடும் — அதனால்
+    <em>ஒரே ஒரு வகையான உறவை</em> மட்டுமே கவனிக்க முடியும். 8 heads = 8 வகையான
+    உறவுகள் ஒரே நேரத்தில்.
+  </p>
+  <p>
+    Model பெரிதாகிவிடாது: d<sub>model</sub>=512, 8 heads என்றால் ஒவ்வொரு head-ம்
+    64 பரிமாணத்தில் வேலை செய்யும். <strong>அதே வேலை, 8-ஆகப் பிரிக்கப்பட்டது.</strong>
+  </p>
+
+  <h2>வரிசை: attention-ஆல் செய்ய முடியாதது</h2>
+  <p>
+    Attention ஒரு <strong>set operation</strong>. கூட்டுத்தொகைக்கு வரிசை
+    முக்கியமில்லை — அதனால் "பூனை சாப்பிட்டது உணவு" என்பதற்கும் "உணவு
+    சாப்பிட்டது பூனை" என்பதற்கும் <em>ஒரே விடைதான்</em>! RNN-ல் loop-ஆல்
+    வரிசை இலவசமாகக் கிடைத்தது. இங்கே அந்த loop-ஐ நாம் தூக்கி எறிந்துவிட்டோம்.
+  </p>
+  <p>
+    தீர்வு: ஒவ்வொரு position-க்கும் ஒரு தனித்துவமான sin/cos அலை வடிவத்தை
+    embedding-ல் கூட்டிவிடுவது. இது கற்றுக்கொள்ளப்படுவதில்லை — வெறும் கணக்கீடு.
+  </p>
+
+  <p><strong>Code-ல் நிரூபணம்:</strong></p>
+
+<pre class="output"><code>positional encoding இல்லாமல் → விடை ஒன்றுதானா? <span class="hl">True</span>   ← வரிசை தெரியவில்லை
+positional encoding-உடன்     → விடை ஒன்றுதானா? <span class="ok">False</span>  ← இப்போது தெரிகிறது</code></pre>
+
+  <p>அந்த ஒரு <code>+ pe</code> மட்டும்தான் Transformer-க்கு வார்த்தை வரிசையைச் சொல்கிறது.</p>
+
+  <h2>Causal mask: GPT ஏமாற்றாமல் தடுப்பது</h2>
+  <p>
+    அனுமதிக்கப்படாத இடங்களை softmax-க்கு <em>முன்பே</em> <code>−∞</code>
+    ஆக்கிவிடுகிறோம். <code>0</code> ஆக்கினால் போதாது — ஏனெனில் 0 என்பது ஒரு
+    சாதாரண score, softmax அதற்கும் weight கொடுத்துவிடும்!
+  </p>
+
+<pre class="output"><code>[[1.    0.    0.    0.    0.   ]   ← "the" தன்னை மட்டும் பார்க்கிறது
+ [0.29  0.71  0.    0.    0.   ]
+ [0.283 0.36  0.357 0.    0.   ]
+ [0.317 0.267 0.261 0.155 0.   ]
+ [0.228 0.134 0.172 0.153 0.314]]  ← "it" எல்லாவற்றையும் பார்க்கிறது</code></pre>
+
+  <div class="note">
+    <strong>Mask நீக்கினால் → BERT. Mask வைத்தால் → GPT.</strong> மற்ற code
+    அப்படியே! எல்லாரும் பேசும் அந்த இரு model குடும்பங்களுக்கு இடையேயான
+    ஒட்டுமொத்த வேறுபாடு இதுதான்.
+  </div>
+
+  <h2>மீதி எல்லாம் வெறும் சுற்றுக் கட்டமைப்பு</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>பகுதி</th><th>உண்மையில் என்ன?</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Residual</strong> <code>x + f(x)</code></td><td>குறுக்குவழி. Sub-layer ஒரு <em>திருத்தத்தை (diff)</em> தருகிறது, மாற்றை அல்ல. Gradient திரும்ப வர குறுகிய பாதை வேண்டும்.</td></tr>
+      <tr><td><strong>LayerNorm</strong></td><td>ஒவ்வொரு vector-ஐயும் சீராக்குதல். மீண்டும் எண் சுகாதாரம்.</td></tr>
+      <tr><td><strong>Feedforward</strong></td><td>சாதாரண 2-அடுக்கு MLP, 512→2048→512.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    <strong>Attention</strong> = வார்த்தைகளுக்கு <em>இடையே</em> தகவல் கலக்கிறது.
+    <strong>FFN</strong> = ஒவ்வொரு வார்த்தைக்கு <em>உள்ளே</em> அதை செயலாக்குகிறது.
+    கலக்கு → செயலாக்கு → கலக்கு → செயலாக்கு. இதுதான் முழு stack-ன் தாளம்.
+  </p>
+
+<pre><code>def block(x):
+    x = layernorm(x + multi_head_attention(x))   # வார்த்தைகள் பேசிக்கொள்கின்றன
+    x = layernorm(x + feedforward(x))            # ஒவ்வொன்றும் தனியே யோசிக்கிறது
+    return x                                      # shape மாறாது → அடுக்கலாம்</code></pre>
+
+  <p>ஆறு முறை அடுக்குங்கள். அதுதான் encoder. அதுதான் கட்டுரை.</p>
+
+  <p class="thanglish">
+    Aaru thadava adukkunga. Adhu dhaan encoder. Adhu dhaan paper.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक software engineer हूँ। मैंने models ship किए हैं, MLOps किया है —
+    फिर भी यह paper मुझसे पढ़ा नहीं जाता था। समस्या गणित नहीं थी।
+    समस्या <em>नज़रिया</em> थी। किसी ने नहीं बताया कि इसका मूल विचार वही है
+    जो मैंने हज़ार बार लिखा है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (attention, query, key,
+    value…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में आपको
+    वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>Attention एक dictionary lookup है</h2>
+
+  <p>यह आप जानते हैं:</p>
+
+<pre><code>d = {"cat": vec_a, "dog": vec_b}
+result = d["cat"]        # पूरा match होना चाहिए, वरना KeyError</code></pre>
+
+  <p>
+    Attention भी यही है — बस match <em>धुँधला (fuzzy)</em> है, और नतीजा एक
+    <strong>मिश्रण</strong> है:
+  </p>
+
+<pre><code>def attention(query, keys, values):
+    scores  = [dot(query, k) for k in keys]   # query हर key से कितना मिलता है?
+    weights = softmax(scores)                 # प्रतिशत में बदलो (जोड़ = 1)
+    return sum(w * v for w, v in zip(weights, values))   # भारित मिश्रण</code></pre>
+
+  <p>यही पूरे paper का दिल है। तीन लाइनें।</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>पुस्तकालय का उदाहरण</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query</strong></td><td>मैं क्या ढूँढ रहा हूँ?</td><td>आपका सवाल</td></tr>
+      <tr><td><strong>Key</strong></td><td>मैं अपने बारे में क्या बताता हूँ?</td><td>किताब का शीर्षक</td></tr>
+      <tr><td><strong>Value</strong></td><td>चुने जाने पर मैं क्या दूँगा?</td><td>किताब की सामग्री</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>इसने RNN को क्यों हराया?</h2>
+
+  <p>RNN एक <code>for</code> loop है:</p>
+
+<pre><code>state = init
+for token in sentence:       # क्रम में ही — parallel नहीं हो सकता
+    state = update(state, token)</code></pre>
+
+  <p>
+    दो समस्याएँ। 50वें शब्द तक पहली बात पहुँचने में 49 बार state से गुज़रना
+    पड़ता है — हर बार थोड़ी जानकारी खो जाती है। और GPU खाली बैठा रहता है,
+    क्योंकि step <em>n</em> के लिए step <em>n−1</em> का पूरा होना ज़रूरी है।
+  </p>
+
+  <p>
+    Attention एक matrix multiply है। सारे शब्द एक ही बार में एक-दूसरे से बात
+    करते हैं। किन्हीं दो शब्दों के बीच रास्ते की लंबाई: <strong>1</strong>।
+    और पूरी तरह parallel। यही title का मतलब है — recurrence हटा दो, सिर्फ़
+    attention रखो।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">Attention(Q, K, V) = softmax(QK<sup>T</sup> / √d<sub>k</sub>) V</div>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>Q @ K.T</code></td><td><strong>अंक (score)।</strong> [i][j] = शब्द i को शब्द j पर कितना ध्यान देना चाहिए। Dot product = समानता का माप।</td></tr>
+      <tr><td><code>/ √d<sub>k</sub></code></td><td><strong>पैमाना।</strong> नीचे समझाया है</td></tr>
+      <tr><td><code>softmax</code></td><td><strong>प्रतिशत में बदलो।</strong> हर पंक्ति का जोड़ = 1.0</td></tr>
+      <tr><td><code>@ V</code></td><td><strong>मिश्रण।</strong> उन प्रतिशतों से values को मिलाओ</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>√d<sub>k</sub> से भाग क्यों?</h3>
+  <p>
+    d<sub>k</sub> आयामों वाले vectors का dot product d<sub>k</sub> के साथ बढ़ता
+    है। बड़ी संख्याएँ softmax में डालो तो एक weight 0.9999 हो जाता है, बाक़ी
+    लगभग शून्य — <strong>gradient मर जाता है, training रुक जाती है।</strong>
+    भाग देने से variance ≈ 1 रहता है।
+  </p>
+  <p>यह गहरा गणित नहीं है। बस <strong>संख्यात्मक सफ़ाई</strong> है।</p>
+
+  <p><strong>मेरी बात मत मानिए। यह रहा असली output:</strong></p>
+
+<pre class="output"><code>d_k = 4    → raw score std:  1.24  → max softmax weight: 0.6125
+d_k = 64   → raw score std:  5.73  → max softmax weight: 0.8319
+d_k = 512  → raw score std: 25.12  → max softmax weight: <span class="hl">1.0000  ← मर गया</span>
+
+√d_k से भाग देने के बाद हर हाल में std ≈ 1 <span class="ok">✓</span></code></pre>
+
+  <h2>Multi-head: एक साथ आठ सवाल</h2>
+  <p>
+    एक attention pass सिर्फ़ <em>एक</em> weighted average निकालता है — इसलिए
+    वह सिर्फ़ एक तरह का रिश्ता पकड़ सकता है। 8 heads = 8 तरह के रिश्ते, एक साथ।
+  </p>
+  <p>
+    Model बड़ा नहीं होता: d<sub>model</sub>=512 और 8 heads का मतलब हर head 64
+    आयामों में काम करता है। <strong>वही काम, आठ हिस्सों में बँटा हुआ।</strong>
+  </p>
+
+  <h2>क्रम: जो attention नहीं कर सकता</h2>
+  <p>
+    Attention एक <strong>set operation</strong> है। जोड़ को क्रम की परवाह नहीं —
+    इसलिए "बिल्ली ने खाना खाया" और "खाने ने बिल्ली खाई" का नतीजा
+    <em>एक जैसा</em> आता है! RNN को क्रम loop से मुफ़्त मिल जाता था। हमने वह
+    loop हटा दिया।
+  </p>
+  <p>
+    हल: हर position के लिए एक अलग sin/cos तरंग embedding में जोड़ दो। यह सीखा
+    नहीं जाता — बस गणना है।
+  </p>
+
+  <p><strong>Code से प्रमाण:</strong></p>
+
+<pre class="output"><code>positional encoding के बिना → नतीजा एक जैसा? <span class="hl">True</span>   ← क्रम दिखता ही नहीं
+positional encoding के साथ  → नतीजा एक जैसा? <span class="ok">False</span>  ← अब क्रम मायने रखता है</code></pre>
+
+  <p>वह एक <code>+ pe</code> ही Transformer को शब्दों का क्रम बताता है।</p>
+
+  <h2>Causal mask: GPT को नक़ल करने से रोकना</h2>
+  <p>
+    मना किए गए स्थानों को softmax से <em>पहले</em> ही <code>−∞</code> कर देते
+    हैं। <code>0</code> करना काफ़ी नहीं — क्योंकि 0 एक सामान्य score है,
+    softmax उसे भी weight दे देगा!
+  </p>
+
+<pre class="output"><code>[[1.    0.    0.    0.    0.   ]   ← "the" सिर्फ़ ख़ुद को देखता है
+ [0.29  0.71  0.    0.    0.   ]
+ [0.283 0.36  0.357 0.    0.   ]
+ [0.317 0.267 0.261 0.155 0.   ]
+ [0.228 0.134 0.172 0.153 0.314]]  ← "it" सब कुछ देखता है</code></pre>
+
+  <div class="note">
+    <strong>Mask हटाओ → BERT। Mask रखो → GPT।</strong> बाक़ी code वैसा ही!
+    जिन दो model परिवारों की सब चर्चा करते हैं, उनके बीच पूरा फ़र्क़ बस यही है।
+  </div>
+
+  <h2>बाक़ी सब सिर्फ़ ढाँचा है</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>हिस्सा</th><th>असल में क्या है</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Residual</strong> <code>x + f(x)</code></td><td>एक शॉर्टकट। Sub-layer एक <em>सुधार (diff)</em> देता है, बदलाव नहीं। Gradient को लौटने के लिए छोटा रास्ता चाहिए।</td></tr>
+      <tr><td><strong>LayerNorm</strong></td><td>हर vector को सामान्य करना। फिर वही संख्यात्मक सफ़ाई।</td></tr>
+      <tr><td><strong>Feedforward</strong></td><td>सादा 2-परत MLP, 512→2048→512।</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    <strong>Attention</strong> = शब्दों के <em>बीच</em> जानकारी मिलाता है।
+    <strong>FFN</strong> = हर शब्द के <em>अंदर</em> उसे संसाधित करता है।
+    मिलाओ → संसाधित करो → मिलाओ → संसाधित करो। यही पूरे stack की लय है।
+  </p>
+
+<pre><code>def block(x):
+    x = layernorm(x + multi_head_attention(x))   # शब्द आपस में बात करते हैं
+    x = layernorm(x + feedforward(x))            # हर शब्द अकेले सोचता है
+    return x                                      # shape वही → ढेर लगा सकते हैं</code></pre>
+
+  <p>छह बार ढेर लगाओ। वही encoder है। वही paper है।</p>
+
+</section>
+
+<!-- ==================== SHARED: code + break it ==================== -->
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no training — just the forward pass, so
+  you can watch the numbers move. Every function under 15 lines.
+</p>
+<p>
+  <a href="attention_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 60 lines plus five runnable demos. Then:
+</p>
+<pre><code>python3 attention_from_scratch.py</code></pre>
+
+<pre><code>import numpy as np
+
+def softmax(x, axis=-1):
+    # the `- max` isn't in the paper — it's overflow safety.
+    # exp(1000) is inf; exp(1000-1000) is 1. Cancels in the ratio.
+    shifted = x - np.max(x, axis=axis, keepdims=True)
+    e = np.exp(shifted)
+    return e / np.sum(e, axis=axis, keepdims=True)
+
+
+def scaled_dot_product_attention(Q, K, V, mask=None):
+    d_k = Q.shape[-1]
+
+    # (1) SCORE — scores[i][j] = how much token i should care about token j
+    scores = Q @ K.T
+
+    # (2) SCALE — keep variance ~1 so softmax doesn't saturate
+    scores = scores / np.sqrt(d_k)
+
+    # (3) MASK — -inf, not 0, so softmax gives exactly zero
+    if mask is not None:
+        scores = np.where(mask, scores, -np.inf)
+
+    # (4) NORMALISE + BLEND
+    weights = softmax(scores, axis=-1)   # each row sums to 1.0
+    return weights @ V, weights
+
+
+def positional_encoding(n_positions, d_model):
+    pos = np.arange(n_positions)[:, None]
+    i = np.arange(d_model)[None, :]
+    angle = pos / np.power(10000, (2 * (i // 2)) / d_model)
+    pe = np.zeros((n_positions, d_model))
+    pe[:, 0::2] = np.sin(angle[:, 0::2])   # even dims
+    pe[:, 1::2] = np.cos(angle[:, 1::2])   # odd dims
+    return pe
+
+
+def causal_mask(n):
+    return np.tril(np.ones((n, n), dtype=bool))</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode,
+  and it's far faster than re-reading section 3.2 for the fifth time.
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Delete <code>/ np.sqrt(d_k)</code></td><td>One softmax weight goes to 1.0000 as d<sub>k</sub> grows. Gradient dead.</td></tr>
+    <tr><td>Remove <code>+ pe</code></td><td>"cat ate food" and "food ate cat" become indistinguishable.</td></tr>
+    <tr><td>Flip <code>np.tril</code> → <code>np.triu</code></td><td>The decoder now reads the future. It's cheating.</td></tr>
+    <tr><td>Use <code>0</code> instead of <code>-np.inf</code> in the mask</td><td>Masked positions still get real weight. The mask silently does nothing.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §3.1–3.3 and §3.5. Skip the
+  BLEU tables, skip §6 entirely. You'll find the paper is just the comments
+  you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  Honestly: for AI <em>engineering</em> — shipping systems, not writing papers —
+  this is roughly the ceiling of maths you need, and you've just cleared it.
+  Matrix shapes (that's array indexing), dot product as similarity, softmax as
+  normalisation. That's it.
+</p>
+<p>
+  You don't need to derive backprop. <code>loss.backward()</code> is a library
+  call, the same way you don't hand-roll TCP.
+</p>
+<p>
+  What actually separates AI engineers is different: tokenisation edge cases,
+  KV-cache and memory maths, quantisation tradeoffs, eval design, latency and
+  cost budgeting, retrieval quality. None of it is research maths.
+</p>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>
+      Written while learning. If something here is wrong, tell me — I'd rather
+      be corrected than confident.
+    </p>
+  </div>
+</footer>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

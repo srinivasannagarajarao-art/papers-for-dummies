@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Srinivasan Nagaraja Rao</title>
+<meta name="description" content="Software engineer learning AI engineering in public. Papers for Dummies — research papers explained the way programmers actually think.">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="./">srinivasan.dev</a>
+    <nav class="site">
+      <a href="papers/" >Papers for Dummies</a>
+      <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <h1>Srinivasan Nagaraja Rao</h1>
+  <p class="lede">
+    Software engineer. I ship code and models for a living, and I'm learning
+    AI engineering in public — including the parts where the maths scares me.
+  </p>
+
+  <p>
+    I'm not a researcher. I'm a programmer. When I read a machine learning
+    paper, I don't want the proof — I want to know what it would look like as
+    a function I could put a breakpoint in.
+  </p>
+
+  <p>
+    So that's how I write these up. Every paper here gets translated into the
+    thing I actually understand: <strong>running code you can break on purpose.</strong>
+  </p>
+
+  <h2>Papers for Dummies</h2>
+  <p class="muted" style="margin-top:-.4rem">
+    Research papers, explained for working engineers who'd rather read a
+    stack trace than a summation.
+  </p>
+
+  <ul class="card-list">
+    <li>
+      <a class="card" href="papers/attention/">
+        <div class="meta">Vaswani et al. · 2017 · EN / தமிழ் / हिंदी</div>
+        <h3>Attention Is All You Need</h3>
+        <p>
+          The transformer paper. Attention is a dictionary lookup with fuzzy
+          keys — everything else is plumbing. With runnable NumPy and four
+          demos that prove it by breaking it.
+        </p>
+      </a>
+    </li>
+    <li>
+      <a class="card soon" href="#">
+        <div class="meta">Coming soon</div>
+        <h3>KV Caching &amp; the Generation Loop</h3>
+        <p>
+          Why inference is affordable. A direct consequence of the causal mask
+          that nobody explains properly.
+        </p>
+      </a>
+    </li>
+  </ul>
+
+  <h2>Why "for dummies"?</h2>
+  <p>
+    Because most paper explainers are written by people who are comfortable
+    with the maths, aimed at people heading toward research. That's a real
+    audience — it just isn't mine.
+  </p>
+  <p>
+    Mine is the engineer who has shipped models, done the MLOps, and still
+    feels like a fraud when someone opens a paper. I'm writing these from
+    inside that exact confusion, while I still remember what was confusing.
+  </p>
+
+  <div class="note">
+    <strong>The method:</strong> every explainer here follows the same shape —
+    translate the idea into code you already understand, then
+    <em>deliberately break it</em> and watch what fails. You debug for a
+    living. Reverse-engineering from broken behaviour is faster than
+    re-reading section 3.2 for the fifth time.
+  </div>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>
+      Written while learning. If something here is wrong,
+      <a href="https://github.com/" target="_blank" rel="noopener">tell me</a> —
+      I'd rather be corrected than confident.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

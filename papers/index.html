@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Papers for Dummies</title>
+<meta name="description" content="Machine learning papers explained for working engineers — as runnable code you can break on purpose.">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="../">srinivasan.dev</a>
+    <nav class="site">
+      <a href="./" aria-current="page">Papers for Dummies</a>
+      <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <a class="backlink" href="../">&larr; home</a>
+
+  <h1>Papers for Dummies</h1>
+  <p class="lede">
+    Machine learning papers, explained for engineers who ship code — not for
+    researchers. No proofs. No summations you have to squint at. Just the
+    idea, translated into something you could set a breakpoint in.
+  </p>
+
+  <div class="note">
+    <strong>How to read these:</strong> don't. Not first, anyway. Run the code,
+    break it the way each page tells you to, then come back and read. Watching
+    something fail teaches faster than watching someone explain.
+  </div>
+
+  <h2>Papers</h2>
+  <ul class="card-list">
+    <li>
+      <a class="card" href="attention/">
+        <div class="meta">Vaswani et al. · 2017 · EN / தமிழ் / हिंदी</div>
+        <h3>Attention Is All You Need</h3>
+        <p>
+          The transformer. Attention is a dictionary lookup with fuzzy keys —
+          everything else is plumbing. 60 lines of NumPy, four demos that prove
+          each claim by breaking it, and full walkthroughs in English, Tamil and Hindi.
+        </p>
+      </a>
+    </li>
+    <li>
+      <a class="card soon" href="#">
+        <div class="meta">Coming soon</div>
+        <h3>KV Caching &amp; the Generation Loop</h3>
+        <p>
+          Why LLM inference is affordable at all. Falls directly out of the
+          causal mask: row <em>i</em> never changes when you append row
+          <em>i+1</em>, so stop recomputing it.
+        </p>
+      </a>
+    </li>
+    <li>
+      <a class="card soon" href="#">
+        <div class="meta">Coming soon</div>
+        <h3>LoRA: Low-Rank Adaptation</h3>
+        <p>
+          Fine-tuning without touching the base weights. A rank decomposition
+          you can explain in one diagram.
+        </p>
+      </a>
+    </li>
+  </ul>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>Written while learning. Corrections welcome.</p>
+  </div>
+</footer>
+
+</body>
+</html>
