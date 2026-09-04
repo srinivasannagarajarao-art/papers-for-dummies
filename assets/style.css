@@ -1,386 +1,381 @@
 /* ---------------------------------------------------------------
-   Papers for Dummies — Cayman
-   Colours and metrics taken from pages-themes/cayman:
-     header    linear-gradient(120deg, #155799, #159957)
-     headings  #159957   body #606c71   links #1e6bb8
-     code      #f3f6fa bg / #567482 text / #dce6f0 border
-   Light-only, as the real theme ships. No build step.
+   Papers for Dummies
+   A programmer's notebook, typeset properly. One narrow column,
+   one family (IBM Plex), ink-coloured links, no chrome.
+   Cayman's blue-green survives as the brand: the masthead gradient,
+   the headings, the rails. Everything else is ink or grey.
+   Signal colour carries information or it isn't used:
+     red   = this is broken      green = this works
+   Light only. No build step.
    --------------------------------------------------------------- */
 
 :root {
-  --header-bg:      #159957;
-  --header-bg-2:    #155799;
-  --heading:        #159957;
-  --body-text:      #606c71;
-  --link:           #1e6bb8;
-  --blockquote:     #819198;
-  --code-bg:        #f3f6fa;
-  --code-text:      #567482;
-  --border:         #dce6f0;
-  --table-border:   #e9ebec;
-  --hr-border:      #eff0f1;
+  --paper:        #ffffff;
+  --paper-2:      #f5f6f8;   /* code, callouts */
+  --ink:          #1b2a3a;   /* headings, links, wordmark */
+  --text:         #33424f;   /* body */
+  --muted:        #5f6c79;   /* meta, secondary nav */
+  --rule:         #e3e7eb;
+  --rule-strong:  #c9d0d6;
+  --brand:        #159957;   /* Cayman green: headings, rails, active tab */
+  --brand-2:      #155799;   /* Cayman blue: far end of the masthead gradient */
+  --accent:       #1e6bb8;   /* Cayman link blue: hover, focus */
+  --broke:        #b8321a;   /* evidence: this failed */
+  --works:        #1f7a3f;   /* evidence: this held */
 
-  --sans: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-  /* Indic scripts need explicit fallbacks or they render as boxes */
+  --sans:  "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono:  "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --tamil: "Noto Sans Tamil", "Nirmala UI", "Latha", "Tamil Sangam MN", sans-serif;
-  --deva:  "Noto Sans Devanagari", "Nirmala UI", "Kohinoor Devanagari", "Devanagari Sangam MN", sans-serif;
+  --deva:  "IBM Plex Sans Devanagari", "Noto Sans Devanagari", "Nirmala UI", "Kohinoor Devanagari", "Devanagari Sangam MN", sans-serif;
+
+  --measure: 42rem;
+  --gutter: 1.25rem;
 }
 
 * { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+html {
+  font-size: 17px;
+  -webkit-text-size-adjust: 100%;
+}
 
 body {
-  padding: 0;
   margin: 0;
   font-family: var(--sans);
-  font-size: 16px;
-  line-height: 1.5;
-  color: var(--body-text);
-  background: #fff;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* ---------- Cayman hero header ---------- */
-.page-header {
+/* ---------- links ---------- */
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--rule-strong);
+  text-underline-offset: .18em;
+  transition: color .12s, text-decoration-color .12s;
+}
+a:hover { color: var(--accent); text-decoration-color: currentColor; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ---------- masthead ---------- */
+.masthead {
+  background-color: var(--brand);
+  background-image: linear-gradient(120deg, var(--brand-2), var(--brand));
   color: #fff;
-  text-align: center;
-  background-color: var(--header-bg);
-  background-image: linear-gradient(120deg, var(--header-bg-2), var(--header-bg));
-  padding: 5rem 6rem;
 }
-@media screen and (min-width: 42em) and (max-width: 64em) {
-  .page-header { padding: 3rem 4rem; }
-}
-@media screen and (max-width: 42em) {
-  .page-header { padding: 2rem 1rem; }
-}
-
-.project-name {
-  margin-top: 0;
-  margin-bottom: 0.1rem;
-  font-size: 3.25rem;
-  font-weight: 700;
-}
-.project-tagline {
-  margin-bottom: 2rem;
-  font-weight: 400;
-  opacity: 0.7;
-  font-size: 1.25rem;
-}
-@media screen and (min-width: 42em) and (max-width: 64em) {
-  .project-name { font-size: 2.25rem; }
-  .project-tagline { font-size: 1.15rem; }
-}
-@media screen and (max-width: 42em) {
-  .project-name { font-size: 1.75rem; }
-  .project-tagline { font-size: 1rem; }
-}
-
-.btn {
-  display: inline-block;
-  margin-bottom: 1rem;
-  color: rgba(255,255,255,0.7);
-  background-color: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.2);
-  border-radius: 0.3rem;
-  padding: 0.75rem 1rem;
-  font-size: 0.9rem;
-  text-decoration: none;
-  transition: color .2s, background-color .2s, border-color .2s;
-}
-.btn:hover {
-  color: rgba(255,255,255,0.8);
-  text-decoration: none;
-  background-color: rgba(255,255,255,0.2);
-  border-color: rgba(255,255,255,0.3);
-}
-.btn + .btn { margin-left: 1rem; }
-@media screen and (max-width: 42em) {
-  .btn { display: block; width: 100%; padding: .75rem; font-size: .8rem; }
-  .btn + .btn { margin-top: 1rem; margin-left: 0; }
-}
-
-/* ---------- main content ---------- */
-.main-content {
-  max-width: 64rem;
-  padding: 2rem 6rem;
+.masthead .inner {
+  max-width: var(--measure);
   margin: 0 auto;
-  font-size: 1.1rem;
+  padding: 1rem var(--gutter);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1.5rem;
 }
-@media screen and (min-width: 42em) and (max-width: 64em) {
-  .main-content { padding: 2rem 4rem; font-size: 1.1rem; }
+.masthead-name {
+  font-weight: 600;
+  color: #fff;
+  text-decoration: none;
+  white-space: nowrap;
 }
-@media screen and (max-width: 42em) {
-  .main-content { padding: 2rem 1rem; font-size: 1rem; }
-}
+.masthead-name:hover { color: #fff; }
+.masthead-nav { display: flex; gap: 1.25rem; font-size: .95rem; }
+.masthead-nav a { color: rgba(255,255,255,.78); text-decoration: none; }
+.masthead-nav a:hover,
+.masthead-nav a[aria-current] { color: #fff; }
+.masthead :focus-visible { outline-color: #fff; }
 
-.main-content :first-child { margin-top: 0; }
-
-.main-content h1,
-.main-content h2,
-.main-content h3,
-.main-content h4,
-.main-content h5,
-.main-content h6 {
-  margin-top: 2rem;
-  margin-bottom: 1rem;
-  font-weight: normal;
-  color: var(--heading);
-}
-.main-content h1 { font-size: 1.9rem; }
-.main-content h2 { font-size: 1.5rem; }
-.main-content h3 { font-size: 1.25rem; }
-.main-content h4 { font-size: 1.1rem; }
-
-.main-content p { margin-bottom: 1em; }
-
-a { color: var(--link); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-.lede { font-size: 1.15rem; }
-.muted { color: var(--blockquote); }
-small, .small { font-size: 0.9rem; }
-
-.main-content ul, .main-content ol { margin-top: 0; padding-left: 1.5rem; }
-.main-content li { margin-bottom: .35rem; }
-
-.main-content blockquote {
-  padding: 0 1rem;
-  margin-left: 0;
-  font-size: 1.1rem;
-  color: var(--blockquote);
-  border-left: 0.3rem solid var(--border);
-}
-.main-content blockquote > :first-child { margin-top: 0; }
-.main-content blockquote > :last-child { margin-bottom: 0; }
-
-.main-content hr {
-  height: 2px;
-  padding: 0;
-  margin: 1.5rem 0;
-  background-color: var(--hr-border);
-  border: 0;
+/* ---------- column ---------- */
+.main-content {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 0 var(--gutter) 2rem;
 }
 
-/* ---------- code: one style everywhere ---------- */
-.main-content code {
-  padding: 2px 4px;
-  font-family: var(--mono);
-  font-size: 0.9rem;
-  color: var(--code-text);
-  background-color: var(--code-bg);
-  border-radius: 0.3rem;
-}
-.main-content pre {
-  padding: 0.8rem;
-  margin-top: 0;
-  margin-bottom: 1rem;
-  font: 1rem var(--mono);
-  color: var(--code-text);
-  word-wrap: normal;
-  background-color: var(--code-bg);
-  border: solid 1px var(--border);
-  border-radius: 0.3rem;
-  overflow: auto;
-}
-.main-content pre > code {
-  padding: 0;
+.title-block { padding: 3rem 0 1rem; }
+.title-block h1 { max-width: 34rem; }
+
+h1, h2, h3, h4 {
+  color: var(--brand);
+  font-weight: 600;
+  line-height: 1.2;
   margin: 0;
-  font-size: 0.9rem;
-  color: var(--code-text);
-  word-break: normal;
-  white-space: pre;
-  background: transparent;
-  border: 0;
 }
-/* the evidence highlight still needs to be findable, but stays in-theme */
-.main-content pre .hl { font-weight: 700; color: #d03801; }
-.main-content pre .ok { font-weight: 700; color: var(--header-bg); }
+h1 {
+  font-size: 2.35rem;
+  line-height: 1.12;
+  letter-spacing: -.012em;
+  margin-bottom: .8rem;
+}
+h2 { font-size: 1.45rem; margin: 2.75rem 0 .9rem; }
+h3 { font-size: 1.12rem; margin: 2rem 0 .7rem; }
+
+p { margin: 0 0 1.1rem; }
+
+.lede {
+  font-size: 1.2rem;
+  line-height: 1.5;
+  max-width: 36rem;
+  margin-bottom: .9rem;
+}
+.paper-meta,
+.muted { color: var(--muted); }
+.title-block .paper-meta { font-size: 1rem; margin-bottom: .5rem; }
+small, .small { font-size: .9rem; }
+
+ul, ol { margin: 0 0 1.1rem; padding-left: 1.4rem; }
+li { margin-bottom: .35rem; }
+
+blockquote {
+  margin: 1.75rem 0;
+  padding: .1rem 0 .1rem 1.1rem;
+  border-left: 3px solid var(--rule-strong);
+}
+blockquote > :last-child { margin-bottom: 0; }
+blockquote strong { color: var(--ink); }
+
+hr {
+  height: 1px;
+  margin: 2.5rem 0;
+  border: 0;
+  background: var(--rule);
+}
+
+strong { color: var(--ink); font-weight: 600; }
+
+/* ---------- code ---------- */
+code {
+  font-family: var(--mono);
+  font-size: .9em;
+  color: var(--ink);
+  background: var(--paper-2);
+  padding: .1em .35em;
+  border-radius: 3px;
+}
+pre {
+  font-family: var(--mono);
+  font-size: .8rem;   /* an 85-char line fits the widened box on wide screens */
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--paper-2);
+  padding: 1rem 1.2rem;
+  margin: 1.25rem 0;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+pre code {
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+/* evidence from the running code */
+pre .hl { color: var(--broke); font-weight: 600; }
+pre .ok { color: var(--works); font-weight: 600; }
+
+/* the homepage opens on the site's subject: a function */
+.hero-code {
+  font-size: .95rem;
+  padding: 1.25rem 1.4rem;
+  margin: 1.5rem 0 1.25rem;
+  border-left: 3px solid var(--brand);
+  border-radius: 0 4px 4px 0;
+  color: var(--ink);
+}
+
+.formula {
+  font-family: var(--mono);
+  font-size: 1.15rem;
+  text-align: center;
+  color: var(--ink);
+  background: var(--paper-2);
+  padding: 1.2rem 1rem;
+  margin: 1.5rem 0;
+  border-radius: 4px;
+  overflow-x: auto;
+}
 
 /* ---------- tables ---------- */
-.main-content table {
-  display: block;
+.tablewrap { overflow-x: auto; margin: 1.25rem 0; }
+table {
   width: 100%;
-  overflow: auto;
-  word-break: normal;
   border-collapse: collapse;
-  margin-bottom: 1rem;
+  font-size: .95rem;
+  line-height: 1.45;
 }
-.main-content table th { font-weight: bold; }
-.main-content table th,
-.main-content table td {
-  padding: 0.5rem 1rem;
-  border: 1px solid var(--table-border);
+th {
   text-align: left;
+  font-weight: 600;
+  color: var(--ink);
+  padding: .5rem 1rem .5rem 0;
+  border-bottom: 2px solid var(--rule-strong);
+  vertical-align: bottom;
+}
+td {
+  padding: .6rem 1rem .6rem 0;
+  border-bottom: 1px solid var(--rule);
   vertical-align: top;
 }
-.tablewrap { overflow-x: auto; }
-
-/* ---------- nav strip under the hero ---------- */
-.topnav {
-  border-bottom: 1px solid var(--hr-border);
-  background: #fff;
+th:last-child, td:last-child { padding-right: 0; }
+/* "break this on purpose": the sabotage column is marked as such */
+.breaks td:first-child {
+  border-left: 3px solid var(--broke);
+  padding-left: .75rem;
 }
-.topnav .inner {
-  max-width: 64rem;
-  margin: 0 auto;
-  padding: .75rem 6rem;
-  display: flex;
-  gap: 1.4rem;
-  font-size: .95rem;
-}
-@media screen and (min-width: 42em) and (max-width: 64em) {
-  .topnav .inner { padding: .75rem 4rem; }
-}
-@media screen and (max-width: 42em) {
-  .topnav .inner { padding: .75rem 1rem; gap: 1rem; font-size: .88rem; }
-}
-.topnav a { color: var(--blockquote); }
-.topnav a:hover, .topnav a[aria-current] { color: var(--heading); text-decoration: none; }
-
-/* ---------- papers, as a directory listing ----------
-   Categories are real folders, not decorative cards. An empty folder
-   just shows "nothing here yet" — no card grid to pad out, nothing
-   implying scale the site doesn't have. */
-.paper-tree { margin: 1.75rem 0 0; }
-
-.paper-dir { margin-bottom: 2rem; }
-.paper-dir:last-child { margin-bottom: 0; }
-
-.paper-dir-name {
-  font-family: var(--mono);
-  font-size: 1rem;
-  color: var(--heading);
-  margin: 0 0 .6rem;
-  padding-bottom: .4rem;
-  border-bottom: 1px solid var(--hr-border);
-}
-
-.paper-entry {
-  display: block;
-  padding: .85rem 0 .85rem 1.1rem;
-  border-left: 2px solid var(--hr-border);
-  border-bottom: 1px solid var(--hr-border);
-  text-decoration: none;
-  color: inherit;
-  transition: border-left-color .15s ease;
-}
-.paper-dir > .paper-entry:first-of-type { padding-top: 0; }
-.paper-entry:hover { text-decoration: none; border-left-color: var(--link); }
-.paper-entry:hover .paper-entry-title { color: var(--link); }
-
-.paper-entry-path {
-  display: flex;
-  align-items: baseline;
-  gap: .5rem;
-  flex-wrap: wrap;
-}
-.paper-entry-title {
-  font-family: var(--mono);
-  font-weight: 600;
-  font-size: 1rem;
-  color: var(--body-text);
-}
-.paper-entry-langs {
-  font-family: var(--mono);
-  font-size: .8rem;
-  color: var(--blockquote);
-}
-.paper-entry-pitch {
-  margin: .4rem 0 0;
-  font-size: .95rem;
-  color: var(--body-text);
-  max-width: 34rem;
-}
-
-.paper-entry.soon {
-  cursor: default;
-}
-.paper-entry.soon:hover { border-left-color: var(--hr-border); }
-.paper-entry.soon .paper-entry-title { color: var(--blockquote); font-weight: 400; }
-.paper-entry.soon:hover .paper-entry-title { color: var(--blockquote); }
-
-.paper-dir-empty {
-  padding: .5rem 0 .85rem 1.1rem;
-  border-left: 2px solid var(--hr-border);
-  font-size: .92rem;
-  color: var(--blockquote);
-  font-style: italic;
-}
-
-/* ---------- language tabs ---------- */
-.langbar {
-  display: flex;
-  gap: .5rem;
-  margin: 0 0 2rem;
-  border-bottom: 1px solid var(--hr-border);
-  padding-bottom: .9rem;
-  flex-wrap: wrap;
-}
-.langbar button {
-  font: inherit;
-  font-size: .92rem;
-  padding: .4rem .95rem;
-  border: 1px solid var(--border);
-  border-radius: 0.3rem;
-  background: #fff;
-  color: var(--body-text);
-  cursor: pointer;
-  transition: all .15s;
-}
-.langbar button:hover { border-color: var(--header-bg); color: var(--heading); }
-.langbar button[aria-selected="true"] {
-  background: var(--header-bg);
-  border-color: var(--header-bg);
-  color: #fff;
-  font-weight: 600;
-}
-
-/* ---------- script-specific rendering ---------- */
-[lang="ta"] { font-family: var(--tamil); line-height: 1.85; }
-[lang="hi"] { font-family: var(--deva); line-height: 1.8; }
-
-.thanglish {
-  font-style: italic;
-  color: var(--blockquote);
-  border-left: .3rem solid var(--border);
-  padding-left: 1rem;
-  margin: .6rem 0 1.2rem;
+.breaks th:first-child {
+  border-left: 3px solid transparent;
+  padding-left: .75rem;
 }
 
 /* ---------- callout ---------- */
 .note {
-  border-left: .3rem solid var(--header-bg);
-  background: #f2faf6;
+  background: var(--paper-2);
+  border-left: 3px solid var(--brand);
+  border-radius: 0 4px 4px 0;
   padding: .9rem 1.1rem;
-  border-radius: 0 .3rem .3rem 0;
-  margin: 1.4rem 0;
+  margin: 1.5rem 0;
 }
-.note strong:first-child { color: var(--heading); }
+.note > :last-child { margin-bottom: 0; }
+.note strong:first-child { color: var(--ink); }
 
-/* ---------- formula ---------- */
-.formula {
+/* ---------- the paper list ---------- */
+.papers-group {
   font-family: var(--mono);
-  font-size: 1.3rem;
-  text-align: center;
-  padding: 1.3rem 1rem;
-  background: var(--code-bg);
-  border: 1px solid var(--border);
-  border-radius: 0.3rem;
-  margin: 1.4rem 0;
-  overflow-x: auto;
-  color: var(--code-text);
+  font-weight: 500;
+  font-size: .9rem;
+  color: var(--muted);
+  margin: 2.75rem 0 0;
+  padding-bottom: .5rem;
+  border-bottom: 1px solid var(--rule);
+}
+.paper-list { list-style: none; margin: 0 0 1rem; padding: 0; }
+.paper {
+  margin: 0;
+  padding: 1.35rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.paper-link { display: block; text-decoration: none; }
+.paper-title {
+  display: block;
+  font-size: 1.2rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+  transition: color .12s;
+}
+.paper-link:hover .paper-title { color: var(--accent); }
+.paper .paper-meta { display: block; font-size: .92rem; margin-top: .2rem; }
+.paper-pitch { margin: .6rem 0 0; max-width: 36rem; }
+.paper-langs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.1rem;
+  margin: .65rem 0 0;
+  font-size: .92rem;
+}
+.paper.soon .paper-title { color: var(--muted); font-weight: 500; }
+.paper.soon .paper-pitch { color: var(--muted); }
+
+/* ---------- language tabs ---------- */
+.langbar {
+  display: flex;
+  flex-wrap: wrap;
+  margin: .75rem 0 2.25rem;
+  border-bottom: 1px solid var(--rule);
+}
+.langbar button {
+  font: inherit;
+  font-size: .95rem;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: .5rem 1rem .6rem;
+  cursor: pointer;
+  transition: color .12s, border-color .12s;
+}
+.langbar button:first-child { padding-left: 0; }
+/* the reset above outranks the [lang] rules below; restate the scripts */
+.langbar button[lang="ta"] { font-family: var(--tamil); }
+.langbar button[lang="hi"] { font-family: var(--deva); }
+.langbar button:hover { color: var(--ink); }
+.langbar button[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom-color: var(--brand);
+}
+
+/* ---------- scripts ---------- */
+[lang="ta"] { font-family: var(--tamil); }
+[lang="hi"] { font-family: var(--deva); }
+[data-panel][lang="ta"] { line-height: 1.85; }
+[data-panel][lang="hi"] { line-height: 1.8; }
+[lang="ta"] code, [lang="hi"] code,
+[lang="ta"] pre,  [lang="hi"] pre { font-family: var(--mono); }
+
+.thanglish {
+  font-style: italic;
+  color: var(--muted);
+  border-left: 3px solid var(--rule-strong);
+  padding-left: 1rem;
+  margin: .6rem 0 1.2rem;
 }
 
 /* ---------- footer ---------- */
 .site-footer {
-  padding-top: 2rem;
-  margin-top: 2rem;
-  border-top: solid 1px var(--hr-border);
+  margin-top: 4rem;
+  padding: 1.5rem 0 2rem;
+  border-top: 1px solid var(--rule);
+  font-size: .92rem;
+  color: var(--muted);
 }
-@media screen and (min-width: 42em) { .site-footer { font-size: 1rem; } }
-.site-footer-owner { display: block; font-weight: bold; }
-.site-footer-credits { color: var(--blockquote); font-size: .9rem; }
+.site-footer-owner { display: block; color: var(--text); margin-bottom: .3rem; }
+.site-footer a { color: var(--text); }
+.site-footer a:hover { color: var(--accent); }
 
-.backlink { font-size: .95rem; display: inline-block; margin-bottom: 1rem; }
+/* ---------- wide screens: boxes and rails hang into the gutter ----------
+   The text inside every block stays on the prose margin; only the box
+   or the rail steps left. Code gains ~40px, enough for an 83-char line. */
+@media (min-width: 48em) {
+  :root { --bleed: 2.25rem; }   /* 38px; side space at 48em is ~51px */
+  pre, .formula, .note, .hero-code {
+    margin-left: calc(-1 * var(--bleed));
+    margin-right: calc(-1 * var(--bleed));
+    padding-left: var(--bleed);
+    padding-right: var(--bleed);
+  }
+  .note, .hero-code { padding-left: calc(var(--bleed) - 3px); }
+  /* code keeps its left edge on the margin but uses the right-hand hang
+     for room: +21px is what an 83-char line needs at .8rem */
+  pre { padding-right: 1rem; }
+  blockquote, .thanglish {
+    margin-left: calc(-1 * var(--bleed));
+    padding-left: calc(var(--bleed) - 3px);
+  }
+}
+
+/* ---------- small screens ---------- */
+@media (max-width: 40em) {
+  html { font-size: 16px; }
+  .title-block { padding-top: 2rem; }
+  h1 { font-size: 1.9rem; }
+  h2 { font-size: 1.3rem; }
+  .lede { font-size: 1.1rem; }
+  .masthead .inner { padding: .85rem var(--gutter); }
+  .masthead-nav { gap: 1rem; }
+  pre, .hero-code { padding: .9rem 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; }
+}

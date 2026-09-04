@@ -7,37 +7,39 @@
 <meta name="description" content="The transformer paper explained as code. Attention is a dictionary lookup with fuzzy keys. Runnable NumPy, four demos that prove it by breaking it. English, Tamil and Hindi.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&family=Noto+Sans+Tamil:wght@400;600&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
 <body>
 
-<section class="page-header">
-  <h1 class="project-name">Attention Is All You Need</h1>
-  <h2 class="project-tagline">Vaswani et al., 2017 — explained as a program</h2>
-  <a href="attention_from_scratch.py" class="btn" download>Download the code</a>
-  <a href="../" class="btn">More papers</a>
-</section>
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
 
-<nav class="topnav"><div class="inner">
-  <a href="../../">Home</a>
-  <a href="../" aria-current="page">Papers</a>
-  <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" target="_blank" rel="noopener">GitHub</a>
-</div></nav>
+<main class="main-content">
 
-<section class="main-content">
-
-  <a class="backlink" href="../">&larr; Papers for Dummies</a>
-
-  <p class="lede">
-    Explained as a program, because that's the only way I could understand it.
-  </p>
+  <div class="title-block">
+    <h1>Attention Is All You Need</h1>
+    <p class="paper-meta">Vaswani et al., 2017</p>
+    <p class="lede">
+      Explained as a program, because that's the only way I could understand it.
+    </p>
+    <p>
+      <a href="attention_from_scratch.py" download>Download attention_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
 
   <div class="langbar" role="tablist" aria-label="Language">
     <button role="tab" data-lang="en" aria-selected="true">English</button>
-    <button role="tab" data-lang="ta" aria-selected="false">தமிழ்</button>
-    <button role="tab" data-lang="hi" aria-selected="false">हिंदी</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
   </div>
 
 <!-- ==================== ENGLISH ==================== -->
@@ -640,7 +642,7 @@ def causal_mask(n):
 </p>
 
 <div class="tablewrap">
-<table>
+<table class="breaks">
   <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
   <tbody>
     <tr><td>Delete <code>/ np.sqrt(d_k)</code></td><td>One softmax weight goes to 1.0000 as d<sub>k</sub> grows. Gradient dead.</td></tr>
@@ -674,20 +676,87 @@ def causal_mask(n):
   cost budgeting, retrieval quality. None of it is research maths.
 </p>
 
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: attention as a lookup, in code you can break.
+  That's deliberately narrow. Four other people explain the parts I skipped,
+  and each is better at its own angle than I'd be at copying it.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://jalammar.github.io/visualizing-neural-machine-translation-mechanics-of-seq2seq-models-with-attention/">
+      <span class="paper-title">Visualizing seq2seq models with attention</span>
+      <span class="paper-meta">Jay Alammar. Animated.</span>
+    </a>
+    <p class="paper-pitch">
+      Read this <em>before</em> the transformer one. It shows the problem
+      attention was invented to fix — the RNN encoder crushing a whole
+      sentence into one vector — step by step. My "why this beat the RNN"
+      section is one paragraph; this is that paragraph as a movie.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jalammar.github.io/illustrated-transformer/">
+      <span class="paper-title">The Illustrated Transformer</span>
+      <span class="paper-meta">Jay Alammar. Diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      The canonical picture version. Where I gave you array shapes, this
+      gives you the tensors as coloured boxes flowing through the encoder
+      stack. Best answer anywhere to "what is multi-head actually doing to
+      the matrix" if diagrams land better for you than <code>.shape</code>.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://peterbloem.nl/blog/transformers">
+      <span class="paper-title">Transformers from scratch</span>
+      <span class="paper-meta">Peter Bloem. PyTorch, with the reasoning.</span>
+    </a>
+    <p class="paper-pitch">
+      The step up in rigour, without becoming a paper. PyTorch instead of my
+      NumPy, and it actually justifies the design choices I asserted — why
+      self-attention is permutation-equivariant, why the √d<sub>k</sub>
+      argument holds. Go here when "trust me" stops being enough.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://nlp.seas.harvard.edu/annotated-transformer/">
+      <span class="paper-title">The Annotated Transformer</span>
+      <span class="paper-meta">Harvard NLP. The full paper as running code.</span>
+    </a>
+    <p class="paper-pitch">
+      The whole paper, line by line, as working PyTorch — including
+      everything I called "wrapping": label smoothing, the warmup learning
+      rate schedule, real training on real data. This is the last stop, and
+      the one that trains.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> seq2seq → illustrated transformer →
+  Bloem → annotated. Roughly increasing maths, and each one assumes the
+  previous. If you only read one, read Bloem — it's the closest to how an
+  engineer thinks.
+</div>
+
   <footer class="site-footer">
-    <span class="site-footer-owner">
-      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">papers-for-dummies</a>
-      is maintained by
-      <a href="https://github.com/srinivasannagarajarao-art">srinivasannagarajarao-art</a>.
-    </span>
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
     <span class="site-footer-credits">
-      Written while learning. If something here is wrong,
-      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">tell me</a>
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
       — I'd rather be corrected than confident.
     </span>
   </footer>
 
-</section>
+</main>
 
 <script>
 // Language tabs. Remembers your choice, and respects ?lang= in the URL.
