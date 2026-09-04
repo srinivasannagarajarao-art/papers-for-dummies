@@ -4,93 +4,100 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Papers for Dummies</title>
-<meta name="description" content="AI Engineer, learning in public. Papers for Dummies — research papers explained the way programmers actually think.">
+<meta name="description" content="Machine learning papers translated into code you can break on purpose. Written by an AI engineer, for engineers who ship models.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
 <body>
 
-<section class="page-header">
-  <h1 class="project-name">Papers for Dummies</h1>
-  <h2 class="project-tagline">ML papers explained for engineers who ship code</h2>
-  <a href="papers/attention/" class="btn">Start with Attention</a>
-  <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" class="btn" target="_blank" rel="noopener">View on GitHub</a>
-</section>
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="./">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="./" aria-current="page">Home</a>
+    <a href="papers/">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
 
-<nav class="topnav"><div class="inner">
-  <a href="./" aria-current="page">Home</a>
-  <a href="papers/">Papers</a>
-  <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" target="_blank" rel="noopener">GitHub</a>
-</div></nav>
+<main class="main-content">
 
-<section class="main-content">
+  <div class="title-block">
+    <h1>Machine learning papers, translated into code you can break on purpose.</h1>
+    <p class="lede">
+      For engineers who ship models, not for researchers.
+    </p>
+  </div>
 
-  <h1>Srinivasan Nagaraja Rao</h1>
-  <p class="lede">
-    AI Engineer. I ship code and models for a living, and I'm learning this
-    field in public — including the parts where the maths scares me.
+<pre class="hero-code"><code>def attention(query, keys, values):
+    scores  = [dot(query, k) for k in keys]
+    weights = softmax(scores)
+    return sum(w * v for w, v in zip(weights, values))</code></pre>
+
+  <p>
+    That's the beating heart of <a href="papers/attention/">Attention Is All
+    You Need</a>. Three lines. Every paper here gets the same treatment: the
+    idea as a function you could set a breakpoint in, real output from running
+    it, and a short list of things to break so you can watch what fails.
   </p>
 
+  <h2 class="papers-group">ai-ml/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
+      <a class="paper-link" href="papers/attention/">
+        <span class="paper-title">Attention Is All You Need</span>
+        <span class="paper-meta">Vaswani et al., 2017</span>
+      </a>
+      <p class="paper-pitch">
+        Attention is a dictionary lookup with fuzzy keys — everything else is
+        plumbing. Runnable NumPy, four demos that prove it by breaking it.
+      </p>
+      <p class="paper-langs">
+        <a href="papers/attention/?lang=en">English</a>
+        <a href="papers/attention/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/attention/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper soon">
+      <span class="paper-title">KV caching and the generation loop</span>
+      <span class="paper-meta">Not written yet</span>
+      <p class="paper-pitch">
+        Why inference is affordable. A direct consequence of the causal mask
+        that nobody explains properly.
+      </p>
+    </li>
+
+    <li class="paper soon">
+      <span class="paper-title">LoRA: low-rank adaptation</span>
+      <span class="paper-meta">Not written yet</span>
+      <p class="paper-pitch">
+        Fine-tuning without touching the base weights.
+      </p>
+    </li>
+
+  </ul>
+
+  <h2>Who writes this</h2>
+  <p>
+    Srinivasan Nagaraja Rao. AI engineer. I ship code and models for a living,
+    and I'm learning this field in public — including the parts where the
+    maths scares me.
+  </p>
   <p>
     I'm not a researcher. I'm a programmer. When I read a machine learning
     paper, I don't want the proof — I want to know what it would look like as
-    a function I could put a breakpoint in.
+    a function I could put a breakpoint in. So that's how I write these up.
   </p>
 
-  <p>
-    So that's how I write these up. Every paper here gets translated into the
-    thing I actually understand: <strong>running code you can break on purpose.</strong>
-  </p>
-
-  <h2>The papers</h2>
-
-  <div class="paper-tree">
-
-    <div class="paper-dir">
-      <p class="paper-dir-name">ai-ml/</p>
-
-      <a class="paper-entry" href="papers/attention/">
-        <span class="paper-entry-path">
-          <span class="paper-entry-title">attention-is-all-you-need</span>
-          <span class="paper-entry-langs">[en] [ta] [hi]</span>
-        </span>
-        <span class="paper-entry-pitch">
-          Vaswani et al., 2017. Attention is a dictionary lookup with fuzzy
-          keys — everything else is plumbing. Runnable NumPy, four demos that
-          prove it by breaking it.
-        </span>
-      </a>
-
-      <a class="paper-entry soon" href="#">
-        <span class="paper-entry-path">
-          <span class="paper-entry-title">kv-caching-and-the-generation-loop</span>
-        </span>
-        <span class="paper-entry-pitch">
-          Why inference is affordable. A direct consequence of the causal
-          mask that nobody explains properly. Not written yet.
-        </span>
-      </a>
-
-      <a class="paper-entry soon" href="#">
-        <span class="paper-entry-path">
-          <span class="paper-entry-title">lora-low-rank-adaptation</span>
-        </span>
-        <span class="paper-entry-pitch">
-          Fine-tuning without touching the base weights. Not written yet.
-        </span>
-      </a>
-    </div>
-
-  </div>
-
-  <h2>Why "for dummies"?</h2>
+  <h2>Why "for dummies"</h2>
   <p>
     Because most paper explainers are written by people who are comfortable
     with the maths, aimed at people heading toward research. That's a real
-    audience — it just isn't mine.
+    audience. It just isn't mine.
   </p>
   <p>
     Mine is the engineer who has shipped models, done the MLOps, and still
@@ -99,27 +106,23 @@
   </p>
 
   <blockquote>
-    <strong>The method:</strong> every explainer here follows the same shape —
-    translate the idea into code you already understand, then
-    <em>deliberately break it</em> and watch what fails. You debug for a
-    living. Reverse-engineering from broken behaviour is faster than
+    <strong>The method:</strong> translate the idea into code you already
+    understand, then deliberately break it and watch what fails. You debug
+    for a living. Reverse-engineering from broken behaviour is faster than
     re-reading section 3.2 for the fifth time.
   </blockquote>
 
   <footer class="site-footer">
-    <span class="site-footer-owner">
-      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">papers-for-dummies</a>
-      is maintained by
-      <a href="https://github.com/srinivasannagarajarao-art">srinivasannagarajarao-art</a>.
-    </span>
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
     <span class="site-footer-credits">
-      Written while learning. If something here is wrong,
-      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">tell me</a>
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
       — I'd rather be corrected than confident.
     </span>
   </footer>
 
-</section>
+</main>
 
 </body>
 </html>

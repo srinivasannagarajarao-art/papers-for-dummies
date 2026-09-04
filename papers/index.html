@@ -3,37 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Papers for Dummies</title>
-<meta name="description" content="Machine learning papers explained for working engineers — as runnable code you can break on purpose.">
+<title>Papers — Papers for Dummies</title>
+<meta name="description" content="Every machine learning paper on this site, explained as runnable code you can break on purpose.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
 <body>
 
-<section class="page-header">
-  <h1 class="project-name">Papers for Dummies</h1>
-  <h2 class="project-tagline">No proofs. No summations. Just code you can break on purpose.</h2>
-  <a href="attention/" class="btn">Start with Attention</a>
-  <a href="../" class="btn">Home</a>
-</section>
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../">Home</a>
+    <a href="./" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
 
-<nav class="topnav"><div class="inner">
-  <a href="../">Home</a>
-  <a href="./" aria-current="page">Papers</a>
-  <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies" target="_blank" rel="noopener">GitHub</a>
-</div></nav>
+<main class="main-content">
 
-<section class="main-content">
-
-  <h1>Papers for Dummies</h1>
-  <p class="lede">
-    Machine learning papers, explained for engineers who ship code — not for
-    researchers. No proofs. No summations you have to squint at. Just the
-    idea, translated into something you could set a breakpoint in.
-  </p>
+  <div class="title-block">
+    <h1>Papers</h1>
+    <p class="lede">
+      No proofs. No summations you have to squint at. Just the idea, translated
+      into something you could set a breakpoint in.
+    </p>
+  </div>
 
   <blockquote>
     <strong>How to read these:</strong> don't. Not first, anyway. Run the code,
@@ -41,57 +38,53 @@
     something fail teaches faster than watching someone explain.
   </blockquote>
 
-  <h2>Papers</h2>
+  <h2 class="papers-group">ai-ml/</h2>
+  <ul class="paper-list">
 
-  <div class="paper-tree">
-
-    <div class="paper-dir">
-      <p class="paper-dir-name">ai-ml/</p>
-
-      <a class="paper-entry" href="attention/">
-        <span class="paper-entry-path">
-          <span class="paper-entry-title">attention-is-all-you-need</span>
-          <span class="paper-entry-langs">[en] [ta] [hi]</span>
-        </span>
-        <span class="paper-entry-pitch">
-          Vaswani et al., 2017. Attention is a dictionary lookup with fuzzy
-          keys — everything else is plumbing. 60 lines of NumPy, four demos
-          that prove each claim by breaking it.
-        </span>
+    <li class="paper">
+      <a class="paper-link" href="attention/">
+        <span class="paper-title">Attention Is All You Need</span>
+        <span class="paper-meta">Vaswani et al., 2017</span>
       </a>
+      <p class="paper-pitch">
+        Attention is a dictionary lookup with fuzzy keys — everything else is
+        plumbing. Runnable NumPy, four demos that prove it by breaking it.
+      </p>
+      <p class="paper-langs">
+        <a href="attention/?lang=en">English</a>
+        <a href="attention/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="attention/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
 
-      <a class="paper-entry soon" href="#">
-        <span class="paper-entry-path">
-          <span class="paper-entry-title">kv-caching-and-the-generation-loop</span>
-        </span>
-        <span class="paper-entry-pitch">
-          Why LLM inference is affordable at all. Falls directly out of the
-          causal mask. Not written yet.
-        </span>
-      </a>
+    <li class="paper soon">
+      <span class="paper-title">KV caching and the generation loop</span>
+      <span class="paper-meta">Not written yet</span>
+      <p class="paper-pitch">
+        Why inference is affordable. A direct consequence of the causal mask
+        that nobody explains properly.
+      </p>
+    </li>
 
-      <a class="paper-entry soon" href="#">
-        <span class="paper-entry-path">
-          <span class="paper-entry-title">lora-low-rank-adaptation</span>
-        </span>
-        <span class="paper-entry-pitch">
-          Fine-tuning without touching the base weights. Not written yet.
-        </span>
-      </a>
-    </div>
+    <li class="paper soon">
+      <span class="paper-title">LoRA: low-rank adaptation</span>
+      <span class="paper-meta">Not written yet</span>
+      <p class="paper-pitch">
+        Fine-tuning without touching the base weights.
+      </p>
+    </li>
 
-  </div>
+  </ul>
 
   <footer class="site-footer">
-    <span class="site-footer-owner">
-      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">papers-for-dummies</a>
-      is maintained by
-      <a href="https://github.com/srinivasannagarajarao-art">srinivasannagarajarao-art</a>.
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      Written while learning. Corrections welcome.
     </span>
-    <span class="site-footer-credits">Written while learning. Corrections welcome.</span>
   </footer>
 
-</section>
+</main>
 
 </body>
 </html>

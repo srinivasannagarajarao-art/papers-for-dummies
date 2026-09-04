@@ -39,7 +39,7 @@ Avoid:
 Prefer:
 - Generous whitespace, strong type hierarchy, restrained color
 - The paper list as a short editorial index, not a marketplace grid
-- Code blocks consistent with the site's one visual style, per the Cayman system in §3 — see that section before styling anything
+- Code blocks consistent with the site's one visual style, per §3 — see that section before styling anything
 - Clear treatment for the three language tabs (EN/TA/HI) — Tamil and Devanagari need real font stacks, not fallback boxes
 - Motion only where it clarifies (tab switching, hover on the one or two link types) — nothing decorative
 
@@ -47,33 +47,36 @@ Think **"personal essay site meets well-typeset developer docs."**
 
 ---
 
-## 3. VISUAL LANGUAGE — Cayman
+## 3. VISUAL LANGUAGE
 
-Decided and already implemented: the site uses the **Cayman** theme's visual system (the GitHub Pages theme by jasonlong), applied to hand-written HTML/CSS rather than via Jekyll — so the look is Cayman, but there's no Jekyll build step and no loss of the language tabs or Indic fonts a stock Jekyll+Cayman swap would cost.
+Decided and implemented (replacing an earlier Cayman-theme pass, which read as "default GitHub Pages"): one narrow typeset column, one type family, no hero band, no chrome. The page's first visual is its subject — on the homepage, the three-line attention function.
 
-**Color** — authentic Cayman values, light-mode only (Cayman doesn't ship a dark mode; don't invent one):
-- Hero header: `linear-gradient(120deg, #155799, #159957)` — blue to green, used only on the `.page-header` band at the top of each page, never elsewhere
-- Headings: `#159957`
-- Body text: `#606c71`
-- Links: `#1e6bb8`
-- Blockquote text: `#819198`
-- Code background: `#f3f6fa`, code text: `#567482`, code border: `#dce6f0`
-- Table borders: `#e9ebec`; hr/divider: `#eff0f1`
-- One code style everywhere — source code and "real output" evidence blocks share the same pale-blue treatment (this was a deliberate call: full Cayman consistency over a separate dark terminal style)
+**Color** — light only. One brand hue, one interaction hue, two signal hues, and ink:
+- Brand: Cayman's green `#159957` and blue `#155799`. The masthead carries the Cayman gradient `linear-gradient(120deg, #155799, #159957)` with white text. Headings are `#159957`. The rails on the hero code, callouts and the active language tab are `#159957`. This is the one thing kept from the earlier Cayman pass, because the author likes it
+- Paper `#ffffff`; secondary surface `#f5f6f8` for code and callouts
+- Ink `#1b2a3a` for links, paper titles, bold; body `#33424f`; muted `#5f6c79` for meta
+- Rules `#e3e7eb`, stronger rules `#c9d0d6`
+- Accent `#1e6bb8` (Cayman's link blue) — hover and focus only, never decorative
+- Signal red `#b8321a` = "this broke"; signal green `#1f7a3f` = "this held". Used in output blocks (`.hl` / `.ok`) and as the rail on the "break this" column. Nowhere else.
+- One code style everywhere: source and evidence share the same pale surface; the signal colours mark evidence
 
 **Typography**:
-- Open Sans for all UI and body text (`400/600/700` weights loaded from Google Fonts), falling back to Helvetica Neue/Helvetica/Arial
-- Monospace for all code (`ui-monospace` / SF Mono / Menlo / Consolas stack)
-- No serif accent — Cayman doesn't use one, and this is a technical essay, not a magazine
-- Tamil needs `Noto Sans Tamil` and Hindi needs `Noto Sans Devanagari`, both loaded alongside Open Sans, with system fallbacks (`Nirmala UI`, `Tamil Sangam MN`, `Devanagari Sangam MN`) so nothing boxes on Windows if the web font fails to load
+- IBM Plex Sans (400/500/600, italic 400) for all text; IBM Plex Mono (400/500) for code
+- Hindi: IBM Plex Sans Devanagari; Tamil: Noto Sans Tamil (Plex has no Tamil cut). Both with system fallbacks (`Nirmala UI`, `Tamil Sangam MN`, `Devanagari Sangam MN`) so nothing boxes if a web font fails
+- Base 17px, measure 42rem (~80 characters), line-height 1.6. Headings 600 weight, ink colour, no colour accenting of single words
+- Links are ink with a thin light underline; hover shifts to accent. No blue links
+- From 48em (816px) up, code blocks, callouts and rails hang 2.25rem into the gutters so the text inside them stays on the prose margin; the box or rail steps out, the words don't. Code is 0.8rem so an 83-character line fits without scrolling. Below 48em everything stays inside the column and long code lines scroll within their box
 
-**Structure**, per Cayman's actual layout classes — reuse these, don't rename them:
-- `.page-header` — the gradient hero, holds an `<h1 class="project-name">`, an `<h2 class="project-tagline">`, and up to two `.btn` buttons
-- `.main-content` — the body copy container, max-width constrained, centered
-- `.site-footer` — `.site-footer-owner` (bold, repo + maintainer link) and `.site-footer-credits` (muted, smaller)
-- A `.topnav` strip between the hero and the body on every page (Home / Papers / GitHub) — this is a Papers for Dummies addition on top of stock Cayman, since Cayman itself has no secondary nav
+**Structure** — reuse these classes, don't rename them:
+- `.masthead` — a slim bar on the Cayman gradient, white text: site name left, `Home / Papers / GitHub` right. Same on every page. This is the whole of the "hero"; there is no tall band
+- `.main-content` — the single column. `.title-block` opens it: `h1`, optional `.paper-meta` (authors/year), `.lede`
+- `.paper-list` / `.paper` — the paper index: `.paper-link` wrapping `.paper-title` + `.paper-meta`, then `.paper-pitch`, then `.paper-langs` (links to `?lang=`). `.paper.soon` for unwritten entries: muted, not a link. `.papers-group` is the mono folder heading above a list
+- `.hero-code` — a `pre` promoted to the page's opening visual (homepage only)
+- `.langbar` — text tabs with an ink underline on the active one
+- `.note`, `.formula`, `.thanglish`, `.tablewrap`, `table.breaks` — content blocks on paper pages
+- `.site-footer` — `.site-footer-owner` (who writes this) and `.site-footer-credits` (source, corrections)
 
-This is already built in `assets/style.css` and applied to `index.html`, `papers/index.html`, and `papers/attention/index.html`. Any new page should reuse these classes rather than introduce new ones.
+Built in `assets/style.css`, applied to `index.html`, `papers/index.html`, `papers/attention/index.html`, and `404.html`. A new paper page copies the attention page's shell.
 
 ---
 
