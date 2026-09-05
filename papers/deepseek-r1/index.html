@@ -1,0 +1,1591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepSeek-R1 — for programmers</title>
+<meta name="description" content="R1-Zero skipped supervised fine-tuning entirely and long reasoning appeared anyway. A runnable GRPO training run shows the mechanism: pay only for correctness, and length emerges by itself.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Tamil:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>DeepSeek-R1: reasoning nobody taught it</h1>
+    <p class="paper-meta">DeepSeek-AI, 2025</p>
+    <p class="lede">
+      Nobody wrote the reasoning examples. Nobody rewarded length. The
+      working-out showed up anyway, and that is the whole story.
+    </p>
+    <p>
+      <a href="deepseek_r1_from_scratch.py" download>Download deepseek_r1_from_scratch.py</a>
+      — everything below runs from it. NumPy for the environment, plus a tiny
+      CPU PyTorch policy for the GRPO training loop. About 20 seconds.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+
+  <p>
+    Blunt about the limits first, the same way
+    <a href="../chain-of-thought/">the chain-of-thought page</a> and
+    <a href="../rag/">the RAG page</a> are about their stand-ins.
+    <strong>There is no language model in my script.</strong> A four-input MLP
+    cannot demonstrate emergent reasoning in a 671-billion-parameter model, and
+    nothing it prints is evidence about what R1 does on a maths olympiad
+    problem.
+  </p>
+
+  <p>
+    What it <em>can</em> show, honestly, is the mechanism the result stands on:
+    <strong>when a correctness-only reward is paired with a task where more
+    steps genuinely help, a policy gradient discovers longer solutions without
+    anybody telling it to.</strong> That claim fits on a laptop. Every number
+    below is from that analogy, and I say so each time.
+  </p>
+
+  <p>
+    I had this paper filed under "another RLHF variant" for months. It isn't.
+    The interesting model in it is <strong>R1-Zero</strong>, and what makes it
+    interesting is a deletion.
+  </p>
+
+  <h2>You paid for correct answers and got the working-out for free</h2>
+
+  <p>You have shipped this function:</p>
+
+<pre><code>def solve(question):
+    return model(question)      # one forward pass. no locals, no loop.</code></pre>
+
+  <p>
+    And you know the fix from
+    <a href="../chain-of-thought/">chain-of-thought</a>: give it somewhere to
+    put intermediate values, because every token it emits becomes part of its
+    own next input. Emitted tokens <em>are</em> serial compute. So you write
+    exemplars that show the working, and the continuation shows its working
+    too.
+  </p>
+
+  <p>R1-Zero is what happens when you refuse to write those exemplars:</p>
+
+<pre><code>def solve(question):
+    scratch = []
+    while keep_going(scratch):          # nobody wrote this loop
+        scratch.append(step(question, scratch))
+    return final(scratch)
+
+reward = 1.0 if answer_is_right else 0.0     # this is all you paid for</code></pre>
+
+  <p>
+    Take a base model. Skip supervised fine-tuning entirely. Score its output
+    with a rule — is the answer right, is it in the required tags — and run
+    reinforcement learning. Long chains of reasoning appear on their own,
+    including the model stopping to re-check its own working. The paper's
+    framing is that the reasoning was <em>incentivised</em>, not taught.
+  </p>
+
+  <p>
+    It's the contractor you pay per correct answer with no time limit. They
+    start showing their working, not because you asked for working, but because
+    checking themselves is the cheapest route to the thing you're paying for.
+    The optimiser found the same trade.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>R1-Zero</strong></td><td>RL straight onto the base model, no SFT at all</td><td>Shipping with only an integration test and no unit tests written by hand</td></tr>
+      <tr><td><strong>Rule-based reward</strong></td><td>A grader you can read: answer correct, tags present</td><td><code>assert</code>, not a learned classifier</td></tr>
+      <tr><td><strong>GRPO</strong></td><td>Score a group of answers to the same prompt, compare them to each other</td><td>Ranking within a batch instead of keeping a second model to predict scores</td></tr>
+      <tr><td><strong>Cold start</strong></td><td>A small SFT pass before RL, added in R1 proper</td><td>A style guide applied before the optimiser is let loose</td></tr>
+      <tr><td><strong>Distillation</strong></td><td>Train small models on the big model's good outputs</td><td>Recording a working session and replaying it, instead of rediscovering it</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>What it deleted from the InstructGPT pipeline</h2>
+
+  <p>
+    <a href="../instructgpt/">InstructGPT</a> is three stages: supervised
+    fine-tuning on human demonstrations, then a reward model trained on human
+    comparisons, then PPO against that reward model. Two of those three stages
+    need people, and the second one has the failure mode
+    <a href="../rlhf/">the RLHF page</a> is entirely about — the optimiser
+    hunting for the soft spots in a learned model of the tester.
+  </p>
+
+  <p>R1-Zero deletes both.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Stage</th><th>InstructGPT</th><th>R1-Zero</th></tr></thead>
+    <tbody>
+      <tr><td>Demonstrations</td><td>Humans write ideal answers, SFT on them</td><td><strong>Skipped</strong></td></tr>
+      <tr><td>Reward</td><td>Reward model learned from human comparisons</td><td><strong>A rule.</strong> Is the answer right, are the tags there</td></tr>
+      <tr><td>Optimisation</td><td>PPO with a KL penalty to the SFT model</td><td>GRPO with a KL penalty to the reference</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    You can only delete them because maths and code answers are
+    <em>checkable</em>. There is a right answer and a script can tell. That is
+    the boundary of the method, and it is worth saying out loud in an interview:
+    rule-based rewards work where a unit test works.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <p>
+    Two sentences of GRPO, because
+    <a href="../grpo/">the GRPO page</a> derives it properly and I'm not
+    re-deriving it here. Sample a <em>group</em> of G answers to the same
+    prompt, score them all, and use each answer's score minus the group's mean,
+    over the group's standard deviation, as its advantage — so the group is the
+    baseline and there is no value network to train. Then it is the ordinary
+    policy gradient, with a KL leash back to a frozen reference.
+  </p>
+
+  <div class="formula">Â<sub>i</sub> = (r<sub>i</sub> − mean(r<sub>1..G</sub>)) / std(r<sub>1..G</sub>) &nbsp;&nbsp;·&nbsp;&nbsp; J = E[ Â<sub>i</sub> · log π<sub>θ</sub>(o<sub>i</sub>) ] − β · KL(π<sub>θ</sub> ‖ π<sub>ref</sub>)</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>o<sub>1..G</sub></code></td><td>G answers, one prompt</td><td>The group. G=8 in my script. Sampled, so they differ</td></tr>
+      <tr><td><code>r<sub>i</sub></code></td><td>scalar</td><td><strong>The rule.</strong> Correct answer + right tags. No learned model anywhere</td></tr>
+      <tr><td><code>Â<sub>i</sub></code></td><td>scalar</td><td>"Better or worse than my siblings?" A z-score inside the group</td></tr>
+      <tr><td><code>log π<sub>θ</sub>(o<sub>i</sub>)</code></td><td>sum over steps</td><td>Make the above-average answers more likely, the below-average ones less</td></tr>
+      <tr><td><code>β · KL</code></td><td>nats</td><td><strong>The leash.</strong> Distance from the frozen reference policy</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Notice what the reward does not contain. There is no term for length, no
+    term for "reasoning quality", no term for style. If length is going to
+    appear, it has to appear because of the correctness term.
+  </p>
+
+  <h2>First, prove that thinking longer actually helps</h2>
+
+  <p>
+    If it doesn't, nothing else on this page means anything — so my toy task is
+    built so that it genuinely does. Each problem is one true digit and six
+    noisy readings of it, each reading correct 55% of the time. The policy
+    chooses, step by step, whether to read once more or stop and answer with the
+    majority of what it has read. There are only six real readings; step seven
+    onwards re-reads one it already has, which is not new information and
+    double-counts whatever noise it lands on.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>   k   accuracy (hard, p=0.55)   accuracy (control, p=1.00)
+   1            0.546                    1.000
+   2            0.539                    1.000
+   3            0.666                    1.000
+   4            0.764                    1.000
+   5            0.829                    1.000
+   6            <span class="ok">0.871</span>                    1.000
+   8            0.802                    1.000
+  12            0.752                    1.000
+  16            <span class="hl">0.734</span>                    1.000</code></pre>
+
+  <p>
+    On the hard task, more steps buy real accuracy up to the sixth, then stop
+    and start costing. On the control task one read is already perfect, so extra
+    steps buy exactly nothing. Same code, one parameter apart. That pair is what
+    makes the next section honest instead of a coincidence.
+  </p>
+
+  <h2>The centrepiece: length rises although nothing rewards length</h2>
+
+  <p>
+    Now train it. Reward is <code>0.2 × format + 1.0 × correct</code>. GRPO,
+    β = 0.1, 150 iterations, eight prompts by a group of eight. Each row is 300
+    held-out problems so the curve is signal rather than one noisy batch.
+  </p>
+
+<pre><code>  HARD TASK (p=0.55, extra steps genuinely help)
+   iter   mean length   accuracy
+      0          <span class="hl">0.47</span>      0.137
+     15          8.52      0.717
+     30          8.12      0.767
+     45          5.52      0.777
+     60          6.11      0.800
+     75          3.76      0.800
+     90          4.46      0.783
+    105          6.60      0.833
+    120          4.89      0.833
+    135          3.41      0.780
+    150          <span class="ok">6.15      0.860</span></code></pre>
+
+  <p>
+    Length goes from half a step to six, accuracy from 0.137 to 0.860, and the
+    reward function never once mentioned length. Now the control — identical in
+    every respect except that a single read is already correct:
+  </p>
+
+<pre><code>  CONTROL TASK (p=1.00, one read is already enough)
+   iter   mean length   accuracy
+      0          0.68      0.297
+     15          2.06      0.987
+     30          2.63      1.000
+     45          2.18      1.000
+     60          2.34      1.000
+     75          2.31      1.000
+     90          2.15      1.000
+    105          2.12      1.000
+    120          2.11      1.000
+    135          2.19      1.000
+    150          <span class="ok">2.05      1.000</span>
+
+  hard task    length 0.47 -> 6.15   accuracy 0.137 -> 0.860
+  control task length 0.68 -> 2.05   accuracy 0.297 -> 1.000</code></pre>
+
+  <div class="note">
+    <strong>Same reward, same optimiser, same network, same seed.</strong> The
+    control climbs to the one read it needs to answer at all and then stops,
+    because past that point length changes nothing about correctness and there
+    is no gradient on it. Length emerges exactly where length buys correctness,
+    and nowhere else. That is the mechanism, and it is also the honest boundary
+    of the claim: my script shows why the optimiser <em>would</em> lengthen
+    output, not that a transformer's chain-of-thought is doing anything as tidy
+    as this.
+  </div>
+
+  <h2>Reward design, which is where you will actually go wrong</h2>
+
+  <p>
+    Three reward functions, everything else identical. This is the section I
+    would put on a whiteboard if someone asked me what I learned from R1.
+  </p>
+
+<pre><code>  reward function                  accuracy   mean length   format
+  correct + format                   <span class="ok">0.850</span>        5.12       1.00
+  format ONLY                        <span class="hl">0.360</span>        1.12       1.00
+  correct + format + 0.05*length     0.743       <span class="hl">16.00</span>       1.00</code></pre>
+
+  <p>
+    <strong>Format only</strong> gets you perfectly structured output with the
+    accuracy of a ten-sided coin. It never learned to look at the answer,
+    because nothing ever paid it to. Every field validates. Nothing is true.
+  </p>
+
+  <p>
+    <strong>Length in the reward</strong> gets you padding. It runs to the
+    context window and accuracy <em>falls</em> — 0.850 down to 0.743 — because
+    the extra steps are re-reads, and re-reads amplify noise. You bought tokens
+    and called it thought. This is why R1's reward has no length term: length is
+    a symptom you want, not a target you set.
+  </p>
+
+  <h2>The tags, the parser, and the bug you will ship</h2>
+
+  <p>
+    R1's template is thinking between <code>&lt;think&gt;</code> tags and the
+    final answer between <code>&lt;answer&gt;</code> tags, so a rule can find the
+    answer without guessing. Mine copies that:
+  </p>
+
+<pre><code>&lt;think&gt;
+step 1: read -&gt; 9
+step 2: read -&gt; 8
+step 3: read -&gt; 9
+step 4: read -&gt; 5
+step 5: read -&gt; 9
+step 6: read -&gt; 9
+&lt;/think&gt;
+&lt;answer&gt;9&lt;/answer&gt;
+
+   truth                       : 9
+   parse_answer (tag-anchored) : <span class="ok">9</span>
+   parse_answer_broken (first  : <span class="hl">1</span>   &lt;- that's the step index
+     number anywhere)</code></pre>
+
+  <p>
+    Now break the parser the way everyone breaks it once — match the first
+    number anywhere in the output instead of the one inside the answer tags.
+    Same model, same rollouts, two graders:
+  </p>
+
+<pre><code>   scored with the correct parser : <span class="ok">0.850</span>
+   scored with the broken parser  : <span class="hl">0.090</span>
+
+   trained AGAINST the broken parser -> real accuracy <span class="hl">0.330</span>, length 1.17</code></pre>
+
+  <p>
+    The second number is the parser's opinion of the working-out, not the
+    answer. Grade with it and you have not measured a worse model, you have
+    measured a different string. Train against it and the reward signal is
+    noise, so the policy learns to stop early and stops learning anything at
+    all. A regex is a component of your training objective. Treat it like one.
+  </p>
+
+  <h2>The leash, swept</h2>
+
+  <p>
+    Same reward, same task, four values of β. KL is per trajectory, in nats,
+    measured against the frozen reference the run started from.
+  </p>
+
+<pre><code>  beta     accuracy   mean length   KL from reference (nats/traj)
+  0.00      0.743       16.00          <span class="hl">16.498</span>
+  0.02      0.745       15.96          16.495
+  0.10      <span class="ok">0.850</span>        5.12           5.113
+  0.50      0.588        2.81           1.659</code></pre>
+
+  <p>
+    With no leash it runs to the context window and stays there. It still scores
+    well — the answer is in the right tags and is often right — and the output
+    is this:
+  </p>
+
+<pre><code>&lt;think&gt;
+step 1: read -&gt; 8
+step 2: read -&gt; 6
+step 3: read -&gt; 0
+step 4: read -&gt; 0
+step 5: read -&gt; 8
+step 6: read -&gt; 4
+step 7: read -&gt; 8
+step 8: read -&gt; 6
+step 9: read -&gt; 6
+step 10: read -&gt; 6
+step 11: read -&gt; 6
+step 12: read -&gt; 8
+step 13: read -&gt; 4
+step 14: read -&gt; 6
+step 15: read -&gt; 8
+step 16: read -&gt; 8
+&lt;/think&gt;
+&lt;answer&gt;<span class="hl">6</span>&lt;/answer&gt;</code></pre>
+
+  <p>
+    Sixteen steps of which six carry information, and a wrong answer at the end
+    of them. β = 0.5 is the opposite failure: it never leaves the reference and
+    never learns to think at all. β is tuned, not derived, and the number you
+    put on a dashboard is the KL, not β — see
+    <a href="../rlhf/">the RLHF page</a>, which is entirely about what an
+    optimiser does when you take the leash off.
+  </p>
+
+  <h2>Distillation, and why R1 needed a cold start</h2>
+
+  <p>
+    The paper's other finding is that distilling R1's outputs into smaller dense
+    models worked better than running large-scale RL on those small models
+    directly. My version of that, matched on rollouts of the environment rather
+    than on gradient steps, because rollouts are the expensive part:
+  </p>
+
+<pre><code>  teacher  (hidden=16, 150 GRPO iters)   acc 0.850   length   5.12
+  kept 1051/1200 teacher rollouts -> 6446 labelled decisions
+
+  small network, hidden=4:
+    distilled from teacher, 0 new rollouts   acc <span class="ok">0.850</span>   length   5.02
+    GRPO directly, 18 iters (1152 rollouts)  acc <span class="hl">0.485</span>   length   2.02
+    GRPO directly, 150 iters (9600 rollouts) acc 0.823   length   5.47</code></pre>
+
+  <p>
+    Every successful teacher trajectory hands the student a label for every
+    decision inside it. A reward hands it one scalar for the whole trajectory.
+    That is the entire difference. Give the RL student eight times the rollouts
+    and it catches up — which is exactly the trade the paper is pointing at.
+    Matched on <em>gradient steps</em> instead, my two students are within noise
+    of each other, so treat this as an analogy for their result rather than
+    evidence of it.
+  </p>
+
+  <div class="note">
+    <strong>And this is why R1-Zero is not the model they shipped.</strong>
+    R1-Zero's answers were right and hard to read — poor readability, and
+    languages mixed together inside a single chain of thought. So R1 proper adds
+    a small cold-start supervised stage before the RL, purely to fix how the
+    output reads. The emergence is real; it just doesn't arrive housetrained.
+  </div>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    முதலில் வரம்புகளைத் தெளிவாகச் சொல்லிவிடுகிறேன் —
+    <a href="../chain-of-thought/">chain-of-thought page</a>-ம்
+    <a href="../rag/">RAG page</a>-ம் தங்கள் stand-in-களைப் பற்றி
+    சொல்வது போலவே. <strong>என் script-ல் எந்த language model-ம்
+    இல்லை.</strong> நான்கு input கொண்ட ஒரு சிறு MLP-ஆல், 671 பில்லியன்
+    parameter உள்ள ஒரு model-ல் reasoning தானாக வெளிப்படுவதை நிரூபிக்க
+    முடியாது. அது அச்சிடும் எதுவும், ஒரு maths olympiad கேள்வியில் R1 என்ன
+    செய்கிறது என்பதற்கு ஆதாரம் அல்ல.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (reward, format, parser,
+    rollout, policy, GRPO, KL, cold start, distillation, chain-of-thought…)
+    அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள்
+    அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <p>
+    ஆனால் அது <em>நேர்மையாகக்</em> காட்டக்கூடியது ஒன்று உண்டு — இந்த
+    முடிவு எந்த இயந்திரத்தின் மேல் நிற்கிறதோ அது: <strong>correctness மட்டுமே
+    பார்க்கும் ஒரு reward-ஐ, அதிக steps உண்மையிலேயே உதவும் ஒரு task-உடன்
+    இணைத்தால், policy gradient தானாகவே நீளமான தீர்வுகளைக் கண்டுபிடிக்கிறது —
+    யாரும் அதைச் சொல்லாமலேயே.</strong> அந்தக் கூற்று ஒரு laptop-ல் ஓடும். கீழே
+    வரும் ஒவ்வொரு எண்ணும் அந்த ஒப்புமையிலிருந்து வருவது; ஒவ்வொரு முறையும்
+    அதை நான் சொல்லிவிடுகிறேன்.
+  </p>
+
+  <p>
+    இந்த paper-ஐ "இன்னொரு RLHF variant" என்று பல மாதங்கள் ஒதுக்கி
+    வைத்திருந்தேன். அப்படி இல்லை. இதில் சுவாரஸ்யமான model
+    <strong>R1-Zero</strong>. அதை சுவாரஸ்யமாக்குவது ஒரு <em>நீக்கம்</em>.
+  </p>
+
+  <h2>சரியான விடைக்குப் பணம் கொடுத்தீர்கள்; வேலைக் காட்டல் இலவசமாக வந்தது</h2>
+
+  <p>இந்த function-ஐ நீங்கள் ship செய்திருக்கிறீர்கள்:</p>
+
+<pre><code>def solve(question):
+    return model(question)      # ஒரே forward pass. locals இல்லை, loop இல்லை.</code></pre>
+
+  <p>
+    <a href="../chain-of-thought/">chain-of-thought</a>-லிருந்து இதற்கான
+    திருத்தம் உங்களுக்குத் தெரியும்: இடைநிலை மதிப்புகளை வைக்க ஓர் இடம்
+    கொடுங்கள். ஏனெனில் அது வெளியிடும் ஒவ்வொரு token-ம் அதன் அடுத்த
+    input-ன் பகுதியாகிறது. வெளியிடப்பட்ட tokens <em>தான்</em> serial compute.
+    எனவே வேலையைக் காட்டும் exemplars எழுதுகிறீர்கள்; பின் அதன் தொடர்ச்சியும்
+    தன் வேலையைக் காட்டுகிறது.
+  </p>
+
+  <p>அந்த exemplars எழுத மறுத்தால் என்ன ஆகும் — அதுதான் R1-Zero:</p>
+
+<pre><code>def solve(question):
+    scratch = []
+    while keep_going(scratch):          # இந்த loop-ஐ யாரும் எழுதவில்லை
+        scratch.append(step(question, scratch))
+    return final(scratch)
+
+reward = 1.0 if answer_is_right else 0.0     # நீங்கள் பணம் கொடுத்தது இதற்கே</code></pre>
+
+  <p>
+    ஒரு base model எடுங்கள். supervised fine-tuning-ஐ முற்றிலும் தவிர்த்து
+    விடுங்கள். ஒரு விதியால் அதன் output-ஐ score செய்யுங்கள் — விடை சரியா,
+    கேட்ட tags-ல் இருக்கிறதா — பிறகு reinforcement learning ஓட்டுங்கள்.
+    நீளமான reasoning சங்கிலிகள் தானாகவே தோன்றுகின்றன; தன் சொந்த வேலையை
+    நிறுத்தி மறுபரிசோதனை செய்வதும் உட்பட. Paper-ன் வாதம்: reasoning
+    <em>ஊக்குவிக்கப்பட்டது</em>, கற்பிக்கப்படவில்லை.
+  </p>
+
+  <p>
+    சரியான விடைக்கு மட்டும் பணம், நேர வரம்பே இல்லை — அப்படி ஒரு
+    ஒப்பந்தக்காரர். அவர் தன் வேலையைக் காட்டத் தொடங்குகிறார்; நீங்கள்
+    கேட்டதால் அல்ல, தன்னைத்தானே சரிபார்ப்பதுதான் நீங்கள் பணம் கொடுக்கும்
+    விஷயத்தை அடைய மலிவான வழி என்பதால். Optimiser-ம் அதே பேரத்தைக்
+    கண்டுபிடித்தது.
+  </p>
+
+  <p class="thanglish">
+    Reward-la "sari-yaana answer" mattum dhaan iruku; length-kku oru
+    point-um illa. Aana thanna check panradhu dhaan sari-ya irukka
+    cheap-aana vazhi — adhanaala neelam thaana valarudhu.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>பொருள்</th><th>Programmer-க்கான ஒப்புமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>R1-Zero</strong></td><td>SFT-யே இல்லாமல், base model மேல் நேரடி RL</td><td>கையால் எழுதிய unit test இல்லாமல், integration test மட்டும் வைத்து ship செய்வது</td></tr>
+      <tr><td><strong>Rule-based reward</strong></td><td>நீங்களே படிக்கக்கூடிய grader: விடை சரி, tags இருக்கு</td><td>கற்றுக்கொண்ட classifier அல்ல — <code>assert</code></td></tr>
+      <tr><td><strong>GRPO</strong></td><td>ஒரே prompt-க்கு வரும் ஒரு குழு விடைகளை score செய்து, அவற்றை ஒன்றோடொன்று ஒப்பிடுவது</td><td>score கணிக்க இரண்டாவது model வைப்பதற்குப் பதிலாக, batch-க்குள்ளேயே ranking</td></tr>
+      <tr><td><strong>Cold start</strong></td><td>RL-க்கு முன் ஒரு சிறிய SFT pass; R1-ல் சேர்க்கப்பட்டது</td><td>optimiser-ஐ அவிழ்த்து விடுவதற்கு முன் ஒரு style guide</td></tr>
+      <tr><td><strong>Distillation</strong></td><td>பெரிய model-ன் நல்ல outputs மேல் சிறிய models-ஐ train செய்வது</td><td>ஒரு வேலை session-ஐ record செய்து மறுபடி ஓட்டுவது; மீண்டும் கண்டுபிடிப்பதற்குப் பதிலாக</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>InstructGPT pipeline-லிருந்து அது நீக்கியது என்ன</h2>
+
+  <p>
+    <a href="../instructgpt/">InstructGPT</a> மூன்று நிலைகள்: மனிதர்களின்
+    demonstrations மேல் supervised fine-tuning, பிறகு மனித ஒப்பீடுகளிலிருந்து
+    கற்ற ஒரு reward model, பிறகு அந்த reward model-க்கு எதிராக PPO. அந்த
+    மூன்றில் இரண்டுக்கு மனிதர்கள் தேவை; இரண்டாவதற்கு
+    <a href="../rlhf/">RLHF page</a> முழுவதுமாகப் பேசும் அந்த failure mode
+    இருக்கிறது — தேர்வாளரின் கற்ற model-ல் உள்ள பலவீனமான இடங்களை optimiser
+    தேடிப் பிடிப்பது.
+  </p>
+
+  <p>R1-Zero இரண்டையும் நீக்குகிறது.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>நிலை</th><th>InstructGPT</th><th>R1-Zero</th></tr></thead>
+    <tbody>
+      <tr><td>Demonstrations</td><td>மனிதர்கள் சிறந்த விடைகளை எழுத, அவற்றின் மேல் SFT</td><td><strong>தவிர்க்கப்பட்டது</strong></td></tr>
+      <tr><td>Reward</td><td>மனித ஒப்பீடுகளிலிருந்து கற்ற reward model</td><td><strong>ஒரு விதி.</strong> விடை சரியா, tags இருக்கா</td></tr>
+      <tr><td>Optimisation</td><td>SFT model-க்கு KL penalty வைத்த PPO</td><td>reference-க்கு KL penalty வைத்த GRPO</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    இவற்றை நீக்க முடிவதற்குக் காரணம், maths மற்றும் code விடைகளை
+    <em>சரிபார்க்க முடியும்</em> என்பதுதான். ஒரு சரியான விடை உண்டு, ஒரு script
+    அதைச் சொல்ல முடியும். அதுதான் இந்த முறையின் எல்லை; ஒரு interview-ல் இதை
+    வெளிப்படையாகச் சொல்வது மதிப்புள்ளது: unit test வேலை செய்யும் இடத்தில்
+    rule-based rewards வேலை செய்யும்.
+  </p>
+
+  <h2>அந்த ஒரே சூத்திரம்</h2>
+
+  <p>
+    GRPO-வை இரண்டே வாக்கியங்களில் சொல்கிறேன்; ஏனெனில்
+    <a href="../grpo/">GRPO page</a> அதை முறையாக வருவிக்கிறது, நான் இங்கே
+    மீண்டும் வருவிக்கப் போவதில்லை. ஒரே prompt-க்கு G விடைகள் கொண்ட ஒரு
+    <em>குழுவை</em> sample செய்யுங்கள், எல்லாவற்றையும் score செய்யுங்கள்,
+    பிறகு ஒவ்வொரு விடையின் score-ல் இருந்து குழுவின் mean-ஐக் கழித்து,
+    குழுவின் standard deviation-ஆல் வகுத்து, அதை advantage-ஆகப்
+    பயன்படுத்துங்கள் — அப்போது குழுவே baseline; train செய்ய value network
+    தேவையில்லை. மீதி வழக்கமான policy gradient, ஒரு உறைந்த reference-க்குத்
+    திரும்பும் KL சங்கிலியுடன்.
+  </p>
+
+  <div class="formula">Â<sub>i</sub> = (r<sub>i</sub> − mean(r<sub>1..G</sub>)) / std(r<sub>1..G</sub>) &nbsp;&nbsp;·&nbsp;&nbsp; J = E[ Â<sub>i</sub> · log π<sub>θ</sub>(o<sub>i</sub>) ] − β · KL(π<sub>θ</sub> ‖ π<sub>ref</sub>)</div>
+
+  <p>இதை pipeline stages ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>o<sub>1..G</sub></code></td><td>G விடைகள், ஒரு prompt</td><td>அந்தக் குழு. என் script-ல் G=8. Sample செய்யப்படுவதால் அவை வேறுபடும்</td></tr>
+      <tr><td><code>r<sub>i</sub></code></td><td>scalar</td><td><strong>அந்த விதி.</strong> சரியான விடை + சரியான tags. எங்கும் கற்ற model இல்லை</td></tr>
+      <tr><td><code>Â<sub>i</sub></code></td><td>scalar</td><td>"என் உடன்பிறப்புகளை விட நல்லதா, கெட்டதா?" குழுவுக்குள் ஒரு z-score</td></tr>
+      <tr><td><code>log π<sub>θ</sub>(o<sub>i</sub>)</code></td><td>steps மேல் கூட்டல்</td><td>சராசரிக்கு மேல் உள்ள விடைகளை அதிக வாய்ப்புள்ளதாகவும், கீழ் உள்ளவற்றைக் குறைவாகவும் ஆக்குகிறது</td></tr>
+      <tr><td><code>β · KL</code></td><td>nats</td><td><strong>அந்தச் சங்கிலி.</strong> உறைந்த reference policy-லிருந்து உள்ள தூரம்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Reward-ல் <em>இல்லாதவற்றைக்</em> கவனியுங்கள். length-க்கு எந்தச் சொல்லும்
+    இல்லை, "reasoning quality"-க்கு இல்லை, style-க்கு இல்லை. நீளம்
+    தோன்றப்போகிறது என்றால், அது correctness சொல்லின் காரணமாகவே தோன்ற
+    வேண்டும்.
+  </p>
+
+  <h2>முதலில், நீண்ட நேரம் யோசிப்பது உண்மையிலேயே உதவுகிறது என நிரூபியுங்கள்</h2>
+
+  <p>
+    அது உதவவில்லை என்றால், இந்தப் பக்கத்தில் வேறெதற்கும் அர்த்தமில்லை — எனவே
+    என் toy task அது உண்மையாகவே உதவும்படி கட்டப்பட்டிருக்கிறது. ஒவ்வொரு
+    problem-ம் ஓர் உண்மையான இலக்கம், அதன் ஆறு noisy readings; ஒவ்வொரு reading-ம்
+    55% நேரம் சரியாக இருக்கும். Policy ஒவ்வொரு step-ஆக முடிவெடுக்கிறது —
+    இன்னொரு முறை படிக்கவா, அல்லது நிறுத்தி, இதுவரை படித்ததின் பெரும்பான்மை
+    விடையைச் சொல்லவா. உண்மையான readings ஆறு மட்டுமே; ஏழாவது step-லிருந்து
+    ஏற்கனவே உள்ள ஒன்றையே மறுபடி படிக்கிறது — அது புதிய தகவல் அல்ல, அது
+    சிக்கிக்கொள்ளும் noise-ஐ இரட்டிப்பாக எண்ணுகிறது.
+  </p>
+
+  <p><strong>என்னை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>   k   accuracy (hard, p=0.55)   accuracy (control, p=1.00)
+   1            0.546                    1.000
+   2            0.539                    1.000
+   3            0.666                    1.000
+   4            0.764                    1.000
+   5            0.829                    1.000
+   6            <span class="ok">0.871</span>                    1.000
+   8            0.802                    1.000
+  12            0.752                    1.000
+  16            <span class="hl">0.734</span>                    1.000</code></pre>
+
+  <p>
+    Hard task-ல், ஆறாவது வரை அதிக steps உண்மையான accuracy-ஐ வாங்கித் தருகின்றன;
+    பிறகு நின்று, செலவாகத் தொடங்குகின்றன. Control task-ல் ஒரே read-ஏ ஏற்கனவே
+    சரியானது, எனவே கூடுதல் steps சரியாக ஒன்றுமே வாங்குவதில்லை. ஒரே code, ஒரே
+    parameter வித்தியாசம். அந்த ஜோடிதான் அடுத்த பகுதியை தற்செயல் அல்ல, நேர்மையான
+    ஒன்றாக ஆக்குகிறது.
+  </p>
+
+  <h2>மையப் பகுதி: length-க்கு எந்த reward-ம் இல்லாமலேயே length உயர்கிறது</h2>
+
+  <p>
+    இப்போது train செய்யுங்கள். Reward என்பது
+    <code>0.2 × format + 1.0 × correct</code>. GRPO, β = 0.1, 150 iterations,
+    எட்டு prompts × எட்டு பேர் கொண்ட ஒரு குழு. ஒவ்வொரு வரியும் 300 held-out
+    problems — எனவே இந்த curve ஒரு noisy batch அல்ல, signal.
+  </p>
+
+<pre><code>  HARD TASK (p=0.55, extra steps genuinely help)
+   iter   mean length   accuracy
+      0          <span class="hl">0.47</span>      0.137
+     15          8.52      0.717
+     30          8.12      0.767
+     45          5.52      0.777
+     60          6.11      0.800
+     75          3.76      0.800
+     90          4.46      0.783
+    105          6.60      0.833
+    120          4.89      0.833
+    135          3.41      0.780
+    150          <span class="ok">6.15      0.860</span></code></pre>
+
+  <p>
+    Length அரை step-லிருந்து ஆறாக, accuracy 0.137-லிருந்து 0.860-ஆக ஏறுகிறது;
+    reward function ஒரு முறை கூட length-ஐப் பற்றிப் பேசவில்லை. இப்போது
+    control — ஒரே ஒரு read ஏற்கனவே சரியானது என்பதைத் தவிர எல்லா வகையிலும்
+    ஒரே மாதிரி:
+  </p>
+
+<pre><code>  CONTROL TASK (p=1.00, one read is already enough)
+   iter   mean length   accuracy
+      0          0.68      0.297
+     15          2.06      0.987
+     30          2.63      1.000
+     45          2.18      1.000
+     60          2.34      1.000
+     75          2.31      1.000
+     90          2.15      1.000
+    105          2.12      1.000
+    120          2.11      1.000
+    135          2.19      1.000
+    150          <span class="ok">2.05      1.000</span>
+
+  hard task    length 0.47 -> 6.15   accuracy 0.137 -> 0.860
+  control task length 0.68 -> 2.05   accuracy 0.297 -> 1.000</code></pre>
+
+  <div class="note">
+    <strong>ஒரே reward, ஒரே optimiser, ஒரே network, ஒரே seed.</strong> Control,
+    விடையே சொல்ல வேண்டிய அந்த ஒரு read வரை ஏறி நின்றுவிடுகிறது; ஏனெனில் அதற்கு
+    மேல் length-ஆல் correctness-ல் எந்த மாற்றமும் இல்லை, அதன் மேல் gradient-ம்
+    இல்லை. Length எங்கே correctness-ஐ வாங்கித் தருகிறதோ அங்கே மட்டும்
+    வெளிப்படுகிறது, வேறெங்கும் இல்லை. அதுதான் அந்த இயந்திரம்; அதுவே இந்தக்
+    கூற்றின் நேர்மையான எல்லையும் கூட: optimiser output-ஐ ஏன் நீட்ட
+    <em>விரும்பும்</em> என்பதை என் script காட்டுகிறது — ஒரு transformer-ன்
+    chain-of-thought இவ்வளவு நேர்த்தியான ஒன்றைச் செய்கிறது என்பதை அல்ல.
+  </div>
+
+  <p class="thanglish">
+    Control task-la one read podhum, adhanaala length 2-la nikkardhu. Hard
+    task-la mattum dhaan neelam valarudhu. Ondre reward, ondre code — task
+    dhaan vithyasam.
+  </p>
+
+  <h2>Reward design — நீங்கள் உண்மையில் தவறு செய்யப் போகும் இடம் இதுதான்</h2>
+
+  <p>
+    மூன்று reward functions, மற்ற எல்லாம் ஒரே மாதிரி. R1-லிருந்து நான் என்ன
+    கற்றேன் என்று யாராவது கேட்டால், whiteboard-ல் நான் எழுதப்போகும் பகுதி இது.
+  </p>
+
+<pre><code>  reward function                  accuracy   mean length   format
+  correct + format                   <span class="ok">0.850</span>        5.12       1.00
+  format ONLY                        <span class="hl">0.360</span>        1.12       1.00
+  correct + format + 0.05*length     0.743       <span class="hl">16.00</span>       1.00</code></pre>
+
+  <p>
+    <strong>Format மட்டும்</strong> வைத்தால், கட்டமைப்பில் குற்றமற்ற output
+    கிடைக்கும் — accuracy-யோ பத்து பக்க நாணயத்தினுடையது. அது விடையைப்
+    பார்க்கவே கற்றுக்கொள்ளவில்லை, ஏனெனில் அதற்காக யாரும் பணம் கொடுக்கவில்லை.
+    ஒவ்வொரு field-ம் validate ஆகிறது. எதுவும் உண்மையல்ல.
+  </p>
+
+  <p>
+    <strong>Reward-ல் length</strong> சேர்த்தால் padding கிடைக்கும். அது
+    context window வரை ஓடுகிறது, accuracy <em>விழுகிறது</em> — 0.850-லிருந்து
+    0.743-க்கு — ஏனெனில் கூடுதல் steps என்பவை மறுவாசிப்புகள், மறுவாசிப்புகள்
+    noise-ஐப் பெருக்குகின்றன. நீங்கள் tokens-ஐ வாங்கிவிட்டு அதை சிந்தனை என்று
+    அழைத்தீர்கள். R1-ன் reward-ல் length term இல்லாததற்குக் காரணம் இதுதான்:
+    length என்பது நீங்கள் விரும்பும் ஓர் அறிகுறி, நீங்கள் வைக்கும் இலக்கு அல்ல.
+  </p>
+
+  <h2>Tags, parser, மற்றும் நீங்கள் ship செய்யப்போகும் அந்த bug</h2>
+
+  <p>
+    R1-ன் template: சிந்தனை <code>&lt;think&gt;</code> tags-க்கு இடையே,
+    இறுதி விடை <code>&lt;answer&gt;</code> tags-க்கு இடையே — அப்போது ஒரு விதி
+    ஊகிக்காமலேயே விடையைக் கண்டுபிடிக்க முடியும். என்னுடையது அதையே நகலெடுக்கிறது:
+  </p>
+
+<pre><code>&lt;think&gt;
+step 1: read -&gt; 9
+step 2: read -&gt; 8
+step 3: read -&gt; 9
+step 4: read -&gt; 5
+step 5: read -&gt; 9
+step 6: read -&gt; 9
+&lt;/think&gt;
+&lt;answer&gt;9&lt;/answer&gt;
+
+   truth                       : 9
+   parse_answer (tag-anchored) : <span class="ok">9</span>
+   parse_answer_broken (first  : <span class="hl">1</span>   &lt;- அது step index
+     number anywhere)</code></pre>
+
+  <p>
+    இப்போது எல்லாரும் ஒரு முறை உடைப்பது போல parser-ஐ உடையுங்கள் — answer
+    tags-க்கு உள்ளே உள்ள எண்ணுக்குப் பதிலாக, output-ல் எங்கு வேண்டுமானாலும்
+    வரும் முதல் எண்ணை எடுத்துக்கொள்ளுங்கள். ஒரே model, ஒரே rollouts, இரண்டு
+    graders:
+  </p>
+
+<pre><code>   scored with the correct parser : <span class="ok">0.850</span>
+   scored with the broken parser  : <span class="hl">0.090</span>
+
+   trained AGAINST the broken parser -> real accuracy <span class="hl">0.330</span>, length 1.17</code></pre>
+
+  <p>
+    இரண்டாவது எண், விடையைப் பற்றிய parser-ன் கருத்து அல்ல — வேலைக் காட்டலைப்
+    பற்றியது. அதை வைத்து grade செய்தால், நீங்கள் மோசமான ஒரு model-ஐ அளக்கவில்லை,
+    வேறொரு string-ஐ அளந்திருக்கிறீர்கள். அதற்கு எதிராக train செய்தால் reward
+    signal வெறும் noise; எனவே policy சீக்கிரமே நிறுத்தக் கற்றுக்கொண்டு, பிறகு
+    எதையுமே கற்பதில்லை. ஒரு regex என்பது உங்கள் training objective-ன் ஒரு
+    component. அப்படியே நடத்துங்கள்.
+  </p>
+
+  <p class="thanglish">
+    Parser thappaana, reward-um thappu — model illa, string dhaan maarudhu.
+    Regex-um training objective-oda oru pagudhi; adha oru component maadhiri
+    test pannunga.
+  </p>
+
+  <h2>அந்தச் சங்கிலி, sweep செய்யப்பட்டது</h2>
+
+  <p>
+    ஒரே reward, ஒரே task, β-வின் நான்கு மதிப்புகள். KL என்பது ஒரு
+    trajectory-க்கு, nats-ல், ஓட்டம் தொடங்கிய உறைந்த reference-க்கு எதிராக
+    அளக்கப்பட்டது.
+  </p>
+
+<pre><code>  beta     accuracy   mean length   KL from reference (nats/traj)
+  0.00      0.743       16.00          <span class="hl">16.498</span>
+  0.02      0.745       15.96          16.495
+  0.10      <span class="ok">0.850</span>        5.12           5.113
+  0.50      0.588        2.81           1.659</code></pre>
+
+  <p>
+    சங்கிலியே இல்லாமல் அது context window வரை ஓடி அங்கேயே தங்கிவிடுகிறது.
+    அப்போதும் நல்ல score வாங்குகிறது — விடை சரியான tags-ல் இருக்கிறது, பல
+    நேரம் சரியாகவும் இருக்கிறது — output இப்படி இருக்கிறது:
+  </p>
+
+<pre><code>&lt;think&gt;
+step 1: read -&gt; 8
+step 2: read -&gt; 6
+step 3: read -&gt; 0
+step 4: read -&gt; 0
+step 5: read -&gt; 8
+step 6: read -&gt; 4
+step 7: read -&gt; 8
+step 8: read -&gt; 6
+step 9: read -&gt; 6
+step 10: read -&gt; 6
+step 11: read -&gt; 6
+step 12: read -&gt; 8
+step 13: read -&gt; 4
+step 14: read -&gt; 6
+step 15: read -&gt; 8
+step 16: read -&gt; 8
+&lt;/think&gt;
+&lt;answer&gt;<span class="hl">6</span>&lt;/answer&gt;</code></pre>
+
+  <p>
+    பதினாறு steps, அவற்றில் ஆறு மட்டுமே தகவல் சுமக்கின்றன; இறுதியில் தவறான
+    விடை. β = 0.5 என்பது எதிர் திசை தோல்வி: அது reference-ஐ விட்டு
+    வெளியேறவே இல்லை, யோசிக்கவும் கற்றுக்கொள்வதில்லை. β என்பது tune
+    செய்யப்படுவது, வருவிக்கப்படுவது அல்ல; dashboard-ல் நீங்கள் வைக்க வேண்டிய
+    எண் KL, β அல்ல — சங்கிலியை அவிழ்த்து விட்டால் optimiser என்ன செய்யும்
+    என்பதைப் பற்றியே முழுவதுமாகப் பேசும்
+    <a href="../rlhf/">RLHF page</a>-ஐப் பாருங்கள்.
+  </p>
+
+  <h2>Distillation, மற்றும் R1-க்கு ஏன் cold start தேவைப்பட்டது</h2>
+
+  <p>
+    Paper-ன் மற்றொரு கண்டுபிடிப்பு: R1-ன் outputs-ஐ சிறிய dense models-க்குள்
+    distil செய்வது, அந்தச் சிறிய models மேல் நேரடியாக பெரிய அளவில் RL
+    ஓட்டுவதை விட நன்றாக வேலை செய்தது. அதன் என் பதிப்பு — gradient steps
+    அடிப்படையில் அல்ல, environment-ன் rollouts அடிப்படையில் ஒப்பிட்டது,
+    ஏனெனில் விலை உயர்ந்த பகுதி rollouts தான்:
+  </p>
+
+<pre><code>  teacher  (hidden=16, 150 GRPO iters)   acc 0.850   length   5.12
+  kept 1051/1200 teacher rollouts -> 6446 labelled decisions
+
+  small network, hidden=4:
+    distilled from teacher, 0 new rollouts   acc <span class="ok">0.850</span>   length   5.02
+    GRPO directly, 18 iters (1152 rollouts)  acc <span class="hl">0.485</span>   length   2.02
+    GRPO directly, 150 iters (9600 rollouts) acc 0.823   length   5.47</code></pre>
+
+  <p>
+    வெற்றி பெற்ற ஒவ்வொரு teacher trajectory-ம், அதற்குள் உள்ள ஒவ்வொரு
+    முடிவுக்கும் ஒரு label-ஐ student-க்குக் கொடுக்கிறது. ஒரு reward, முழு
+    trajectory-க்கும் சேர்த்து ஒரே ஒரு scalar-ஐத்தான் கொடுக்கிறது. முழு
+    வித்தியாசமும் அதுதான். RL student-க்கு எட்டு மடங்கு rollouts கொடுத்தால் அது
+    பிடித்துவிடுகிறது — paper சுட்டிக்காட்டும் பேரம் சரியாக அதுதான்.
+    <em>Gradient steps</em> அடிப்படையில் ஒப்பிட்டால், என் இரண்டு students-ம்
+    noise-க்குள் ஒரே மாதிரி; எனவே இதை அவர்களுடைய முடிவுக்கான ஆதாரமாக அல்ல,
+    ஒரு ஒப்புமையாக மட்டுமே எடுத்துக்கொள்ளுங்கள்.
+  </p>
+
+  <div class="note">
+    <strong>இதனால்தான் அவர்கள் ship செய்தது R1-Zero அல்ல.</strong> R1-Zero-ன்
+    விடைகள் சரியாக இருந்தன, ஆனால் படிப்பதற்குக் கடினமாக இருந்தன —
+    readability மோசம், ஒரே chain of thought-க்குள் மொழிகள் கலந்திருந்தன. எனவே
+    R1, RL-க்கு முன் ஒரு சிறிய cold-start supervised நிலையைச் சேர்க்கிறது —
+    output எப்படிப் படிக்கிறது என்பதை மட்டும் சரி செய்ய. அந்த வெளிப்பாடு
+    உண்மையானது; அது பழக்கப்படுத்தப்பட்ட நிலையில் வருவதில்லை, அவ்வளவுதான்.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    सीमाएँ पहले, बिना लाग-लपेट के — ठीक वैसे ही जैसे
+    <a href="../chain-of-thought/">chain-of-thought page</a> और
+    <a href="../rag/">RAG page</a> अपने stand-in के बारे में कहते हैं।
+    <strong>मेरी script में कोई language model है ही नहीं।</strong> चार input
+    वाला एक छोटा MLP यह नहीं दिखा सकता कि 671 अरब parameter वाले model में
+    reasoning अपने आप उभरती है, और वह जो कुछ भी print करता है वह इस बात का
+    सबूत नहीं है कि R1 किसी maths olympiad सवाल पर क्या करता है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (reward, format, parser,
+    rollout, policy, GRPO, KL, cold start, distillation, chain-of-thought…)
+    मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द
+    दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    लेकिन ईमानदारी से वह एक चीज़ <em>दिखा</em> सकती है — वह तंत्र जिस पर यह
+    नतीजा टिका है: <strong>जब सिर्फ़ correctness देखने वाले reward को ऐसे task
+    के साथ जोड़ा जाए जहाँ ज़्यादा steps सचमुच मदद करते हैं, तो policy gradient
+    बिना किसी के कहे लंबे हल खोज निकालता है।</strong> यह दावा एक laptop पर चल
+    जाता है। नीचे का हर आँकड़ा उसी analogy से आया है, और हर बार मैं यह कह भी
+    देता हूँ।
+  </p>
+
+  <p>
+    महीनों तक यह paper मेरे लिए "एक और RLHF variant" था। है नहीं। इसमें
+    दिलचस्प model <strong>R1-Zero</strong> है, और उसे दिलचस्प बनाती है एक
+    <em>कटौती</em>।
+  </p>
+
+  <h2>आपने सही जवाब का पैसा दिया और काम दिखाना मुफ़्त में मिल गया</h2>
+
+  <p>यह function आप ship कर चुके हैं:</p>
+
+<pre><code>def solve(question):
+    return model(question)      # एक forward pass. न locals, न loop.</code></pre>
+
+  <p>
+    और इसका इलाज आपको <a href="../chain-of-thought/">chain-of-thought</a> से
+    पता है: उसे बीच के मान रखने के लिए जगह दीजिए, क्योंकि वह जो भी token
+    निकालता है वह उसके अगले input का हिस्सा बन जाता है। निकाले गए tokens
+    <em>ही</em> serial compute हैं। तो आप ऐसे exemplars लिखते हैं जो काम करके
+    दिखाते हैं, और फिर उसका continuation भी अपना काम दिखाने लगता है।
+  </p>
+
+  <p>R1-Zero वही है जो तब होता है जब आप वे exemplars लिखने से मना कर दें:</p>
+
+<pre><code>def solve(question):
+    scratch = []
+    while keep_going(scratch):          # यह loop किसी ने नहीं लिखा
+        scratch.append(step(question, scratch))
+    return final(scratch)
+
+reward = 1.0 if answer_is_right else 0.0     # पैसा सिर्फ़ इसी का दिया</code></pre>
+
+  <p>
+    एक base model लीजिए। supervised fine-tuning पूरी तरह छोड़ दीजिए। उसके
+    output को एक नियम से score कीजिए — जवाब सही है क्या, ज़रूरी tags में है
+    क्या — और reinforcement learning चलाइए। लंबी reasoning शृंखलाएँ अपने आप
+    आ जाती हैं, यहाँ तक कि model रुककर अपना ही काम दोबारा जाँचने लगता है।
+    Paper का कहना है कि reasoning सिखाई नहीं गई, उसे
+    <em>प्रोत्साहित</em> किया गया।
+  </p>
+
+  <p>
+    वह ठेकेदार सोचिए जिसे आप हर सही जवाब का पैसा देते हैं और समय की कोई सीमा
+    नहीं रखते। वह अपना काम दिखाने लगता है — इसलिए नहीं कि आपने काम दिखाने को
+    कहा, बल्कि इसलिए कि ख़ुद को जाँचना उस चीज़ तक पहुँचने का सबसे सस्ता रास्ता
+    है जिसका आप पैसा दे रहे हैं। Optimiser ने भी वही सौदा ढूँढ़ लिया।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer वाली analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>R1-Zero</strong></td><td>बिना किसी SFT के, सीधे base model पर RL</td><td>हाथ से लिखे unit tests के बिना, सिर्फ़ एक integration test के भरोसे ship करना</td></tr>
+      <tr><td><strong>Rule-based reward</strong></td><td>ऐसा grader जिसे आप पढ़ सकें: जवाब सही, tags मौजूद</td><td>सीखा हुआ classifier नहीं — <code>assert</code></td></tr>
+      <tr><td><strong>GRPO</strong></td><td>एक ही prompt के जवाबों के समूह को score करके उन्हें आपस में तुलना करना</td><td>score का अनुमान लगाने के लिए दूसरा model रखने की जगह, batch के भीतर ही ranking</td></tr>
+      <tr><td><strong>Cold start</strong></td><td>RL से पहले एक छोटा SFT pass, जो असली R1 में जोड़ा गया</td><td>optimiser को खुला छोड़ने से पहले लागू किया गया style guide</td></tr>
+      <tr><td><strong>Distillation</strong></td><td>बड़े model के अच्छे outputs पर छोटे models को train करना</td><td>काम की एक session record करके दोबारा चलाना, बजाय उसे फिर से खोजने के</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>उसने InstructGPT pipeline से क्या हटाया</h2>
+
+  <p>
+    <a href="../instructgpt/">InstructGPT</a> तीन चरण हैं: इंसानी
+    demonstrations पर supervised fine-tuning, फिर इंसानी तुलनाओं से सीखा गया
+    एक reward model, फिर उस reward model के ख़िलाफ़ PPO। इन तीन में से दो में
+    लोग चाहिए, और दूसरे चरण में वही failure mode है जिस पर
+    <a href="../rlhf/">RLHF page</a> पूरी तरह टिका है — optimiser का जाकर
+    परखने वाले के सीखे हुए model की कमज़ोर जगहें ढूँढ़ना।
+  </p>
+
+  <p>R1-Zero दोनों हटा देता है।</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>InstructGPT</th><th>R1-Zero</th></tr></thead>
+    <tbody>
+      <tr><td>Demonstrations</td><td>इंसान आदर्श जवाब लिखते हैं, उन पर SFT</td><td><strong>छोड़ दिया गया</strong></td></tr>
+      <tr><td>Reward</td><td>इंसानी तुलनाओं से सीखा गया reward model</td><td><strong>एक नियम।</strong> जवाब सही है क्या, tags हैं क्या</td></tr>
+      <tr><td>Optimisation</td><td>SFT model पर KL penalty के साथ PPO</td><td>reference पर KL penalty के साथ GRPO</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    इन्हें हटा पाना सिर्फ़ इसलिए मुमकिन है कि maths और code के जवाब
+    <em>जाँचे जा सकते हैं</em>। एक सही जवाब होता है और एक script बता सकती है।
+    यही इस तरीक़े की सीमा है, और interview में इसे खुलकर कहना अच्छा रहता है:
+    rule-based rewards वहीं काम करते हैं जहाँ एक unit test काम करता है।
+  </p>
+
+  <h2>वह इकलौता सूत्र</h2>
+
+  <p>
+    GRPO दो वाक्यों में, क्योंकि <a href="../grpo/">GRPO page</a> उसे ठीक से
+    व्युत्पन्न करता है और मैं यहाँ दोबारा नहीं कर रहा। एक ही prompt के लिए G
+    जवाबों का एक <em>समूह</em> sample कीजिए, सबको score कीजिए, और हर जवाब के
+    score में से समूह का mean घटाकर, समूह के standard deviation से भाग देकर
+    उसे उसका advantage मान लीजिए — तब समूह ही baseline है और train करने के
+    लिए कोई value network नहीं चाहिए। इसके बाद यह साधारण policy gradient है,
+    एक जमे हुए reference तक वापस बाँधने वाली KL डोरी के साथ।
+  </p>
+
+  <div class="formula">Â<sub>i</sub> = (r<sub>i</sub> − mean(r<sub>1..G</sub>)) / std(r<sub>1..G</sub>) &nbsp;&nbsp;·&nbsp;&nbsp; J = E[ Â<sub>i</sub> · log π<sub>θ</sub>(o<sub>i</sub>) ] − β · KL(π<sub>θ</sub> ‖ π<sub>ref</sub>)</div>
+
+  <p>इसे pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>o<sub>1..G</sub></code></td><td>G जवाब, एक prompt</td><td>वह समूह। मेरी script में G=8. Sample किए गए हैं, इसलिए अलग-अलग हैं</td></tr>
+      <tr><td><code>r<sub>i</sub></code></td><td>scalar</td><td><strong>वह नियम।</strong> सही जवाब + सही tags. कहीं कोई सीखा हुआ model नहीं</td></tr>
+      <tr><td><code>Â<sub>i</sub></code></td><td>scalar</td><td>"अपने भाई-बहनों से बेहतर या बदतर?" समूह के भीतर एक z-score</td></tr>
+      <tr><td><code>log π<sub>θ</sub>(o<sub>i</sub>)</code></td><td>steps पर योग</td><td>औसत से अच्छे जवाबों की संभावना बढ़ाओ, औसत से ख़राब की घटाओ</td></tr>
+      <tr><td><code>β · KL</code></td><td>nats</td><td><strong>वह डोरी।</strong> जमी हुई reference policy से दूरी</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    ध्यान दीजिए कि reward में क्या नहीं है। length के लिए कोई term नहीं,
+    "reasoning quality" के लिए नहीं, style के लिए नहीं। अगर लंबाई आनी है, तो
+    उसे correctness वाले term की वजह से ही आना होगा।
+  </p>
+
+  <h2>पहले यह साबित कीजिए कि ज़्यादा देर सोचना सचमुच मदद करता है</h2>
+
+  <p>
+    अगर नहीं करता, तो इस पेज की बाक़ी हर बात बेमानी है — इसलिए मेरा toy task
+    इस तरह बनाया गया है कि वहाँ यह सचमुच मदद करे। हर problem में एक सही अंक
+    है और उसके छह noisy readings, हर reading 55% बार सही। Policy हर step पर तय
+    करती है कि एक बार और पढ़ना है या रुककर अब तक पढ़े गए में से बहुमत वाला जवाब
+    दे देना है। असली readings सिर्फ़ छह हैं; सातवें step से आगे वह पहले से मौजूद
+    किसी reading को दोबारा पढ़ता है, जो नई जानकारी नहीं है और जिस भी noise पर
+    पड़े उसे दोगुना गिन लेता है।
+  </p>
+
+  <p><strong>मेरी बात मत मानिए। यह रहा असली output:</strong></p>
+
+<pre><code>   k   accuracy (hard, p=0.55)   accuracy (control, p=1.00)
+   1            0.546                    1.000
+   2            0.539                    1.000
+   3            0.666                    1.000
+   4            0.764                    1.000
+   5            0.829                    1.000
+   6            <span class="ok">0.871</span>                    1.000
+   8            0.802                    1.000
+  12            0.752                    1.000
+  16            <span class="hl">0.734</span>                    1.000</code></pre>
+
+  <p>
+    Hard task पर छठे step तक ज़्यादा steps सचमुच accuracy ख़रीदते हैं, फिर रुक
+    जाते हैं और नुक़सान करने लगते हैं। Control task पर एक read ही पहले से सही
+    है, इसलिए अतिरिक्त steps बिल्कुल कुछ नहीं ख़रीदते। वही code, बस एक
+    parameter का फ़र्क़। यही जोड़ी अगले हिस्से को संयोग नहीं, ईमानदार बनाती है।
+  </p>
+
+  <h2>मुख्य बात: length को कोई reward नहीं, फिर भी length बढ़ती है</h2>
+
+  <p>
+    अब इसे train कीजिए। Reward है <code>0.2 × format + 1.0 × correct</code>.
+    GRPO, β = 0.1, 150 iterations, आठ prompts × आठ का समूह। हर पंक्ति 300
+    held-out problems पर है, ताकि यह curve एक शोर भरे batch की जगह signal हो।
+  </p>
+
+<pre><code>  HARD TASK (p=0.55, extra steps genuinely help)
+   iter   mean length   accuracy
+      0          <span class="hl">0.47</span>      0.137
+     15          8.52      0.717
+     30          8.12      0.767
+     45          5.52      0.777
+     60          6.11      0.800
+     75          3.76      0.800
+     90          4.46      0.783
+    105          6.60      0.833
+    120          4.89      0.833
+    135          3.41      0.780
+    150          <span class="ok">6.15      0.860</span></code></pre>
+
+  <p>
+    Length आधे step से छह तक जाती है, accuracy 0.137 से 0.860 तक, और reward
+    function ने एक बार भी length का ज़िक्र नहीं किया। अब control — हर बात में
+    वही, सिवाय इसके कि यहाँ एक read ही पहले से सही है:
+  </p>
+
+<pre><code>  CONTROL TASK (p=1.00, one read is already enough)
+   iter   mean length   accuracy
+      0          0.68      0.297
+     15          2.06      0.987
+     30          2.63      1.000
+     45          2.18      1.000
+     60          2.34      1.000
+     75          2.31      1.000
+     90          2.15      1.000
+    105          2.12      1.000
+    120          2.11      1.000
+    135          2.19      1.000
+    150          <span class="ok">2.05      1.000</span>
+
+  hard task    length 0.47 -> 6.15   accuracy 0.137 -> 0.860
+  control task length 0.68 -> 2.05   accuracy 0.297 -> 1.000</code></pre>
+
+  <div class="note">
+    <strong>वही reward, वही optimiser, वही network, वही seed.</strong> Control
+    उस एक read तक चढ़ता है जो जवाब देने के लिए ज़रूरी है और फिर रुक जाता है,
+    क्योंकि उसके आगे length से correctness में कोई फ़र्क़ नहीं पड़ता और उस पर
+    कोई gradient ही नहीं है। लंबाई ठीक वहीं उभरती है जहाँ लंबाई correctness
+    ख़रीदती है, और कहीं नहीं। यही वह तंत्र है, और यही इस दावे की ईमानदार सीमा
+    भी: मेरी script यह दिखाती है कि optimiser output को लंबा क्यों
+    <em>करना चाहेगा</em> — यह नहीं कि किसी transformer की chain-of-thought
+    इतनी साफ़-सुथरी कोई चीज़ कर रही है।
+  </div>
+
+  <h2>Reward design, जहाँ आप असल में ग़लती करेंगे</h2>
+
+  <p>
+    तीन reward functions, बाक़ी सब कुछ एक जैसा। अगर कोई पूछे कि R1 से मैंने
+    क्या सीखा, तो whiteboard पर मैं यही हिस्सा लिखूँगा।
+  </p>
+
+<pre><code>  reward function                  accuracy   mean length   format
+  correct + format                   <span class="ok">0.850</span>        5.12       1.00
+  format ONLY                        <span class="hl">0.360</span>        1.12       1.00
+  correct + format + 0.05*length     0.743       <span class="hl">16.00</span>       1.00</code></pre>
+
+  <p>
+    <strong>सिर्फ़ format</strong> से आपको बिल्कुल सही ढाँचे वाला output
+    मिलता है, accuracy दस-पहलू वाले सिक्के जितनी। उसने जवाब देखना सीखा ही
+    नहीं, क्योंकि उसका पैसा कभी किसी ने नहीं दिया। हर field validate होता है।
+    कुछ भी सच नहीं है।
+  </p>
+
+  <p>
+    <strong>Reward में length</strong> डालिए तो padding मिलेगी। वह context
+    window तक चला जाता है और accuracy <em>गिरती</em> है — 0.850 से 0.743 —
+    क्योंकि अतिरिक्त steps दोबारा पढ़ना हैं, और दोबारा पढ़ना noise को बढ़ाता
+    है। आपने tokens ख़रीदे और उसे सोच कह दिया। इसीलिए R1 के reward में कोई
+    length term नहीं है: length एक लक्षण है जो आप चाहते हैं, वह लक्ष्य नहीं
+    जो आप तय करते हैं।
+  </p>
+
+  <h2>Tags, parser, और वह bug जो आप ship करेंगे</h2>
+
+  <p>
+    R1 का template है — सोच <code>&lt;think&gt;</code> tags के बीच और आख़िरी
+    जवाब <code>&lt;answer&gt;</code> tags के बीच, ताकि एक नियम बिना अंदाज़ा
+    लगाए जवाब ढूँढ़ सके। मेरा वही नक़ल करता है:
+  </p>
+
+<pre><code>&lt;think&gt;
+step 1: read -&gt; 9
+step 2: read -&gt; 8
+step 3: read -&gt; 9
+step 4: read -&gt; 5
+step 5: read -&gt; 9
+step 6: read -&gt; 9
+&lt;/think&gt;
+&lt;answer&gt;9&lt;/answer&gt;
+
+   truth                       : 9
+   parse_answer (tag-anchored) : <span class="ok">9</span>
+   parse_answer_broken (first  : <span class="hl">1</span>   &lt;- यह step index है
+     number anywhere)</code></pre>
+
+  <p>
+    अब parser को उसी तरह तोड़िए जैसे हर कोई एक बार तोड़ता है — answer tags के
+    भीतर वाले के बजाय output में कहीं भी मिलने वाला पहला number ले लीजिए। वही
+    model, वही rollouts, दो graders:
+  </p>
+
+<pre><code>   scored with the correct parser : <span class="ok">0.850</span>
+   scored with the broken parser  : <span class="hl">0.090</span>
+
+   trained AGAINST the broken parser -> real accuracy <span class="hl">0.330</span>, length 1.17</code></pre>
+
+  <p>
+    दूसरा आँकड़ा जवाब के बारे में नहीं, काम दिखाने वाले हिस्से के बारे में
+    parser की राय है। उससे grade कीजिए तो आपने कोई ख़राब model नहीं नापा, आपने
+    एक अलग string नापी है। उसके ख़िलाफ़ train कीजिए तो reward signal शोर है,
+    इसलिए policy जल्दी रुकना सीख लेती है और फिर कुछ भी सीखना बंद कर देती है।
+    एक regex आपके training objective का component है। उसे वैसा ही मानिए।
+  </p>
+
+  <h2>वह डोरी, sweep करके</h2>
+
+  <p>
+    वही reward, वही task, β के चार मान। KL प्रति trajectory है, nats में, और
+    उस जमे हुए reference के सापेक्ष नापा गया है जहाँ से run शुरू हुआ था।
+  </p>
+
+<pre><code>  beta     accuracy   mean length   KL from reference (nats/traj)
+  0.00      0.743       16.00          <span class="hl">16.498</span>
+  0.02      0.745       15.96          16.495
+  0.10      <span class="ok">0.850</span>        5.12           5.113
+  0.50      0.588        2.81           1.659</code></pre>
+
+  <p>
+    बिना डोरी के वह context window तक भागता है और वहीं जमा रहता है। फिर भी
+    score अच्छा आता है — जवाब सही tags में है और अक्सर सही भी होता है — और
+    output ऐसा दिखता है:
+  </p>
+
+<pre><code>&lt;think&gt;
+step 1: read -&gt; 8
+step 2: read -&gt; 6
+step 3: read -&gt; 0
+step 4: read -&gt; 0
+step 5: read -&gt; 8
+step 6: read -&gt; 4
+step 7: read -&gt; 8
+step 8: read -&gt; 6
+step 9: read -&gt; 6
+step 10: read -&gt; 6
+step 11: read -&gt; 6
+step 12: read -&gt; 8
+step 13: read -&gt; 4
+step 14: read -&gt; 6
+step 15: read -&gt; 8
+step 16: read -&gt; 8
+&lt;/think&gt;
+&lt;answer&gt;<span class="hl">6</span>&lt;/answer&gt;</code></pre>
+
+  <p>
+    सोलह steps, जिनमें से छह ही जानकारी रखते हैं, और आख़िर में जवाब भी ग़लत।
+    β = 0.5 उलटी नाकामी है: वह reference से हटता ही नहीं और सोचना कभी सीखता
+    ही नहीं। β tune किया जाता है, व्युत्पन्न नहीं, और dashboard पर रखने वाला
+    आँकड़ा KL है, β नहीं — देखिए <a href="../rlhf/">RLHF page</a>, जो पूरी
+    तरह इसी पर है कि डोरी हटा देने पर optimiser क्या करता है।
+  </p>
+
+  <h2>Distillation, और R1 को cold start क्यों चाहिए था</h2>
+
+  <p>
+    Paper की दूसरी खोज यह है कि R1 के outputs को छोटे dense models में distil
+    करना, उन्हीं छोटे models पर सीधे बड़े पैमाने की RL चलाने से बेहतर रहा।
+    इसका मेरा संस्करण, gradient steps के बजाय environment के rollouts पर
+    मिलाया गया, क्योंकि महँगा हिस्सा rollouts ही हैं:
+  </p>
+
+<pre><code>  teacher  (hidden=16, 150 GRPO iters)   acc 0.850   length   5.12
+  kept 1051/1200 teacher rollouts -> 6446 labelled decisions
+
+  small network, hidden=4:
+    distilled from teacher, 0 new rollouts   acc <span class="ok">0.850</span>   length   5.02
+    GRPO directly, 18 iters (1152 rollouts)  acc <span class="hl">0.485</span>   length   2.02
+    GRPO directly, 150 iters (9600 rollouts) acc 0.823   length   5.47</code></pre>
+
+  <p>
+    teacher की हर सफल trajectory student को उसके भीतर के हर फ़ैसले का एक label
+    दे देती है। एक reward पूरी trajectory के लिए बस एक scalar देता है। पूरा
+    फ़र्क़ यही है। RL वाले student को आठ गुना rollouts दीजिए और वह बराबरी कर
+    लेता है — और paper ठीक इसी सौदे की ओर इशारा कर रहा है।
+    <em>Gradient steps</em> पर मिलाने पर मेरे दोनों students शोर के भीतर एक
+    जैसे हैं, इसलिए इसे उनके नतीजे का सबूत नहीं, उसकी analogy मानिए।
+  </p>
+
+  <div class="note">
+    <strong>और इसीलिए R1-Zero वह model नहीं है जो उन्होंने ship किया।</strong>
+    R1-Zero के जवाब सही थे मगर पढ़ने में मुश्किल — readability ख़राब, और एक ही
+    chain of thought के भीतर भाषाएँ मिली हुई। इसलिए असली R1, RL से पहले एक
+    छोटा cold-start supervised चरण जोड़ता है, सिर्फ़ यह ठीक करने के लिए कि
+    output पढ़ने में कैसा लगता है। उभरना असली है; बस वह सधा-सधाया आकर नहीं
+    मिलता।
+  </div>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the environment, the majority vote and the parsers. A tiny PyTorch
+  policy — four inputs, sixteen hidden units, three actions — CPU only, for the
+  GRPO loop, because hand-writing backprop through 150 iterations would bury the
+  one thing worth looking at. Every function under 25 lines.
+</p>
+<p>
+  <a href="deepseek_r1_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 500 lines plus 6 runnable demos. Then:
+</p>
+<pre><code>python3 deepseek_r1_from_scratch.py</code></pre>
+
+<pre><code>N_DIGITS = 10        # answers are digits 0-9
+N_READINGS = 6       # how much genuine evidence a problem contains
+K_MAX = 16           # the context window: a hard stop, not a penalty
+P_CORRECT = 0.55     # per-reading accuracy on the hard task
+BETA = 0.1           # default KL leash (swept in demo 5)
+
+CONTINUE, STOP_TAGGED, STOP_RAW = 0, 1, 2
+
+
+# STAGE 0 -- the environment. A problem is a truth plus six noisy readings.
+# Reading k for k &lt; 6 is fresh evidence. Reading 7, 8, 9... is a re-read of
+# something already seen: no new information, and it double-counts whatever
+# noise it happens to land on.
+def make_problem(rng, p_correct=P_CORRECT):
+    truth = int(rng.integers(N_DIGITS))
+    readings = []
+    for _ in range(N_READINGS):
+        if rng.random() &lt; p_correct:
+            readings.append(truth)
+        else:
+            step = 1 + int(rng.integers(N_DIGITS - 1))
+            readings.append((truth + step) % N_DIGITS)
+    return truth, readings
+
+
+def next_reading(rng, readings, seen):
+    """Fresh evidence while there is any left, otherwise a re-read."""
+    if len(seen) &lt; N_READINGS:
+        return readings[len(seen)]
+    return seen[int(rng.integers(len(seen)))]
+
+
+def majority(seen):
+    """The answer readout. NOT learned -- the policy only decides when to stop."""
+    if not seen:
+        return -1
+    return int(np.bincount(seen, minlength=N_DIGITS).argmax())
+
+
+# STAGE 1 -- what the policy sees. Four numbers: how much context is spent, how
+# decisive the current vote is, how big the leading count is, and a bias term.
+# Deliberately tiny, so nothing interesting can hide inside the network.
+def features(seen):
+    k = len(seen)
+    if k == 0:
+        return [0.0, 0.0, 0.0, 1.0]
+    counts = np.sort(np.bincount(seen, minlength=N_DIGITS))[::-1]
+    return [k / K_MAX, (counts[0] - counts[1]) / k, counts[0] / k, 1.0]
+
+
+# STAGE 2 -- the output format. R1 asks for thinking between &lt;think&gt; tags and
+# the final answer between &lt;answer&gt; tags, so that a rule -- not a learned
+# reward model -- can grade it. STOP_RAW emits the same content with no tags,
+# which is the degree of freedom the format reward exists to remove.
+def render(seen, answer, tagged):
+    steps = "\n".join(f"step {i + 1}: read -&gt; {v}" for i, v in enumerate(seen))
+    if tagged:
+        return f"&lt;think&gt;\n{steps}\n&lt;/think&gt;\n&lt;answer&gt;{answer}&lt;/answer&gt;"
+    return f"{steps}\nthe answer is {answer}"
+
+
+ANSWER_RE = re.compile(r"&lt;answer&gt;\s*(\d+)\s*&lt;/answer&gt;")
+FORMAT_RE = re.compile(r"&lt;think&gt;.*&lt;/think&gt;\s*&lt;answer&gt;.*&lt;/answer&gt;", re.S)
+
+
+def parse_answer(text):
+    """Pull the final answer out of the tags. Returns None if it isn't there."""
+    m = ANSWER_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
+def parse_answer_broken(text):
+    """The bug everyone ships once: first number ANYWHERE. Grabs the working."""
+    m = re.search(r"(\d+)", text)
+    return int(m.group(1)) if m else None
+
+
+# STAGE 3 -- the reward functions. R1-Zero's is rule-based: accuracy plus
+# format, no learned reward model, because a learned one invites the optimiser
+# to go hunting for its soft spots (see the RLHF page). Note what is NOT here:
+# any term that mentions length.
+def reward_correct_format(text, truth, n_steps, parser=parse_answer):
+    return 0.2 * format_ok(text) + 1.0 * (parser(text) == truth)
+
+
+def reward_format_only(text, truth, n_steps, parser=parse_answer):
+    return 0.2 * format_ok(text)                      # never mentions the answer
+
+
+def reward_with_length(text, truth, n_steps, parser=parse_answer):
+    return reward_correct_format(text, truth, n_steps, parser) + 0.05 * n_steps
+
+
+# STAGE 5 -- GRPO, in one function. Two sentences: sample a group of G answers
+# for each prompt, score them, and use (r - mean of the group) / (std of the
+# group) as the advantage, so no value network is needed -- the group is the
+# baseline. Then the usual policy gradient, plus a KL leash back to the
+# reference policy. Full derivation on the GRPO page; this is the same
+# estimator, in 20 lines.
+def grpo_step(policy, ref, opt, roll, rewards, group, beta):
+    r = torch.tensor(rewards, dtype=torch.float32).view(-1, group)
+    adv = (r - r.mean(1, keepdim=True)) / (r.std(1, keepdim=True) + 1e-6)
+    adv = adv.view(-1)
+
+    x = torch.tensor(roll["feats"], dtype=torch.float32)
+    logp = torch.log_softmax(policy(x), dim=-1)
+    chosen = logp[torch.arange(len(roll["acts"])), torch.tensor(roll["acts"])]
+
+    # sum the log-probs of each trajectory, weight by that trajectory's advantage
+    per_traj = torch.zeros(roll["n"]).index_add_(
+        0, torch.tensor(roll["owner"]), chosen)
+    pg = -(per_traj * adv).mean()
+
+    # the leash: KL(policy || reference) at every state actually visited
+    with torch.no_grad():
+        ref_logp = torch.log_softmax(ref(x), dim=-1)
+    kl = (logp.exp() * (logp - ref_logp)).sum(-1)
+    kl_traj = torch.zeros(roll["n"]).index_add_(
+        0, torch.tensor(roll["owner"]), kl)
+
+    opt.zero_grad()
+    (pg + beta * kl_traj.mean()).backward()
+    opt.step()
+    return float(kl_traj.mean())</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode.
+  Every failure below is one my script prints today.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Train with <code>reward_format_only</code> — pay for the tags, never for the answer</td>
+      <td>Format score 1.00, accuracy <strong>0.360</strong> against 0.850. Perfectly structured output that is wrong two times in three. Every field validates, nothing is true</td>
+    </tr>
+    <tr>
+      <td>Train with <code>reward_with_length</code> — add <code>0.05 * n_steps</code> to the reward</td>
+      <td>Mean length jumps to <strong>16.00</strong>, the context window, and accuracy <em>drops</em> to 0.743. Nineteen-line traces of which six lines carry information</td>
+    </tr>
+    <tr>
+      <td>Pass <code>parser=parse_answer_broken</code> — match the first number anywhere instead of inside <code>&lt;answer&gt;</code></td>
+      <td>The same rollouts score <strong>0.090</strong> instead of 0.850, because it is grading the step index in the working. Train against it and real accuracy lands at 0.330</td>
+    </tr>
+    <tr>
+      <td>Set <code>BETA = 0.0</code> — take the KL leash off</td>
+      <td>Length pins at 16.00, KL from the reference reaches <strong>16.498</strong> nats, accuracy falls to 0.743. Output that still scores well and reads as padding</td>
+    </tr>
+    <tr>
+      <td>Run the whole thing with <code>p_correct=1.0</code>, so extra steps cannot help</td>
+      <td>Length stays at <strong>2.05</strong> from iteration 15 to 150 while accuracy sits at 1.000. Nothing emerges, because there is nothing for length to buy</td>
+    </tr>
+    <tr>
+      <td>Set <code>N_READINGS = 16</code> so every step is fresh evidence</td>
+      <td>The plateau in demo 1 disappears and the accuracy column keeps rising to k=16 — and the length-in-reward run stops looking like padding, because now it isn't</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — the R1-Zero sections first, especially
+  the reward-design discussion and the table tracking response length during
+  training, which is the real version of my demo 2. Then the cold-start and
+  distillation sections. Skip the benchmark tables on a first pass; they are the
+  least transferable part. You'll find the paper is mostly the comments you have
+  already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is less here than the notation suggests. The advantage is a z-score:
+  subtract the mean of eight numbers, divide by their standard deviation. You
+  have written that in a monitoring dashboard. It exists so the policy is told
+  "better or worse than your siblings" rather than "your score was 0.83", which
+  is what removes the need for a separate value network.
+</p>
+<p>
+  The policy gradient is one derivative you can take on trust: nudge up the
+  log-probability of things that went better than average, nudge it down for
+  things that went worse. The KL term is a distance between two probability
+  distributions, measured in nats, and in code it is literally
+  <code>(p * (log p − log q)).sum()</code>. That's it. Nothing in this paper
+  needs a proof to be used correctly.
+</p>
+<p>
+  What does need care is not maths at all — it's the reward function and the
+  parser that feeds it. Those are ordinary software, they are wrong in ordinary
+  ways, and they are where the whole method succeeds or quietly fails. The
+  question you will be asked in an interview is not how GRPO's advantage is
+  derived. It's "how did you know the model got better, and not just better at
+  your grader?"
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one angle — the emergence mechanism and the reward-design
+  traps. These fill in the parts I skipped: the real training runs, the
+  algorithm's derivation, and the wider family of reasoning models.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2501.12948">
+      <span class="paper-title">DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning</span>
+      <span class="paper-meta">DeepSeek-AI, 2025. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the R1-Zero half properly: the rule-based reward, the template, the
+      response-length curve, and the readability and language-mixing problems
+      that made the cold start necessary. A revised version also appeared in
+      <a href="https://www.nature.com/articles/s41586-025-09422-z">Nature</a>.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2402.03300">
+      <span class="paper-title">DeepSeekMath: GRPO, where the algorithm comes from</span>
+      <span class="paper-meta">Shao et al., 2024. Maths, with the derivation.</span>
+    </a>
+    <p class="paper-pitch">
+      The algorithm section R1 assumes you already know. Read it for why the
+      group baseline replaces a value network, which my 20-line version shows
+      but does not justify.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/open-r1">
+      <span class="paper-title">Open-R1: a fully open reproduction of DeepSeek-R1</span>
+      <span class="paper-meta">Hugging Face. Code and running logs.</span>
+    </a>
+    <p class="paper-pitch">
+      What this page most obviously lacks: an actual language model being
+      trained this way, with the datasets, the recipe and the things that went
+      wrong in public.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://magazine.sebastianraschka.com/p/understanding-reasoning-llms">
+      <span class="paper-title">Understanding Reasoning LLMs</span>
+      <span class="paper-meta">Sebastian Raschka. Prose and diagrams, no maths.</span>
+    </a>
+    <p class="paper-pitch">
+      Puts R1 next to the other ways of buying reasoning — inference-time
+      scaling, SFT, distillation — and is honest about which is worth its cost.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Raschka first for the map, then the
+  R1-Zero sections of the paper, then DeepSeekMath if the advantage term still
+  feels like a magic trick, then Open-R1 when you want to run one yourself.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>
