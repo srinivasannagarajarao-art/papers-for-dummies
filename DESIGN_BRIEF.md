@@ -17,7 +17,7 @@ The audience is one person: a working engineer, self-taught, skeptical of hype, 
 Pages that exist:
 - **Homepage** — bio + the paper list, grouped by theme
 - **Papers index** — same list, standalone
-- **Paper pages** — twenty-four of them, each an essay in English, Tamil and Hindi via in-page tabs, with a runnable Python script alongside
+- **Paper pages** — twenty-eight of them, each an essay in English, Tamil and Hindi via in-page tabs, with a runnable Python script alongside
 
 Design the system so a new paper page is easy to add by copying the template — no CMS, no data layer, just a new HTML file.
 

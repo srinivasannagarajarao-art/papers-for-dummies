@@ -1,0 +1,1790 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepSeek-V3: the recipe, and the interconnect that shaped it — for programmers</title>
+<meta name="description" content="DeepSeek-V3 explained as a distributed system built for a slow network link. Runnable NumPy that counts the all-to-all bytes, balances experts without an auxiliary loss, simulates FP8 and the pipeline bubble.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Tamil:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>DeepSeek-V3: the recipe, and the interconnect that shaped it</h1>
+    <p class="paper-meta">DeepSeek-AI, 2024</p>
+    <p class="lede">
+      Almost every choice in this model is downstream of one number on a spec sheet.
+    </p>
+    <p>
+      <a href="deepseek-v3_from_scratch.py" download>Download deepseek-v3_from_scratch.py</a>
+      — everything below runs from it. NumPy only, and nothing in it is a benchmark:
+      it counts bytes and simulates schedules.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
+  <p>
+    I read this report the way everyone did — looking for the trick. There isn't
+    one. There are about eight, and they all point the same direction, and I
+    couldn't see the direction until I noticed which GPUs they were on.
+  </p>
+
+  <p>
+    US export controls meant DeepSeek trained on <strong>H800s</strong>. Same chip
+    as an H100 for arithmetic. Roughly <strong>half the NVLink</strong> — the
+    chip-to-chip link inside a server. For a mixture-of-experts model that is the
+    cruellest possible cut, because routing tokens to experts is an
+    <em>all-to-all</em>, and all-to-all is exactly what a narrow link punishes.
+  </p>
+
+  <h2>You've built this system before</h2>
+
+  <p>
+    You have a service that fans a request out to backends and merges the replies.
+    On a fast local network you write it the obvious way:
+  </p>
+
+<pre><code>def handle(req):
+    picks = router.pick(req, k=8)              # 8 backends, wherever they live
+    return merge([call(b, req) for b in picks])   # ship the payload to each</code></pre>
+
+  <p>
+    Then you move it to a link a third the speed, and it falls over. Not because
+    the backends got slower — they didn't — but because the payload now spends
+    longer on the wire than in the handler. You already know the three fixes,
+    because you've shipped all of them:
+  </p>
+
+<pre><code>def handle(req):
+    picks = router.pick(req, k=8, max_racks=4)  # 1. cap the fan-out
+    payload = compress(req)                     # 2. shrink every byte
+    fut = send_async(picks, payload)            # 3. overlap the wire with work
+    local = do_other_work()
+    return merge(fut.result(), local)</code></pre>
+
+  <p>
+    That is DeepSeek-V3's engineering half, in three lines. Cap the fan-out is
+    <strong>node-limited routing</strong>. Shrink every byte is <strong>FP8</strong>.
+    Overlap the wire with work is <strong>DualPipe</strong>. Everything else is
+    detail about how far below the abstraction layer they were willing to go to
+    make those three actually happen.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Ops analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>All-to-all</strong></td><td>Every GPU sends a slice of its tokens to every other GPU holding a chosen expert, then gets results back</td><td>A shuffle stage. The bit of your MapReduce that actually costs money</td></tr>
+      <tr><td><strong>NVLink</strong></td><td>The link between GPUs <em>inside</em> one server. 900 GB/s on H100, 400 GB/s on H800</td><td>The rack-local network</td></tr>
+      <tr><td><strong>InfiniBand</strong></td><td>The link <em>between</em> servers. 400 Gbps = 50 GB/s per GPU</td><td>Cross-datacentre. Same request, ten times the latency budget</td></tr>
+      <tr><td><strong>Expert parallelism</strong></td><td>Experts live on different GPUs, so tokens travel to reach them</td><td>Sharding by key. The shuffle is the price</td></tr>
+      <tr><td><strong>Bubble</strong></td><td>A pipeline stage sitting idle waiting for its neighbour</td><td>A worker blocked on IO with nothing queued behind it</td></tr>
+      <tr><td><strong>PTX</strong></td><td>NVIDIA's assembly-level layer, one below CUDA C</td><td>Dropping to inline asm because the compiler won't do what you want</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <p>
+    Not a loss function. The formula that matters here is the one that decides
+    whether your GPUs are computing or waiting:
+  </p>
+
+  <div class="formula">t<sub>comm</sub> / t<sub>compute</sub> = (bytes / bandwidth) ÷ (FLOPs / throughput)</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>For one MoE layer</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>FLOPs</code></td><td>k × 3 × 2 × d<sub>model</sub> × d<sub>ffn</sub> per token</td><td>Top-8 SwiGLU experts. Three matrices each, two flops per multiply-add</td></tr>
+      <tr><td><code>bytes</code></td><td>nodes × d<sub>model</sub> × (1 + 2) on IB, k × d<sub>model</sub> × (1 + 2) on NVLink</td><td>One copy per destination node out, results back. FP8 out, BF16 back</td></tr>
+      <tr><td><code>throughput</code></td><td>1979 TFLOPS FP8</td><td>Identical on H100 and H800. This is the number export controls did <em>not</em> touch</td></tr>
+      <tr><td><code>bandwidth</code></td><td>900 or 400 GB/s</td><td><strong>The whole paper.</strong> This is the number they did touch</td></tr>
+      <tr><td>ratio <code>&lt; 1</code></td><td>compute-bound</td><td>Your tensor cores set the clock. Make the model bigger</td></tr>
+      <tr><td>ratio <code>&gt; 1</code></td><td>comm-bound</td><td>Your wire sets the clock. Every design decision changes</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The constraint, counted</h2>
+
+  <p>
+    DeepSeek-V3 is 671B total parameters, 37B active per token, 61 layers,
+    d<sub>model</sub> 7168, 256 routed experts plus one shared, top-8 routing,
+    expert hidden size 2048. Take one GPU with a micro-batch of 4096 tokens
+    through one MoE layer and count.
+  </p>
+
+  <p>
+    The bandwidth numbers below are <strong>published specifications</strong>, not
+    something I measured, and the "times" are bytes divided by those specifications.
+    This is the same kind of counting the
+    <a href="../flash-attention/">FlashAttention page</a> does for HBM traffic —
+    a roofline sketch, not a profile.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>tokens on this GPU        : 4096
+d_model                   : 7168, top-8 routed experts, capped at 4 nodes
+expert FLOPs per token    : 704.6 MFLOP
+expert FLOPs, this batch  : 2.89 TFLOP
+InfiniBand bytes  (out+in): 352.3 MB (4 node copies x (1B dispatch + 2B combine))
+NVLink bytes      (out+in): 704.6 MB (8 expert copies inside the nodes)
+arithmetic intensity of this layer:
+  2,731 FLOP per byte moved
+machine balance (FLOP per byte the link can feed, FP8 compute):
+  H100 NVLink 900 GB/s: 2,199
+  H800 NVLink 400 GB/s: 4,948
+  InfiniBand   50 GB/s: 39,580</code></pre>
+
+  <p>
+    2,731 FLOP per byte is what this layer <em>offers</em>. 2,199 is what an
+    H100's NVLink can <em>feed</em>. 4,948 is what an H800's can. The layer sits
+    between them. That is the entire story, and here it is as time:
+  </p>
+
+<pre><code>  machine          compute   NVLink leg   comm/compute   verdict
+  H100  900 GB/s    1.46ms      0.78ms          0.54x   <span class="ok">COMPUTE-bound</span>
+  H800  400 GB/s    1.46ms      1.76ms          <span class="hl">1.21x   COMM-bound</span>
+
+  same layer, same arithmetic, one number on a spec sheet halved,
+  and the bottleneck moves from the tensor cores to the wire.</code></pre>
+
+  <div class="note">
+    <strong>Nothing about the model changed.</strong> Same weights, same FLOPs,
+    same batch. One spec-sheet number halved and the layer crossed from
+    compute-bound to communication-bound. Every remaining section of this page is
+    a response to that crossing.
+  </div>
+
+  <p>
+    And the cross-node leg, which export controls did <em>not</em> touch, is worse
+    than either — which is why the node cap exists at all:
+  </p>
+
+<pre><code>the cross-node leg, which the export cut did NOT touch:
+  H100: IB  7.05ms + NVLink  0.78ms = 5.37x compute   (9.0x the NVLink leg)
+  H800: IB  7.05ms + NVLink  1.76ms = 6.04x compute   (4.0x the NVLink leg)</code></pre>
+
+  <p>
+    The report is explicit that it tuned the node cap so the InfiniBand and NVLink
+    legs can be overlapped, citing an effective NVLink-to-IB bandwidth ratio of
+    about <strong>3.2:1</strong>. That implies an achieved NVLink figure nearer
+    160 GB/s than 400. Treat my 900 and 400 as ceilings nobody reaches; the shape
+    of the table is the point, not the decimals.
+  </p>
+
+  <h2>Auxiliary-loss-free balancing: the neatest idea in the paper</h2>
+
+  <p>
+    A router that plays favourites is the hot-shard problem, and the
+    <a href="../moe/">MoE page</a> fixes it the standard way: add an auxiliary
+    loss that penalises uneven routing. It works. It also adds a
+    <em>gradient</em> — one that is, by construction, not the task's gradient. You
+    are asking the router to be balanced <em>instead of</em> being right.
+  </p>
+
+  <p>V3 replaces it with something an SRE would recognise immediately: a thermostat.</p>
+
+<pre><code>selection_score = affinity + bias      # bias affects WHO IS PICKED
+gate            = affinity             # and never the loss, so grad(bias) = 0
+
+bias[expert] -= gamma * sign(load[expert] - mean_load)   # after each step</code></pre>
+
+  <p>
+    Overloaded expert, bias down. Starved expert, bias up. Fixed step, sign only.
+    It moves the selection and leaves the gradient alone. My script sets up a toy
+    world where token demand is Zipf-skewed — so the routing the model wants is
+    genuinely imbalanced, and balance and quality really do fight.
+  </p>
+
+<pre><code>true expert demand (Zipf, the routing the model actually wants):
+  [162  90  73  49  43  35  27  33]
+
+max/min expert occupancy, by step (1.0 = perfectly balanced):
+  step      none      aux-loss      bias (V3)
+     0      11.2        11.2           11.2
+    10       8.7         3.8            8.1
+    20       6.6         3.2            2.0
+    40       6.1         3.0            2.2
+    59       6.1         3.0            <span class="ok">2.1</span>
+
+final per-expert token counts (512 tokens, top-1):
+  none    : [165  89  74  51  41  33  27  32]
+  aux-loss: [121  92  71  56  48  41  42  41]
+  bias    : [80 53 60 74 62 50 43 90]
+  V3 bias vector: [-3.  -1.8  1.2  1.2  3.   3.6  3.6  3. ]</code></pre>
+
+  <p>
+    Both balance. Now the number that motivates the whole idea — the gradient the
+    balancing mechanism contributes to the router's weights, and how well the
+    router still picks the right expert once you take the bias back off:
+  </p>
+
+<pre><code>  gradient norm contributed by the balancing term:
+    aux-loss : <span class="hl">0.434286</span>   &lt;- fights the routing the model wanted
+    bias (V3): <span class="ok">0.000000</span>   &lt;- exactly zero, by construction
+  router accuracy vs the true best expert (bias removed):
+    no balancing : 0.9590
+    aux-loss     : <span class="hl">0.8848</span>
+    bias (V3)    : <span class="ok">0.9590</span></code></pre>
+
+  <p>
+    Better balance <em>and</em> no accuracy loss. Turn the auxiliary weight up and
+    you get the failure the paper is built to avoid — you buy balance you
+    already had, with quality:
+  </p>
+
+<pre><code>BREAK IT: crank the auxiliary loss weight to alpha=6.0
+  balance  max/min : 3.1  (aux 1.50: 3.0, bias: 2.1)
+  router accuracy  : <span class="hl">0.7324</span>  &lt;- balanced, and worse
+  balancing grad   : 1.323678</code></pre>
+
+  <p>The thermostat has its own failure mode, and it's the one you'd guess:</p>
+
+<pre><code>BREAK IT: bias update rate gamma=8.0 instead of 0.6
+  max/min occupancy, last 8 steps:
+    <span class="hl">[202.   81.8 224.  202.   63.6 153.   63.4 153. ]</span>
+   vs gamma=0.6: <span class="ok">[2.  1.6 2.  1.6 2.  1.6 1.3 2.1]</span>
+  final bias vector: [144. 144. 144. 144. 144. 152. 144. 144.]</code></pre>
+
+  <div class="note">
+    <strong>Step size too big, and it oscillates instead of settling.</strong>
+    It's a controller. It has a gain, and you tune the gain. The report's own
+    caveat is worth keeping: they also use a small sequence-wise balancing loss
+    as a backstop, so "auxiliary-loss-free" means the <em>primary</em> mechanism
+    is the bias, not that no balancing loss exists anywhere.
+  </div>
+
+  <h2>Node-limited routing: capping the fan-out</h2>
+
+  <p>
+    A token wants its top-8 experts wherever they live. Left alone it can touch
+    eight different servers, and every extra server is another InfiniBand copy of
+    the same 7168-wide vector across the slowest link in the machine. The cap:
+    score each <em>node</em> by the sum of its experts' affinities, keep the best
+    M nodes, and pick the top-8 only from those. V3 uses M = 4.
+  </p>
+
+<pre><code>256 experts over 32 nodes (8 experts per node), top-8, 4096 tokens
+
+  uncapped: mean 6.652 nodes/token, max 8
+  capped  : mean 3.748 nodes/token, max 4  (M=4)
+
+  InfiniBand bytes, uncapped: 585.9 MB  (<span class="hl">11.72 ms</span> at 50 GB/s)
+  InfiniBand bytes, capped  : 330.1 MB  (<span class="ok">6.60 ms</span> at 50 GB/s)
+  saved: 43.7%
+
+what the cap costs -- experts still reachable per token:
+  uncapped : 256 of 256 (100.0%)
+  capped   : 32 of 256 (12.5%)
+  mean overlap with the uncapped choice: 3.62 of 8 experts</code></pre>
+
+  <p>
+    It is not free, and the script prints exactly how unfree: a capped token gets
+    3.62 of the 8 experts it would otherwise have chosen, and only an eighth of
+    the expert pool is reachable at all. You are trading model freedom for wire
+    time. Sweep the cap and watch the trade:
+  </p>
+
+<pre><code>  M=2: 2.000 nodes/token,    176.1 MB IB, overlap 2.57/8
+  M=4: 3.748 nodes/token,    330.1 MB IB, overlap 3.62/8
+  M=8: 5.330 nodes/token,    469.5 MB IB, overlap 5.00/8
+  M=32: 6.652 nodes/token,    <span class="hl">585.9 MB IB</span>, overlap <span class="ok">8.00/8</span></code></pre>
+
+  <p>
+    M is not chosen to minimise traffic — M=2 would do that. It is chosen so the
+    IB leg and the NVLink leg are close enough in size to hide underneath each
+    other, given that 3.2:1 ratio. The cap and the overlap are one design, not two.
+  </p>
+
+  <h2>FP8: the other half of the byte reduction</h2>
+
+  <p>
+    Halving the fan-out halves the copies. Halving the payload halves what each
+    copy carries. V3 trains the GEMMs in 8-bit floating point — which, if you've
+    read the <a href="../quantization/">quantisation page</a>, you'll recognise as
+    the same argument one octave further down. Two formats exist and neither is
+    good enough alone:
+  </p>
+
+<pre><code>format   exp  man     max finite   min normal   steps per octave
+  e4m3    4    3            448    1.562e-02      8
+  e5m2    5    2         57,344    6.104e-05      4</code></pre>
+
+  <p>
+    e4m3 has the precision and not the range. e5m2 has the range and not the
+    precision. Cast real tensors straight in and watch which dies:
+  </p>
+
+<pre><code>direct cast, one tensor, no scaling -- relative L2 error:
+  tensor                     e4m3        e5m2     e4m3 finite?
+  weights   (N(0,0.02))    0.310877    0.051356     True
+  activation (N(0,1))      0.027098    0.053512     True
+  act+outlier (x1500)           <span class="hl">inf</span>    0.024086     <span class="hl">False</span>
+  grads     (N(0,1e-5))    1.000000    1.000000     True
+
+which tensor dies first: the one with the outlier.
+  max |activation| = 1,500.0  vs e4m3 max 448
+  values that became inf: 1
+  gradients underflow e4m3's min normal: 4096 of 4096 -> 0</code></pre>
+
+  <p>
+    One value out of 4096 exceeded 448 and the tensor is gone. A single FP32 scale
+    per tensor brings it back — but that scale is set by the loudest value, and
+    the quiet ones pay for it. Smaller blocks, more scales, fewer dead values:
+  </p>
+
+<pre><code>  direct cast, no scale : <span class="hl">inf</span>   &lt;- overflowed, the tensor is gone
+  one FP32 scale        : <span class="ok">0.001151</span>   finite again
+
+4096 activations, N(0,1), with four values of 3000 dropped in.
+Error measured on the 4092 ORDINARY values only:
+  block   err on quiet values   dead (rounded to 0)   bits/value
+   4096             0.031677                   <span class="hl">343</span>        8.008
+    512             0.029651                   184        8.062
+    128             0.026348                    <span class="ok">38</span>        8.250
+     32             0.024253                    12        9.000</code></pre>
+
+  <p>
+    That is V3's fine-grained quantisation: 1×128 tiles for activations, 128×128
+    for weights. The format did not get better. The blocks got smaller. The report
+    pairs it with FP32 accumulation and wider master weights and optimiser state,
+    because the places 8 bits are unacceptable are exactly the places error
+    compounds. What it buys:
+  </p>
+
+<pre><code>  one activation tile, 4096 tokens x 7168:
+    BF16                    58.72 MB
+    FP8 (1x128 scales)      <span class="ok">30.28 MB</span>
+  all-to-all bytes/token: BF16 dispatch 344,064 B -&gt;
+                          FP8  dispatch 258,048 B (25.0% less)</code></pre>
+
+  <h2>Multi-token prediction: two targets for one forward pass</h2>
+
+  <p>
+    A standard language model gets one training signal per position: predict the
+    next token, as on the <a href="../gpt/">GPT page</a>. V3 adds a second head
+    that predicts the token <em>after</em> that, sequentially, keeping the full
+    causal chain. Same forward pass, twice the targets.
+  </p>
+
+<pre><code>micro-batch: 4096 positions
+  MTP depth 0 (1 head): 4,096 prediction targets per forward pass  (1.0x)
+  MTP depth 1 (2 heads): 8,192 prediction targets per forward pass  (<span class="ok">2.0x</span>)
+  MTP depth 2 (3 heads): 12,288 prediction targets per forward pass  (3.0x)
+
+what each head predicts, for the sentence positions 0..4:
+  pos 0 (the  ) -> head 1: cat     head 2: ate
+  pos 1 (cat  ) -> head 1: ate     head 2: the
+  pos 2 (ate  ) -> head 1: the     head 2: food</code></pre>
+
+  <p>
+    V3 uses depth 1 — one extra head. It is a <strong>training</strong> objective;
+    the extra head is dropped for ordinary inference. But you can keep it, and then
+    it is a draft model that costs almost nothing, which is
+    <a href="../speculative-decoding/">speculative decoding</a> with the drafter
+    already inside the target model. The report puts second-token acceptance at
+    85–90% and reports roughly 1.8× decoding throughput from using it that way.
+  </p>
+
+<pre><code>expected tokens accepted per decoding step = 1 + p(second accepted):
+  acceptance 0.85  ->  1.85 tokens/step (1.85x, before the extra head's own cost)
+  acceptance 0.90  ->  1.90 tokens/step (1.90x, before the extra head's own cost)</code></pre>
+
+  <p class="muted">
+    The 1 + p arithmetic is mine, not theirs, and it ignores verification cost.
+    The 85–90% and the 1.8× are the report's.
+  </p>
+
+  <h2>Overlapping communication with compute</h2>
+
+  <p>
+    You cannot delete the all-to-all. You can make it happen while the GPU is
+    doing something else — the async call you already write without thinking. My
+    script simulates a 1F1B pipeline, 8 stages, 32 microbatches, and asks what the
+    device is doing. <strong>This is a simulation of a schedule, not a measurement
+    of DeepSeek's.</strong>
+  </p>
+
+<pre><code>pipeline: 8 stages, 32 microbatches, compute 1.0, all-to-all 0.8 per microbatch
+
+  schedule            makespan   device busy   bubble
+  no overlap             70.20        45.6%     <span class="hl">54.4%</span>
+  comm hidden            39.00        82.1%     <span class="ok">17.9%</span>
+
+  wall-clock penalty for not overlapping: 1.80x
+  illustration only: a 56.7-day run with this shape becomes 102.1 days</code></pre>
+
+  <p>
+    The second column is the one worth staring at. Once communication is hidden,
+    making it <em>more expensive</em> stops mattering until it exceeds compute:
+  </p>
+
+<pre><code>  comm    bubble (no overlap)   bubble (overlapped)   speedup
+   0.2                31.6%                 <span class="ok">17.9%</span>       1.20x
+   0.5                45.3%                 <span class="ok">17.9%</span>       1.50x
+   0.8                54.4%                 <span class="ok">17.9%</span>       1.80x
+   1.2                62.7%                 <span class="hl">31.6%</span>       1.83x
+   2.0                72.6%                 <span class="hl">59.0%</span>       1.50x</code></pre>
+
+  <div class="note">
+    <strong>That flat 17.9% is the design goal.</strong> Get the communication
+    cost under the compute cost and it vanishes from the wall clock entirely.
+    DualPipe goes further than my simulation — it runs the pipeline from both ends
+    at once — but the part that matters here is the part I can show you: hide the
+    wire behind the maths.
+  </div>
+
+  <h2>What "went below the abstraction layer" actually means</h2>
+
+  <p>
+    Three things in the report that most write-ups skip, and that are the reason
+    the three fixes above were achievable rather than aspirational:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>What they did</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Wrote <strong>PTX</strong>, NVIDIA's assembly-level layer below CUDA, for the communication kernels</td><td>The dispatch/combine kernels had to be tuned by hand. Inline asm, because the compiler wouldn't do it</td></tr>
+      <tr><td>Reserved a fraction of each GPU's <strong>streaming multiprocessors</strong> for communication</td><td>Comm and compute genuinely run at once. You budget the cores, the way you'd pin a thread pool</td></tr>
+      <tr><td>Avoided <strong>tensor parallelism</strong> entirely</td><td>It is the most communication-hungry parallelism there is — it talks inside every layer. On a narrow link it's the first thing to go</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Multi-head latent attention is theirs too, from DeepSeek-V2: it compresses the
+    key-value cache into one low-rank latent vector per token, so long-context
+    serving stops being a memory problem. It has its own page —
+    <a href="../mla/">multi-head latent attention</a>, built on the byte counting
+    from the <a href="../kv-cache/">KV cache page</a> — so I've deliberately not
+    re-derived it here.
+  </p>
+
+  <h2>The number everyone gets wrong</h2>
+
+  <p>
+    You will be asked about the $5.6M. Do the division yourself once and you'll
+    never repeat it carelessly:
+  </p>
+
+<pre><code>  final pre-training GPU-hours (report) : 2,788,000 H800-hours
+  assumed rental price (report's own)   : $2.00 per GPU-hour
+  product                               : <span class="ok">$5.576M</span>
+  on 2048 GPUs that is 56.7 days of wall clock
+  tokens: 14.8e12 over 671e9 params, 37e9 active per token
+  tokens per active parameter           : 400
+  approx forward+backward FLOPs (6*N*D) : 3285.6 ZFLOP
+  implied MFU against BF16 peak         : 33.1%
+  against the FP8 peak they actually used: 16.5%</code></pre>
+
+  <div class="note">
+    <strong>That figure is the final pre-training run only</strong>, at a rental
+    price the report itself assumes. It excludes research, ablations, failed runs,
+    the earlier DeepSeek models this one builds on, salaries, and the cluster. The
+    report says so directly. "DeepSeek built a frontier model for $5.6M" is not
+    what the report claims.
+  </div>
+
+  <p>
+    The 400 tokens per active parameter is worth a second look next to the
+    <a href="../scaling-laws/">scaling laws page</a> — it is far past
+    Chinchilla-optimal, which is what you do when you intend to <em>serve</em> the
+    model rather than win a compute-optimal argument.
+  </p>
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    எல்லோரும் படித்த மாதிரிதான் நானும் இந்த report-ஐப் படித்தேன் — ஏதோ ஒரு
+    தந்திரத்தைத் தேடிக்கொண்டு. அப்படி ஒன்று இல்லை. ஏறத்தாழ எட்டு இருக்கின்றன,
+    அவை எல்லாம் ஒரே திசையைக் காட்டுகின்றன, அவர்கள் எந்த GPU-க்களில் இதைச்
+    செய்தார்கள் என்பதைக் கவனிக்கும் வரை அந்தத் திசை எனக்குத் தெரியவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (interconnect, NVLink,
+    InfiniBand, all-to-all, bandwidth, compute-bound, communication-bound,
+    FLOP per byte, load balancing, bias, node-limited routing, FP8,
+    multi-token prediction, pipeline bubble, PTX…) அப்படியே வைத்திருக்கிறேன்.
+    ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான்
+    பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>
+    US export controls காரணமாக DeepSeek <strong>H800</strong>-களில்
+    train செய்தது. கணக்கீட்டைப் பொறுத்தவரை H100 அதே chip தான். ஆனால்
+    <strong>NVLink கிட்டத்தட்ட பாதி</strong> — server-க்குள் chip-க்கும்
+    chip-க்கும் இடையேயான link. ஒரு mixture-of-experts model-க்கு இதுதான்
+    மிகக் கொடூரமான வெட்டு, ஏனெனில் tokens-ஐ experts-க்கு route செய்வது ஒரு
+    <em>all-to-all</em>, குறுகிய link ஒரு all-to-all-ஐத்தான் மிகக் கடுமையாகத்
+    தண்டிக்கும்.
+  </p>
+
+  <h2>இந்த system-ஐ நீங்கள் ஏற்கனவே கட்டியிருக்கிறீர்கள்</h2>
+
+  <p>
+    ஒரு request-ஐப் பல backends-க்கு fan-out செய்து பதில்களை merge செய்யும்
+    service உங்களிடம் இருக்கிறது. வேகமான local network-இல் நீங்கள் இதை
+    வெளிப்படையான வழியில் எழுதுவீர்கள்:
+  </p>
+
+<pre><code>def handle(req):
+    picks = router.pick(req, k=8)              # 8 backends, எங்கிருந்தாலும்
+    return merge([call(b, req) for b in picks])   # ஒவ்வொன்றுக்கும் payload</code></pre>
+
+  <p>
+    பிறகு அதை மூன்றில் ஒரு பங்கு வேகமுள்ள link-க்கு நகர்த்துகிறீர்கள், அது
+    விழுந்துவிடுகிறது. backends மெதுவாகிவிட்டதால் அல்ல — அவை மாறவே இல்லை —
+    ஆனால் payload இப்போது handler-இல் இருப்பதைவிட wire-இல் அதிக நேரம்
+    செலவழிக்கிறது. மூன்று திருத்தங்களும் உங்களுக்குத் தெரியும், ஏனெனில்
+    மூன்றையும் நீங்கள் ship செய்திருக்கிறீர்கள்:
+  </p>
+
+<pre><code>def handle(req):
+    picks = router.pick(req, k=8, max_racks=4)  # 1. fan-out-ஐ cap செய்
+    payload = compress(req)                     # 2. ஒவ்வொரு byte-ஐயும் சுருக்கு
+    fut = send_async(picks, payload)            # 3. wire-ஐ வேலையுடன் overlap செய்
+    local = do_other_work()
+    return merge(fut.result(), local)</code></pre>
+
+  <p>
+    DeepSeek-V3-இன் engineering பாதி இதுதான், மூன்று வரிகளில். fan-out-ஐ cap
+    செய்வது <strong>node-limited routing</strong>. ஒவ்வொரு byte-ஐயும்
+    சுருக்குவது <strong>FP8</strong>. wire-ஐ வேலையுடன் overlap செய்வது
+    <strong>DualPipe</strong>. மீதி எல்லாம், இந்த மூன்றையும் உண்மையில்
+    நடக்கவைக்க abstraction layer-க்குக் கீழே அவர்கள் எவ்வளவு தூரம் இறங்கத்
+    தயாராக இருந்தார்கள் என்பதன் விவரம்.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Ops உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>All-to-all</strong></td><td>ஒவ்வொரு GPU-வும் தேர்ந்தெடுக்கப்பட்ட expert வைத்திருக்கும் ஒவ்வொரு GPU-க்கும் தன் tokens-இன் ஒரு பகுதியை அனுப்புகிறது, பிறகு முடிவுகளைத் திரும்பப் பெறுகிறது</td><td>ஒரு shuffle stage. உங்கள் MapReduce-இல் உண்மையில் காசு பிடுங்கும் பகுதி</td></tr>
+      <tr><td><strong>NVLink</strong></td><td>ஒரே server-க்கு <em>உள்ளே</em> GPU-க்களுக்கு இடையேயான link. H100-இல் 900 GB/s, H800-இல் 400 GB/s</td><td>Rack-க்குள்ளான network</td></tr>
+      <tr><td><strong>InfiniBand</strong></td><td>server-களுக்கு <em>இடையேயான</em> link. 400 Gbps = ஒரு GPU-க்கு 50 GB/s</td><td>Datacentre-க்கு இடையே. அதே request, பத்து மடங்கு latency budget</td></tr>
+      <tr><td><strong>Expert parallelism</strong></td><td>Experts வெவ்வேறு GPU-க்களில் இருக்கின்றன, எனவே tokens அவற்றை அடையப் பயணிக்க வேண்டும்</td><td>Key மூலம் sharding. shuffle தான் விலை</td></tr>
+      <tr><td><strong>Bubble</strong></td><td>அடுத்த stage-க்காகக் காத்திருந்து சும்மா உட்கார்ந்திருக்கும் ஒரு pipeline stage</td><td>பின்னால் ஒன்றும் queue இல்லாமல் IO-வில் block ஆன ஒரு worker</td></tr>
+      <tr><td><strong>PTX</strong></td><td>NVIDIA-வின் assembly அளவிலான layer, CUDA C-க்கு ஒரு படி கீழே</td><td>compiler நீங்கள் விரும்புவதைச் செய்யாததால் inline asm-க்கு இறங்குவது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <p>
+    Loss function அல்ல. இங்கே முக்கியமான சூத்திரம், உங்கள் GPU-க்கள்
+    கணக்கிடுகின்றனவா அல்லது காத்திருக்கின்றனவா என்பதைத் தீர்மானிப்பது:
+  </p>
+
+  <div class="formula">t<sub>comm</sub> / t<sub>compute</sub> = (bytes / bandwidth) ÷ (FLOPs / throughput)</div>
+
+  <p>இதை pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>ஒரு MoE layer-க்கு</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>FLOPs</code></td><td>ஒரு token-க்கு k × 3 × 2 × d<sub>model</sub> × d<sub>ffn</sub></td><td>Top-8 SwiGLU experts. தலா மூன்று matrices, ஒரு multiply-add-க்கு இரண்டு flops</td></tr>
+      <tr><td><code>bytes</code></td><td>IB-இல் nodes × d<sub>model</sub> × (1 + 2), NVLink-இல் k × d<sub>model</sub> × (1 + 2)</td><td>ஒவ்வொரு destination node-க்கும் ஒரு நகல் வெளியே, முடிவுகள் திரும்ப. வெளியே FP8, திரும்ப BF16</td></tr>
+      <tr><td><code>throughput</code></td><td>1979 TFLOPS FP8</td><td>H100-லும் H800-லும் ஒரே மாதிரி. export controls தொடா<em>த</em> எண் இதுதான்</td></tr>
+      <tr><td><code>bandwidth</code></td><td>900 அல்லது 400 GB/s</td><td><strong>இதுதான் முழுப் paper.</strong> அவர்கள் தொட்ட எண் இதுதான்</td></tr>
+      <tr><td>விகிதம் <code>&lt; 1</code></td><td>compute-bound</td><td>உங்கள் tensor cores நேரத்தை நிர்ணயிக்கின்றன. Model-ஐப் பெரிதாக்குங்கள்</td></tr>
+      <tr><td>விகிதம் <code>&gt; 1</code></td><td>comm-bound</td><td>உங்கள் wire நேரத்தை நிர்ணயிக்கிறது. ஒவ்வொரு design முடிவும் மாறுகிறது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>கட்டுப்பாடு, எண்ணிப் பார்த்தால்</h2>
+
+  <p>
+    DeepSeek-V3 மொத்தம் 671B parameters, ஒரு token-க்கு 37B active, 61 layers,
+    d<sub>model</sub> 7168, 256 routed experts மற்றும் ஒரு shared, top-8
+    routing, expert hidden size 2048. 4096 tokens micro-batch கொண்ட ஒரு GPU-வை
+    ஒரு MoE layer வழியாக எடுத்துக்கொண்டு எண்ணுங்கள்.
+  </p>
+
+  <p>
+    கீழே உள்ள bandwidth எண்கள் <strong>வெளியிடப்பட்ட specifications</strong>,
+    நான் அளந்தவை அல்ல, "நேரங்கள்" என்பவை அந்த specifications-ஆல் bytes-ஐ
+    வகுத்த முடிவுகள். HBM traffic-க்காக
+    <a href="../flash-attention/">FlashAttention page</a> செய்யும் அதே வகையான
+    எண்ணிக்கைதான் இது — ஒரு roofline வரைபடம், profile அல்ல.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். உண்மையான output இதோ:</strong></p>
+
+<pre><code>tokens on this GPU        : 4096
+d_model                   : 7168, top-8 routed experts, capped at 4 nodes
+expert FLOPs per token    : 704.6 MFLOP
+expert FLOPs, this batch  : 2.89 TFLOP
+InfiniBand bytes  (out+in): 352.3 MB (4 node copies x (1B dispatch + 2B combine))
+NVLink bytes      (out+in): 704.6 MB (8 expert copies inside the nodes)
+arithmetic intensity of this layer:
+  2,731 FLOP per byte moved
+machine balance (FLOP per byte the link can feed, FP8 compute):
+  H100 NVLink 900 GB/s: 2,199
+  H800 NVLink 400 GB/s: 4,948
+  InfiniBand   50 GB/s: 39,580</code></pre>
+
+  <p>
+    2,731 FLOP per byte என்பது இந்த layer <em>தருவது</em>. 2,199 என்பது ஒரு
+    H100-இன் NVLink <em>ஊட்ட</em> முடிவது. 4,948 என்பது H800-இன் அளவு. Layer
+    இரண்டுக்கும் நடுவே அமர்ந்திருக்கிறது. முழுக் கதையும் இதுதான், இதோ
+    நேரமாக:
+  </p>
+
+<pre><code>  machine          compute   NVLink leg   comm/compute   verdict
+  H100  900 GB/s    1.46ms      0.78ms          0.54x   <span class="ok">COMPUTE-bound</span>
+  H800  400 GB/s    1.46ms      1.76ms          <span class="hl">1.21x   COMM-bound</span>
+
+  same layer, same arithmetic, one number on a spec sheet halved,
+  and the bottleneck moves from the tensor cores to the wire.</code></pre>
+
+  <div class="note">
+    <strong>Model-இல் எதுவும் மாறவில்லை.</strong> அதே weights, அதே FLOPs, அதே
+    batch. spec-sheet-இல் ஒரு எண் பாதியானது, layer compute-bound-இலிருந்து
+    communication-bound-க்குக் கடந்தது. இந்தப் பக்கத்தின் மீதமுள்ள ஒவ்வொரு
+    பகுதியும் அந்தக் கடப்புக்கான பதில்.
+  </div>
+
+  <p>
+    மேலும் cross-node leg — export controls தொடா<em>த</em> பகுதி — இரண்டையும்
+    விட மோசம். node cap ஏன் இருக்கிறது என்பதற்குக் காரணமே இதுதான்:
+  </p>
+
+<pre><code>the cross-node leg, which the export cut did NOT touch:
+  H100: IB  7.05ms + NVLink  0.78ms = 5.37x compute   (9.0x the NVLink leg)
+  H800: IB  7.05ms + NVLink  1.76ms = 6.04x compute   (4.0x the NVLink leg)</code></pre>
+
+  <p class="thanglish">
+    Export cut NVLink-ai dhaan pathiya aakkichu, InfiniBand-ai illa. Aana
+    cross-node leg dhaan rendu case-la-yum periya cost — adhanaala dhaan node
+    cap.
+  </p>
+
+  <p>
+    InfiniBand மற்றும் NVLink legs-ஐ overlap செய்ய முடியும் வகையில் node cap-ஐத்
+    தாங்கள் tune செய்ததாக report வெளிப்படையாகச் சொல்கிறது, செயல்முறையில்
+    கிடைக்கும் NVLink-க்கும் IB-க்கும் இடையிலான bandwidth விகிதம் சுமார்
+    <strong>3.2:1</strong> என்று மேற்கோள் காட்டுகிறது. அதன் பொருள், அடையப்படும்
+    NVLink எண் 400-ஐ விட 160 GB/s-க்கு அருகில் இருக்கும். என் 900 மற்றும் 400-ஐ
+    யாரும் எட்டாத உச்சவரம்புகளாகவே எடுத்துக்கொள்ளுங்கள்; table-இன் வடிவம்தான்
+    முக்கியம், தசம இலக்கங்கள் அல்ல.
+  </p>
+
+  <h2>Auxiliary-loss-free balancing: paper-இன் மிக நேர்த்தியான யோசனை</h2>
+
+  <p>
+    சிலரையே பிரியப்படும் ஒரு router என்பது hot-shard பிரச்சனை, அதை
+    <a href="../moe/">MoE page</a> வழக்கமான முறையில் சரிசெய்கிறது: சமமற்ற
+    routing-ஐத் தண்டிக்கும் ஒரு auxiliary loss சேர்ப்பது. அது வேலை செய்கிறது.
+    ஆனால் அது ஒரு <em>gradient</em>-ஐயும் சேர்க்கிறது — கட்டமைப்பாலேயே அது
+    task-இன் gradient அல்ல. Router-ஐ, சரியாக இருப்பதற்கு <em>பதிலாக</em>
+    சமநிலையாக இருக்கச் சொல்கிறீர்கள்.
+  </p>
+
+  <p>V3 அதை ஒரு SRE உடனே அடையாளம் காணும் ஒன்றால் மாற்றுகிறது: ஒரு thermostat.</p>
+
+<pre><code>selection_score = affinity + bias      # bias யாரைத் தேர்வு செய்வது என்பதை மாற்றும்
+gate            = affinity             # loss-ஐ அல்ல, எனவே grad(bias) = 0
+
+bias[expert] -= gamma * sign(load[expert] - mean_load)   # ஒவ்வொரு step-க்குப் பின்</code></pre>
+
+  <p>
+    சுமை அதிகமான expert, bias கீழே. பட்டினி கிடக்கும் expert, bias மேலே. நிலையான
+    step, sign மட்டும். இது selection-ஐ நகர்த்துகிறது, gradient-ஐத்
+    தொடுவதில்லை. என் script ஒரு பொம்மை உலகை அமைக்கிறது, அதில் token demand
+    Zipf-skewed — அதாவது model விரும்பும் routing உண்மையிலேயே சமமற்றது, எனவே
+    balance-ம் தரமும் நிஜமாகவே சண்டையிடுகின்றன.
+  </p>
+
+<pre><code>true expert demand (Zipf, the routing the model actually wants):
+  [162  90  73  49  43  35  27  33]
+
+max/min expert occupancy, by step (1.0 = perfectly balanced):
+  step      none      aux-loss      bias (V3)
+     0      11.2        11.2           11.2
+    10       8.7         3.8            8.1
+    20       6.6         3.2            2.0
+    40       6.1         3.0            2.2
+    59       6.1         3.0            <span class="ok">2.1</span>
+
+final per-expert token counts (512 tokens, top-1):
+  none    : [165  89  74  51  41  33  27  32]
+  aux-loss: [121  92  71  56  48  41  42  41]
+  bias    : [80 53 60 74 62 50 43 90]
+  V3 bias vector: [-3.  -1.8  1.2  1.2  3.   3.6  3.6  3. ]</code></pre>
+
+  <p>
+    இரண்டுமே balance செய்கின்றன. இப்போது இந்த யோசனையையே தூண்டிய எண் — balancing
+    முறை router-இன் weights-க்குச் சேர்க்கும் gradient, மற்றும் bias-ஐத் திரும்ப
+    எடுத்தபின் router இன்னும் எவ்வளவு சரியாக expert-ஐத் தேர்ந்தெடுக்கிறது:
+  </p>
+
+<pre><code>  gradient norm contributed by the balancing term:
+    aux-loss : <span class="hl">0.434286</span>   &lt;- fights the routing the model wanted
+    bias (V3): <span class="ok">0.000000</span>   &lt;- exactly zero, by construction
+  router accuracy vs the true best expert (bias removed):
+    no balancing : 0.9590
+    aux-loss     : <span class="hl">0.8848</span>
+    bias (V3)    : <span class="ok">0.9590</span></code></pre>
+
+  <p class="thanglish">
+    Aux loss balance kudukkudhu, aana router accuracy-ai vaangikkidhu. V3-oda
+    bias loss-la illave illa — gradient exactly zero, accuracy adhe 0.9590.
+  </p>
+
+  <p>
+    சிறந்த balance <em>மற்றும்</em> accuracy இழப்பு இல்லை. auxiliary weight-ஐ
+    ஏற்றினால், paper தவிர்க்கக் கட்டப்பட்ட தோல்வியே கிடைக்கும் — ஏற்கனவே
+    உங்களிடம் இருந்த balance-ஐத் தரத்தைக் கொடுத்து வாங்குகிறீர்கள்:
+  </p>
+
+<pre><code>BREAK IT: crank the auxiliary loss weight to alpha=6.0
+  balance  max/min : 3.1  (aux 1.50: 3.0, bias: 2.1)
+  router accuracy  : <span class="hl">0.7324</span>  &lt;- balanced, and worse
+  balancing grad   : 1.323678</code></pre>
+
+  <p>Thermostat-க்கும் அதன் சொந்தத் தோல்வி முறை உண்டு, நீங்கள் ஊகிப்பது அதுவே:</p>
+
+<pre><code>BREAK IT: bias update rate gamma=8.0 instead of 0.6
+  max/min occupancy, last 8 steps:
+    <span class="hl">[202.   81.8 224.  202.   63.6 153.   63.4 153. ]</span>
+   vs gamma=0.6: <span class="ok">[2.  1.6 2.  1.6 2.  1.6 1.3 2.1]</span>
+  final bias vector: [144. 144. 144. 144. 144. 152. 144. 144.]</code></pre>
+
+  <div class="note">
+    <strong>Step size மிகப் பெரிதானால், அது நிலைபெறாமல் ஊசலாடும்.</strong>
+    இது ஒரு controller. இதற்கு ஒரு gain இருக்கிறது, அந்த gain-ஐ நீங்கள் tune
+    செய்கிறீர்கள். Report-இன் சொந்த எச்சரிக்கையை நினைவில் வையுங்கள்: backstop-ஆக
+    ஒரு சிறிய sequence-wise balancing loss-ஐயும் அவர்கள் பயன்படுத்துகிறார்கள்.
+    எனவே "auxiliary-loss-free" என்றால் <em>முதன்மை</em> முறை bias என்று அர்த்தம்,
+    எங்கும் balancing loss இல்லை என்று அல்ல.
+  </div>
+
+  <h2>Node-limited routing: fan-out-ஐ cap செய்வது</h2>
+
+  <p>
+    ஒரு token தன் top-8 experts-ஐ, அவை எங்கிருந்தாலும் விரும்புகிறது. சும்மா
+    விட்டால் அது எட்டு வெவ்வேறு servers-ஐத் தொடலாம், ஒவ்வொரு கூடுதல் server-ம்
+    அதே 7168-அகல vector-இன் இன்னொரு InfiniBand நகல், அதுவும் இயந்திரத்தின் மிக
+    மெதுவான link-இல். Cap இதுதான்: ஒவ்வொரு <em>node</em>-ஐயும் அதன் experts-இன்
+    affinities கூட்டுத்தொகையால் மதிப்பிடு, சிறந்த M nodes-ஐ வைத்துக்கொள், top-8-ஐ
+    அவற்றிலிருந்து மட்டும் தேர்ந்தெடு. V3 M = 4 பயன்படுத்துகிறது.
+  </p>
+
+<pre><code>256 experts over 32 nodes (8 experts per node), top-8, 4096 tokens
+
+  uncapped: mean 6.652 nodes/token, max 8
+  capped  : mean 3.748 nodes/token, max 4  (M=4)
+
+  InfiniBand bytes, uncapped: 585.9 MB  (<span class="hl">11.72 ms</span> at 50 GB/s)
+  InfiniBand bytes, capped  : 330.1 MB  (<span class="ok">6.60 ms</span> at 50 GB/s)
+  saved: 43.7%
+
+what the cap costs -- experts still reachable per token:
+  uncapped : 256 of 256 (100.0%)
+  capped   : 32 of 256 (12.5%)
+  mean overlap with the uncapped choice: 3.62 of 8 experts</code></pre>
+
+  <p>
+    இது இலவசம் அல்ல, எவ்வளவு இலவசம் இல்லை என்பதை script துல்லியமாக அச்சிடுகிறது:
+    cap செய்யப்பட்ட ஒரு token, தான் தேர்ந்தெடுத்திருக்கும் 8 experts-இல் 3.62-ஐ
+    மட்டுமே பெறுகிறது, மேலும் expert pool-இல் எட்டில் ஒரு பங்கு மட்டுமே எட்டக்கூடியது.
+    Model-இன் சுதந்திரத்தை wire நேரத்திற்காக விற்கிறீர்கள். Cap-ஐ sweep செய்து
+    பேரத்தைப் பாருங்கள்:
+  </p>
+
+<pre><code>  M=2: 2.000 nodes/token,    176.1 MB IB, overlap 2.57/8
+  M=4: 3.748 nodes/token,    330.1 MB IB, overlap 3.62/8
+  M=8: 5.330 nodes/token,    469.5 MB IB, overlap 5.00/8
+  M=32: 6.652 nodes/token,    <span class="hl">585.9 MB IB</span>, overlap <span class="ok">8.00/8</span></code></pre>
+
+  <p>
+    Traffic-ஐக் குறைக்க M தேர்ந்தெடுக்கப்படவில்லை — அதைச் செய்ய M=2 போதும்.
+    அந்த 3.2:1 விகிதத்தைக் கருதி, IB leg-ம் NVLink leg-ம் ஒன்றின் கீழ் ஒன்று
+    மறையும் அளவுக்கு நெருக்கமாக இருக்கும்படி அது தேர்ந்தெடுக்கப்பட்டது. Cap-ம்
+    overlap-ம் ஒரே design, இரண்டு அல்ல.
+  </p>
+
+  <h2>FP8: byte குறைப்பின் மறு பாதி</h2>
+
+  <p>
+    fan-out-ஐப் பாதியாக்கினால் நகல்கள் பாதியாகின்றன. payload-ஐப் பாதியாக்கினால்
+    ஒவ்வொரு நகலும் சுமப்பது பாதியாகிறது. V3 GEMM-களை 8-bit floating point-இல்
+    train செய்கிறது — <a href="../quantization/">quantisation page</a>-ஐப்
+    படித்திருந்தால், அதே வாதம் ஒரு octave கீழே என்பதை அடையாளம் காண்பீர்கள்.
+    இரண்டு formats இருக்கின்றன, தனியாக எதுவும் போதுமானதல்ல:
+  </p>
+
+<pre><code>format   exp  man     max finite   min normal   steps per octave
+  e4m3    4    3            448    1.562e-02      8
+  e5m2    5    2         57,344    6.104e-05      4</code></pre>
+
+  <p>
+    e4m3-க்கு precision உண்டு, range இல்லை. e5m2-க்கு range உண்டு, precision
+    இல்லை. நிஜமான tensors-ஐ நேராக cast செய்து எது சாகிறது என்று பாருங்கள்:
+  </p>
+
+<pre><code>direct cast, one tensor, no scaling -- relative L2 error:
+  tensor                     e4m3        e5m2     e4m3 finite?
+  weights   (N(0,0.02))    0.310877    0.051356     True
+  activation (N(0,1))      0.027098    0.053512     True
+  act+outlier (x1500)           <span class="hl">inf</span>    0.024086     <span class="hl">False</span>
+  grads     (N(0,1e-5))    1.000000    1.000000     True
+
+which tensor dies first: the one with the outlier.
+  max |activation| = 1,500.0  vs e4m3 max 448
+  values that became inf: 1
+  gradients underflow e4m3's min normal: 4096 of 4096 -> 0</code></pre>
+
+  <p>
+    4096-இல் ஒரே ஒரு மதிப்பு 448-ஐத் தாண்டியது, tensor போய்விட்டது. ஒரு
+    tensor-க்கு ஒரு FP32 scale அதைத் திரும்பக் கொண்டுவருகிறது — ஆனால் அந்த
+    scale-ஐ மிகப் பெரிய மதிப்புதான் நிர்ணயிக்கிறது, அமைதியானவை அதற்கு விலை
+    கொடுக்கின்றன. சிறிய blocks, அதிக scales, குறைவான இறந்த மதிப்புகள்:
+  </p>
+
+<pre><code>  direct cast, no scale : <span class="hl">inf</span>   &lt;- overflowed, the tensor is gone
+  one FP32 scale        : <span class="ok">0.001151</span>   finite again
+
+4096 activations, N(0,1), with four values of 3000 dropped in.
+Error measured on the 4092 ORDINARY values only:
+  block   err on quiet values   dead (rounded to 0)   bits/value
+   4096             0.031677                   <span class="hl">343</span>        8.008
+    512             0.029651                   184        8.062
+    128             0.026348                    <span class="ok">38</span>        8.250
+     32             0.024253                    12        9.000</code></pre>
+
+  <p>
+    V3-இன் fine-grained quantisation இதுதான்: activations-க்கு 1×128 tiles,
+    weights-க்கு 128×128. Format மேம்படவில்லை. Blocks சிறியதாகின. Report இதை
+    FP32 accumulation, அகலமான master weights மற்றும் optimiser state-உடன்
+    இணைக்கிறது, ஏனெனில் 8 bits ஏற்கத்தகாத இடங்கள்தான் பிழை குவியும் இடங்கள்.
+    இது வாங்கித் தருவது:
+  </p>
+
+<pre><code>  one activation tile, 4096 tokens x 7168:
+    BF16                    58.72 MB
+    FP8 (1x128 scales)      <span class="ok">30.28 MB</span>
+  all-to-all bytes/token: BF16 dispatch 344,064 B -&gt;
+                          FP8  dispatch 258,048 B (25.0% less)</code></pre>
+
+  <h2>Multi-token prediction: ஒரு forward pass, இரண்டு targets</h2>
+
+  <p>
+    ஒரு வழக்கமான language model-க்கு ஒவ்வொரு position-லும் ஒரே ஒரு training
+    signal: அடுத்த token-ஐக் கணி, <a href="../gpt/">GPT page</a>-இல் உள்ளதுபோல.
+    V3 ஒரு இரண்டாவது head-ஐச் சேர்க்கிறது, அது அதற்கு <em>அடுத்த</em> token-ஐ
+    வரிசையாகக் கணிக்கிறது, முழு causal சங்கிலியையும் காப்பாற்றுகிறது. அதே
+    forward pass, இரண்டு மடங்கு targets.
+  </p>
+
+<pre><code>micro-batch: 4096 positions
+  MTP depth 0 (1 head): 4,096 prediction targets per forward pass  (1.0x)
+  MTP depth 1 (2 heads): 8,192 prediction targets per forward pass  (<span class="ok">2.0x</span>)
+  MTP depth 2 (3 heads): 12,288 prediction targets per forward pass  (3.0x)
+
+what each head predicts, for the sentence positions 0..4:
+  pos 0 (the  ) -> head 1: cat     head 2: ate
+  pos 1 (cat  ) -> head 1: ate     head 2: the
+  pos 2 (ate  ) -> head 1: the     head 2: food</code></pre>
+
+  <p>
+    V3 depth 1 பயன்படுத்துகிறது — ஒரு கூடுதல் head. இது ஒரு
+    <strong>training</strong> நோக்கம்; வழக்கமான inference-க்கு அந்தக் கூடுதல்
+    head கைவிடப்படுகிறது. ஆனால் அதை வைத்துக்கொள்ளலாம், அப்போது அது ஏறக்குறைய
+    செலவே இல்லாத ஒரு draft model — அதாவது target model-க்குள்ளேயே drafter
+    இருக்கும் <a href="../speculative-decoding/">speculative decoding</a>.
+    இரண்டாவது token-இன் acceptance-ஐ 85–90% என்று report சொல்கிறது, அப்படிப்
+    பயன்படுத்தினால் decoding throughput சுமார் 1.8× என்று தெரிவிக்கிறது.
+  </p>
+
+<pre><code>expected tokens accepted per decoding step = 1 + p(second accepted):
+  acceptance 0.85  ->  1.85 tokens/step (1.85x, before the extra head's own cost)
+  acceptance 0.90  ->  1.90 tokens/step (1.90x, before the extra head's own cost)</code></pre>
+
+  <p class="muted">
+    1 + p கணக்கு என்னுடையது, அவர்களுடையது அல்ல, verification செலவை அது
+    கணக்கில் எடுக்கவில்லை. 85–90%-ம் 1.8×-ம் report-இன் எண்கள்.
+  </p>
+
+  <h2>Communication-ஐ compute-உடன் overlap செய்வது</h2>
+
+  <p>
+    all-to-all-ஐ நீங்கள் அழிக்க முடியாது. GPU வேறு ஏதோ செய்துகொண்டிருக்கும்போது
+    அதை நடக்கவைக்க முடியும் — யோசிக்காமலேயே நீங்கள் எழுதும் அந்த async call.
+    என் script ஒரு 1F1B pipeline-ஐ simulate செய்கிறது, 8 stages, 32
+    microbatches, device என்ன செய்கிறது என்று கேட்கிறது. <strong>இது ஒரு
+    schedule-இன் simulation, DeepSeek-இன் அளவீடு அல்ல.</strong>
+  </p>
+
+<pre><code>pipeline: 8 stages, 32 microbatches, compute 1.0, all-to-all 0.8 per microbatch
+
+  schedule            makespan   device busy   bubble
+  no overlap             70.20        45.6%     <span class="hl">54.4%</span>
+  comm hidden            39.00        82.1%     <span class="ok">17.9%</span>
+
+  wall-clock penalty for not overlapping: 1.80x
+  illustration only: a 56.7-day run with this shape becomes 102.1 days</code></pre>
+
+  <p>
+    இரண்டாவது நெடுவரிசையைத்தான் உற்றுப் பார்க்க வேண்டும். communication
+    மறைக்கப்பட்டவுடன், அதை <em>அதிக விலையுள்ளதாக</em> ஆக்குவது, அது compute-ஐத்
+    தாண்டும் வரை முக்கியமில்லாமல் போகிறது:
+  </p>
+
+<pre><code>  comm    bubble (no overlap)   bubble (overlapped)   speedup
+   0.2                31.6%                 <span class="ok">17.9%</span>       1.20x
+   0.5                45.3%                 <span class="ok">17.9%</span>       1.50x
+   0.8                54.4%                 <span class="ok">17.9%</span>       1.80x
+   1.2                62.7%                 <span class="hl">31.6%</span>       1.83x
+   2.0                72.6%                 <span class="hl">59.0%</span>       1.50x</code></pre>
+
+  <div class="note">
+    <strong>அந்தச் சமதளமான 17.9% தான் design இலக்கு.</strong> communication
+    செலவை compute செலவுக்குக் கீழே கொண்டுவாருங்கள், அது wall clock-இலிருந்து
+    முற்றிலும் மறைந்துவிடும். DualPipe என் simulation-ஐ விட மேலே செல்கிறது —
+    அது pipeline-ஐ இரு முனைகளிலிருந்தும் ஒரே நேரத்தில் ஓட்டுகிறது — ஆனால்
+    இங்கே முக்கியமானது நான் காட்டக்கூடிய பகுதி: wire-ஐக் கணிதத்தின் பின்னால்
+    மறையுங்கள்.
+  </div>
+
+  <h2>"abstraction layer-க்குக் கீழே போனது" என்பதன் உண்மையான அர்த்தம்</h2>
+
+  <p>
+    பெரும்பாலான விளக்கங்கள் தவிர்க்கும் மூன்று விஷயங்கள் report-இல் இருக்கின்றன,
+    மேலே சொன்ன மூன்று திருத்தங்களும் கனவாக இல்லாமல் நிஜமாக முடிந்ததற்கு
+    அவைதான் காரணம்:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>அவர்கள் செய்தது</th><th>ஏன்</th></tr></thead>
+    <tbody>
+      <tr><td>communication kernels-க்காக CUDA-க்குக் கீழே உள்ள NVIDIA-வின் assembly அளவிலான layer <strong>PTX</strong> எழுதினார்கள்</td><td>dispatch/combine kernels கையால் tune செய்யப்பட வேண்டியிருந்தது. Inline asm, ஏனெனில் compiler அதைச் செய்யாது</td></tr>
+      <tr><td>ஒவ்வொரு GPU-வின் <strong>streaming multiprocessors</strong>-இல் ஒரு பகுதியை communication-க்காக ஒதுக்கினார்கள்</td><td>Comm-ம் compute-ம் உண்மையிலேயே ஒரே நேரத்தில் ஓடுகின்றன. ஒரு thread pool-ஐ pin செய்வதுபோல cores-ஐ budget செய்கிறீர்கள்</td></tr>
+      <tr><td><strong>Tensor parallelism</strong>-ஐ முற்றிலும் தவிர்த்தார்கள்</td><td>அதுதான் மிக அதிக communication தேவைப்படும் parallelism — ஒவ்வொரு layer-க்குள்ளும் பேசுகிறது. குறுகிய link-இல் முதலில் நீக்க வேண்டியது அதுதான்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Multi-head latent attention-ம் அவர்களுடையதுதான், DeepSeek-V2-இலிருந்து: அது
+    key-value cache-ஐ ஒரு token-க்கு ஒரு low-rank latent vector-ஆகச் சுருக்குகிறது,
+    எனவே long-context serving ஒரு memory பிரச்சனையாக இருப்பது நின்றுவிடுகிறது.
+    அதற்குத் தனிப் பக்கம் இருக்கிறது —
+    <a href="../mla/">multi-head latent attention</a>,
+    <a href="../kv-cache/">KV cache page</a>-இன் byte எண்ணிக்கையின் மேல்
+    கட்டப்பட்டது — எனவே இங்கே வேண்டுமென்றே அதை மீண்டும் விளக்கவில்லை.
+  </p>
+
+  <h2>எல்லோரும் தவறாகச் சொல்லும் எண்</h2>
+
+  <p>
+    $5.6M பற்றி உங்களிடம் கேட்கப்படும். ஒரு முறை நீங்களே வகுத்துப் பாருங்கள்,
+    பிறகு அதை அஜாக்கிரதையாக ஒருபோதும் திரும்பச் சொல்ல மாட்டீர்கள்:
+  </p>
+
+<pre><code>  final pre-training GPU-hours (report) : 2,788,000 H800-hours
+  assumed rental price (report's own)   : $2.00 per GPU-hour
+  product                               : <span class="ok">$5.576M</span>
+  on 2048 GPUs that is 56.7 days of wall clock
+  tokens: 14.8e12 over 671e9 params, 37e9 active per token
+  tokens per active parameter           : 400
+  approx forward+backward FLOPs (6*N*D) : 3285.6 ZFLOP
+  implied MFU against BF16 peak         : 33.1%
+  against the FP8 peak they actually used: 16.5%</code></pre>
+
+  <div class="note">
+    <strong>அந்த எண் இறுதிப் pre-training run-க்கானது மட்டுமே</strong>, அதுவும்
+    report-ஏ கருதிக்கொள்ளும் ஒரு வாடகை விலையில். ஆய்வு, ablations, தோல்வியடைந்த
+    runs, இது கட்டமைக்கப்பட்ட முந்தைய DeepSeek models, சம்பளங்கள், மற்றும் அந்த
+    cluster — இவை எதுவும் அதில் இல்லை. Report இதை நேரடியாகவே சொல்கிறது.
+    "DeepSeek $5.6M-க்கு ஒரு frontier model கட்டியது" என்பது report சொல்வது அல்ல.
+  </div>
+
+  <p>
+    active parameter-க்கு 400 tokens என்பதை
+    <a href="../scaling-laws/">scaling laws page</a>-உடன் சேர்த்து ஒரு முறை
+    பார்ப்பது நல்லது — அது Chinchilla-optimal-ஐ வெகுவாகத் தாண்டியது, compute-optimal
+    வாதத்தை வெல்வதற்குப் பதிலாக model-ஐ <em>serve</em> செய்யப் போகிறோம் என்று
+    முடிவெடுக்கும்போது நீங்கள் செய்வது அதுதான்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने यह report वैसे ही पढ़ी जैसे सबने पढ़ी — कोई तरकीब ढूँढते हुए। ऐसी
+    कोई एक तरकीब है ही नहीं। करीब आठ हैं, और वे सब एक ही दिशा में इशारा करती
+    हैं, और वह दिशा मुझे तब तक नहीं दिखी जब तक मैंने यह नहीं देखा कि वे किन
+    GPU-पर काम कर रहे थे।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (interconnect, NVLink,
+    InfiniBand, all-to-all, bandwidth, compute-bound, communication-bound,
+    FLOP per byte, load balancing, bias, node-limited routing, FP8,
+    multi-token prediction, pipeline bubble, PTX…) मैंने वैसे ही रखे हैं।
+    क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    US export controls की वजह से DeepSeek ने <strong>H800</strong> पर train
+    किया। गणित के लिहाज़ से वही chip जो H100 है। लेकिन
+    <strong>लगभग आधा NVLink</strong> — यानी server के भीतर chip-से-chip वाला
+    link। एक mixture-of-experts model के लिए यह सबसे क्रूर कटौती है, क्योंकि
+    tokens को experts तक route करना एक <em>all-to-all</em> है, और all-to-all
+    ही वह चीज़ है जिसे सँकरा link सबसे ज़्यादा सज़ा देता है।
+  </p>
+
+  <h2>यह system आप पहले बना चुके हैं</h2>
+
+  <p>
+    आपके पास एक service है जो एक request को कई backends में fan out करती है
+    और जवाब merge करती है। तेज़ local network पर आप इसे सीधे-सीधे लिखते हैं:
+  </p>
+
+<pre><code>def handle(req):
+    picks = router.pick(req, k=8)              # 8 backends, कहीं भी हों
+    return merge([call(b, req) for b in picks])   # हर एक को payload भेजो</code></pre>
+
+  <p>
+    फिर आप इसे एक तिहाई रफ़्तार वाले link पर ले जाते हैं, और यह गिर जाती है।
+    इसलिए नहीं कि backends धीमे हो गए — वे वही हैं — बल्कि इसलिए कि payload
+    अब handler के मुक़ाबले wire पर ज़्यादा समय बिताता है। तीनों उपाय आप
+    जानते ही हैं, क्योंकि तीनों आप ship कर चुके हैं:
+  </p>
+
+<pre><code>def handle(req):
+    picks = router.pick(req, k=8, max_racks=4)  # 1. fan-out को cap करो
+    payload = compress(req)                     # 2. हर byte को छोटा करो
+    fut = send_async(picks, payload)            # 3. wire को काम से overlap करो
+    local = do_other_work()
+    return merge(fut.result(), local)</code></pre>
+
+  <p>
+    यही DeepSeek-V3 का engineering वाला आधा हिस्सा है, तीन लाइनों में।
+    fan-out को cap करना <strong>node-limited routing</strong> है। हर byte को
+    छोटा करना <strong>FP8</strong> है। wire को काम से overlap करना
+    <strong>DualPipe</strong> है। बाक़ी सब इस बात का ब्यौरा है कि इन तीनों को
+    सचमुच करने के लिए वे abstraction layer के कितने नीचे तक जाने को तैयार थे।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Ops की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>All-to-all</strong></td><td>हर GPU अपने tokens का एक हिस्सा उस हर GPU को भेजता है जिस पर चुना गया expert है, फिर नतीजे वापस लेता है</td><td>एक shuffle stage. आपके MapReduce का वह हिस्सा जो असल में पैसा खाता है</td></tr>
+      <tr><td><strong>NVLink</strong></td><td>एक ही server के <em>भीतर</em> GPU-के बीच का link. H100 पर 900 GB/s, H800 पर 400 GB/s</td><td>Rack के भीतर का network</td></tr>
+      <tr><td><strong>InfiniBand</strong></td><td>servers के <em>बीच</em> का link. 400 Gbps = प्रति GPU 50 GB/s</td><td>Datacentre के आर-पार. वही request, दस गुना latency budget</td></tr>
+      <tr><td><strong>Expert parallelism</strong></td><td>Experts अलग-अलग GPU पर रहते हैं, इसलिए tokens को उन तक जाना पड़ता है</td><td>Key से sharding. shuffle ही क़ीमत है</td></tr>
+      <tr><td><strong>Bubble</strong></td><td>एक pipeline stage जो अपने पड़ोसी का इंतज़ार करते हुए ख़ाली बैठा है</td><td>IO पर block हुआ worker, जिसके पीछे कोई काम queue में नहीं</td></tr>
+      <tr><td><strong>PTX</strong></td><td>NVIDIA की assembly-स्तर की layer, CUDA C से एक नीचे</td><td>Inline asm पर उतरना, क्योंकि compiler वह नहीं करेगा जो आप चाहते हैं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक फ़ॉर्मूला</h2>
+
+  <p>
+    Loss function नहीं। यहाँ जो फ़ॉर्मूला मायने रखता है वह यह तय करता है कि
+    आपके GPU गणना कर रहे हैं या इंतज़ार:
+  </p>
+
+  <div class="formula">t<sub>comm</sub> / t<sub>compute</sub> = (bytes / bandwidth) ÷ (FLOPs / throughput)</div>
+
+  <p>इसे pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>एक MoE layer के लिए</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>FLOPs</code></td><td>प्रति token k × 3 × 2 × d<sub>model</sub> × d<sub>ffn</sub></td><td>Top-8 SwiGLU experts. हर एक में तीन matrices, प्रति multiply-add दो flops</td></tr>
+      <tr><td><code>bytes</code></td><td>IB पर nodes × d<sub>model</sub> × (1 + 2), NVLink पर k × d<sub>model</sub> × (1 + 2)</td><td>हर destination node के लिए एक copy बाहर, नतीजे वापस. बाहर FP8, वापस BF16</td></tr>
+      <tr><td><code>throughput</code></td><td>1979 TFLOPS FP8</td><td>H100 और H800 पर एक जैसा. यही वह number है जिसे export controls ने छुआ <em>नहीं</em></td></tr>
+      <tr><td><code>bandwidth</code></td><td>900 या 400 GB/s</td><td><strong>यही पूरा paper है.</strong> यही वह number है जिसे उन्होंने छुआ</td></tr>
+      <tr><td>अनुपात <code>&lt; 1</code></td><td>compute-bound</td><td>घड़ी आपके tensor cores चलाते हैं. Model को बड़ा कीजिए</td></tr>
+      <tr><td>अनुपात <code>&gt; 1</code></td><td>comm-bound</td><td>घड़ी आपका wire चलाता है. हर design फ़ैसला बदल जाता है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह अड़चन, गिनकर</h2>
+
+  <p>
+    DeepSeek-V3 में कुल 671B parameters हैं, प्रति token 37B active, 61 layers,
+    d<sub>model</sub> 7168, 256 routed experts और एक shared, top-8 routing,
+    expert hidden size 2048. 4096 tokens के micro-batch वाले एक GPU को एक MoE
+    layer से गुज़ारिए और गिनिए।
+  </p>
+
+  <p>
+    नीचे दिए bandwidth के आँकड़े <strong>प्रकाशित specifications</strong> हैं,
+    मेरे नापे हुए नहीं, और "समय" उन्हीं specifications से bytes को भाग देकर
+    निकला है। यह वैसी ही गिनती है जैसी
+    <a href="../flash-attention/">FlashAttention page</a> HBM traffic के लिए
+    करती है — एक roofline खाका, profile नहीं।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। असली output यह रहा:</strong></p>
+
+<pre><code>tokens on this GPU        : 4096
+d_model                   : 7168, top-8 routed experts, capped at 4 nodes
+expert FLOPs per token    : 704.6 MFLOP
+expert FLOPs, this batch  : 2.89 TFLOP
+InfiniBand bytes  (out+in): 352.3 MB (4 node copies x (1B dispatch + 2B combine))
+NVLink bytes      (out+in): 704.6 MB (8 expert copies inside the nodes)
+arithmetic intensity of this layer:
+  2,731 FLOP per byte moved
+machine balance (FLOP per byte the link can feed, FP8 compute):
+  H100 NVLink 900 GB/s: 2,199
+  H800 NVLink 400 GB/s: 4,948
+  InfiniBand   50 GB/s: 39,580</code></pre>
+
+  <p>
+    2,731 FLOP per byte वह है जो यह layer <em>देती</em> है। 2,199 वह है जो एक
+    H100 का NVLink <em>खिला</em> सकता है। 4,948 वह है जो H800 का। Layer इन
+    दोनों के बीच बैठी है। पूरी कहानी यही है, और समय के रूप में यह रही:
+  </p>
+
+<pre><code>  machine          compute   NVLink leg   comm/compute   verdict
+  H100  900 GB/s    1.46ms      0.78ms          0.54x   <span class="ok">COMPUTE-bound</span>
+  H800  400 GB/s    1.46ms      1.76ms          <span class="hl">1.21x   COMM-bound</span>
+
+  same layer, same arithmetic, one number on a spec sheet halved,
+  and the bottleneck moves from the tensor cores to the wire.</code></pre>
+
+  <div class="note">
+    <strong>Model में कुछ भी नहीं बदला।</strong> वही weights, वही FLOPs, वही
+    batch. spec-sheet का एक number आधा हुआ और layer compute-bound से
+    communication-bound में चली गई। इस पेज का बाक़ी हर हिस्सा उसी पार जाने का
+    जवाब है।
+  </div>
+
+  <p>
+    और cross-node leg, जिसे export controls ने छुआ <em>नहीं</em>, दोनों से
+    बुरी है — यही वजह है कि node cap है ही:
+  </p>
+
+<pre><code>the cross-node leg, which the export cut did NOT touch:
+  H100: IB  7.05ms + NVLink  0.78ms = 5.37x compute   (9.0x the NVLink leg)
+  H800: IB  7.05ms + NVLink  1.76ms = 6.04x compute   (4.0x the NVLink leg)</code></pre>
+
+  <p>
+    Report साफ़ कहती है कि उसने node cap को इस तरह tune किया कि InfiniBand और
+    NVLink दोनों legs को overlap किया जा सके, और वह NVLink-से-IB का प्रभावी
+    bandwidth अनुपात क़रीब <strong>3.2:1</strong> बताती है। इसका मतलब है कि
+    असल में मिलने वाला NVLink आँकड़ा 400 से ज़्यादा 160 GB/s के पास है। मेरे
+    900 और 400 को ऐसी छतें मानिए जिन तक कोई नहीं पहुँचता; बात table की शक्ल
+    की है, दशमलव की नहीं।
+  </p>
+
+  <h2>Auxiliary-loss-free balancing: paper का सबसे सुंदर विचार</h2>
+
+  <p>
+    पक्षपात करने वाला router यानी hot-shard समस्या, और
+    <a href="../moe/">MoE page</a> इसे मानक तरीक़े से ठीक करती है: एक auxiliary
+    loss जोड़ो जो असमान routing को सज़ा दे। यह काम करता है। यह एक
+    <em>gradient</em> भी जोड़ता है — ऐसा gradient जो बनावट से ही task का
+    gradient नहीं है। आप router से कह रहे हैं कि वह सही होने के
+    <em>बजाय</em> संतुलित हो।
+  </p>
+
+  <p>V3 इसकी जगह वह चीज़ रखता है जिसे कोई भी SRE तुरंत पहचान लेगा: एक thermostat.</p>
+
+<pre><code>selection_score = affinity + bias      # bias तय करता है कौन चुना जाएगा
+gate            = affinity             # loss को कभी नहीं, इसलिए grad(bias) = 0
+
+bias[expert] -= gamma * sign(load[expert] - mean_load)   # हर step के बाद</code></pre>
+
+  <p>
+    Expert पर बोझ ज़्यादा, तो bias नीचे। Expert भूखा, तो bias ऊपर। तय क़दम,
+    सिर्फ़ sign. यह selection को हिलाता है और gradient को छूता तक नहीं। मेरी
+    script एक खिलौना दुनिया बनाती है जिसमें token demand Zipf-skewed है — यानी
+    model जो routing चाहता है वह सचमुच असंतुलित है, और balance तथा गुणवत्ता
+    वाक़ई आपस में लड़ते हैं।
+  </p>
+
+<pre><code>true expert demand (Zipf, the routing the model actually wants):
+  [162  90  73  49  43  35  27  33]
+
+max/min expert occupancy, by step (1.0 = perfectly balanced):
+  step      none      aux-loss      bias (V3)
+     0      11.2        11.2           11.2
+    10       8.7         3.8            8.1
+    20       6.6         3.2            2.0
+    40       6.1         3.0            2.2
+    59       6.1         3.0            <span class="ok">2.1</span>
+
+final per-expert token counts (512 tokens, top-1):
+  none    : [165  89  74  51  41  33  27  32]
+  aux-loss: [121  92  71  56  48  41  42  41]
+  bias    : [80 53 60 74 62 50 43 90]
+  V3 bias vector: [-3.  -1.8  1.2  1.2  3.   3.6  3.6  3. ]</code></pre>
+
+  <p>
+    दोनों संतुलन ले आते हैं। अब वह आँकड़ा जो पूरे विचार की जड़ है — balancing
+    तंत्र router के weights में कितना gradient जोड़ता है, और bias हटा देने के
+    बाद router कितनी अच्छी तरह सही expert चुनता है:
+  </p>
+
+<pre><code>  gradient norm contributed by the balancing term:
+    aux-loss : <span class="hl">0.434286</span>   &lt;- fights the routing the model wanted
+    bias (V3): <span class="ok">0.000000</span>   &lt;- exactly zero, by construction
+  router accuracy vs the true best expert (bias removed):
+    no balancing : 0.9590
+    aux-loss     : <span class="hl">0.8848</span>
+    bias (V3)    : <span class="ok">0.9590</span></code></pre>
+
+  <p>
+    बेहतर balance <em>और</em> accuracy में कोई नुक़सान नहीं। auxiliary weight
+    बढ़ाइए तो वही नाकामी मिलेगी जिससे बचने के लिए यह paper बना है — आप वह
+    balance ख़रीदते हैं जो पहले से था, और क़ीमत गुणवत्ता से चुकाते हैं:
+  </p>
+
+<pre><code>BREAK IT: crank the auxiliary loss weight to alpha=6.0
+  balance  max/min : 3.1  (aux 1.50: 3.0, bias: 2.1)
+  router accuracy  : <span class="hl">0.7324</span>  &lt;- balanced, and worse
+  balancing grad   : 1.323678</code></pre>
+
+  <p>Thermostat की अपनी नाकामी भी है, और वही जिसका आप अंदाज़ा लगाएँगे:</p>
+
+<pre><code>BREAK IT: bias update rate gamma=8.0 instead of 0.6
+  max/min occupancy, last 8 steps:
+    <span class="hl">[202.   81.8 224.  202.   63.6 153.   63.4 153. ]</span>
+   vs gamma=0.6: <span class="ok">[2.  1.6 2.  1.6 2.  1.6 1.3 2.1]</span>
+  final bias vector: [144. 144. 144. 144. 144. 152. 144. 144.]</code></pre>
+
+  <div class="note">
+    <strong>Step size बहुत बड़ा हो तो यह जमने के बजाय झूलने लगता है।</strong>
+    यह एक controller है। इसका एक gain है, और gain को आप tune करते हैं। Report
+    की अपनी चेतावनी याद रखने लायक़ है: backstop के तौर पर वे एक छोटा
+    sequence-wise balancing loss भी इस्तेमाल करते हैं, इसलिए
+    "auxiliary-loss-free" का मतलब है कि <em>मुख्य</em> तंत्र bias है, यह नहीं
+    कि कहीं कोई balancing loss है ही नहीं।
+  </div>
+
+  <h2>Node-limited routing: fan-out पर ढक्कन</h2>
+
+  <p>
+    एक token अपने top-8 experts चाहता है, वे जहाँ भी हों। खुला छोड़ दें तो वह
+    आठ अलग servers को छू सकता है, और हर अतिरिक्त server का मतलब उसी 7168-चौड़े
+    vector की एक और InfiniBand copy, मशीन के सबसे धीमे link पर। ढक्कन यह है:
+    हर <em>node</em> को उसके experts की affinities के योग से अंक दो, सबसे अच्छे
+    M nodes रखो, और top-8 सिर्फ़ उन्हीं में से चुनो। V3 में M = 4.
+  </p>
+
+<pre><code>256 experts over 32 nodes (8 experts per node), top-8, 4096 tokens
+
+  uncapped: mean 6.652 nodes/token, max 8
+  capped  : mean 3.748 nodes/token, max 4  (M=4)
+
+  InfiniBand bytes, uncapped: 585.9 MB  (<span class="hl">11.72 ms</span> at 50 GB/s)
+  InfiniBand bytes, capped  : 330.1 MB  (<span class="ok">6.60 ms</span> at 50 GB/s)
+  saved: 43.7%
+
+what the cap costs -- experts still reachable per token:
+  uncapped : 256 of 256 (100.0%)
+  capped   : 32 of 256 (12.5%)
+  mean overlap with the uncapped choice: 3.62 of 8 experts</code></pre>
+
+  <p>
+    यह मुफ़्त नहीं है, और script ठीक-ठीक छापती है कि कितना महँगा है: capped
+    token को उन 8 experts में से 3.62 मिलते हैं जो वह वरना चुनता, और पूरे
+    expert pool का सिर्फ़ आठवाँ हिस्सा ही पहुँच में रहता है। आप model की
+    आज़ादी को wire के समय से बदल रहे हैं। Cap को sweep कीजिए और सौदा देखिए:
+  </p>
+
+<pre><code>  M=2: 2.000 nodes/token,    176.1 MB IB, overlap 2.57/8
+  M=4: 3.748 nodes/token,    330.1 MB IB, overlap 3.62/8
+  M=8: 5.330 nodes/token,    469.5 MB IB, overlap 5.00/8
+  M=32: 6.652 nodes/token,    <span class="hl">585.9 MB IB</span>, overlap <span class="ok">8.00/8</span></code></pre>
+
+  <p>
+    M को traffic घटाने के लिए नहीं चुना गया — वह तो M=2 करता। इसे इसलिए चुना
+    गया कि उस 3.2:1 अनुपात को देखते हुए IB leg और NVLink leg आकार में इतने
+    पास हों कि एक दूसरे के नीचे छिप जाएँ। Cap और overlap दो design नहीं, एक हैं।
+  </p>
+
+  <h2>FP8: bytes घटाने का दूसरा आधा हिस्सा</h2>
+
+  <p>
+    fan-out आधा करने से copies आधी होती हैं। payload आधा करने से हर copy का
+    बोझ आधा होता है। V3 GEMMs को 8-bit floating point में train करता है — अगर
+    आपने <a href="../quantization/">quantisation page</a> पढ़ी है तो पहचान
+    जाएँगे कि यह वही तर्क है, एक octave और नीचे। दो formats हैं और अकेले कोई
+    भी काफ़ी नहीं:
+  </p>
+
+<pre><code>format   exp  man     max finite   min normal   steps per octave
+  e4m3    4    3            448    1.562e-02      8
+  e5m2    5    2         57,344    6.104e-05      4</code></pre>
+
+  <p>
+    e4m3 के पास precision है, range नहीं। e5m2 के पास range है, precision
+    नहीं। असली tensors को सीधे cast कीजिए और देखिए कौन मरता है:
+  </p>
+
+<pre><code>direct cast, one tensor, no scaling -- relative L2 error:
+  tensor                     e4m3        e5m2     e4m3 finite?
+  weights   (N(0,0.02))    0.310877    0.051356     True
+  activation (N(0,1))      0.027098    0.053512     True
+  act+outlier (x1500)           <span class="hl">inf</span>    0.024086     <span class="hl">False</span>
+  grads     (N(0,1e-5))    1.000000    1.000000     True
+
+which tensor dies first: the one with the outlier.
+  max |activation| = 1,500.0  vs e4m3 max 448
+  values that became inf: 1
+  gradients underflow e4m3's min normal: 4096 of 4096 -> 0</code></pre>
+
+  <p>
+    4096 में से एक value 448 से ऊपर गई और पूरा tensor गया। प्रति tensor एक
+    FP32 scale उसे वापस ले आता है — पर वह scale सबसे तेज़ आवाज़ वाली value तय
+    करती है, और क़ीमत चुकाते हैं चुपचाप बैठे छोटे मान। छोटे blocks, ज़्यादा
+    scales, कम मरी हुई values:
+  </p>
+
+<pre><code>  direct cast, no scale : <span class="hl">inf</span>   &lt;- overflowed, the tensor is gone
+  one FP32 scale        : <span class="ok">0.001151</span>   finite again
+
+4096 activations, N(0,1), with four values of 3000 dropped in.
+Error measured on the 4092 ORDINARY values only:
+  block   err on quiet values   dead (rounded to 0)   bits/value
+   4096             0.031677                   <span class="hl">343</span>        8.008
+    512             0.029651                   184        8.062
+    128             0.026348                    <span class="ok">38</span>        8.250
+     32             0.024253                    12        9.000</code></pre>
+
+  <p>
+    यही V3 की fine-grained quantisation है: activations के लिए 1×128 tiles,
+    weights के लिए 128×128. Format बेहतर नहीं हुआ। Blocks छोटे हुए। Report इसे
+    FP32 accumulation और चौड़े master weights तथा optimiser state के साथ जोड़ती
+    है, क्योंकि जहाँ 8 bits नाकाफ़ी हैं, वही जगहें हैं जहाँ त्रुटि जमा होती है।
+    इससे क्या मिलता है:
+  </p>
+
+<pre><code>  one activation tile, 4096 tokens x 7168:
+    BF16                    58.72 MB
+    FP8 (1x128 scales)      <span class="ok">30.28 MB</span>
+  all-to-all bytes/token: BF16 dispatch 344,064 B -&gt;
+                          FP8  dispatch 258,048 B (25.0% less)</code></pre>
+
+  <h2>Multi-token prediction: एक forward pass, दो targets</h2>
+
+  <p>
+    एक सामान्य language model को हर position पर एक ही training signal मिलता है:
+    अगला token बताओ, जैसा <a href="../gpt/">GPT page</a> पर है। V3 एक दूसरा
+    head जोड़ता है जो उसके <em>बाद</em> वाला token बताता है, क्रम से, पूरी
+    causal शृंखला बनाए रखते हुए। वही forward pass, दुगुने targets.
+  </p>
+
+<pre><code>micro-batch: 4096 positions
+  MTP depth 0 (1 head): 4,096 prediction targets per forward pass  (1.0x)
+  MTP depth 1 (2 heads): 8,192 prediction targets per forward pass  (<span class="ok">2.0x</span>)
+  MTP depth 2 (3 heads): 12,288 prediction targets per forward pass  (3.0x)
+
+what each head predicts, for the sentence positions 0..4:
+  pos 0 (the  ) -> head 1: cat     head 2: ate
+  pos 1 (cat  ) -> head 1: ate     head 2: the
+  pos 2 (ate  ) -> head 1: the     head 2: food</code></pre>
+
+  <p>
+    V3 depth 1 इस्तेमाल करता है — एक अतिरिक्त head. यह एक
+    <strong>training</strong> objective है; सामान्य inference के लिए वह
+    अतिरिक्त head हटा दिया जाता है। पर आप उसे रख भी सकते हैं, और तब वह लगभग
+    मुफ़्त का draft model है — यानी
+    <a href="../speculative-decoding/">speculative decoding</a>, जिसमें drafter
+    target model के भीतर ही बैठा है। Report दूसरे token की acceptance 85–90%
+    बताती है और इस तरह इस्तेमाल करने पर लगभग 1.8× decoding throughput.
+  </p>
+
+<pre><code>expected tokens accepted per decoding step = 1 + p(second accepted):
+  acceptance 0.85  ->  1.85 tokens/step (1.85x, before the extra head's own cost)
+  acceptance 0.90  ->  1.90 tokens/step (1.90x, before the extra head's own cost)</code></pre>
+
+  <p class="muted">
+    1 + p वाला गणित मेरा है, उनका नहीं, और यह verification की लागत नहीं गिनता।
+    85–90% और 1.8× report के आँकड़े हैं।
+  </p>
+
+  <h2>Communication को compute से overlap करना</h2>
+
+  <p>
+    आप all-to-all मिटा नहीं सकते। आप उसे तब करा सकते हैं जब GPU कुछ और कर रहा
+    हो — वही async call जो आप बिना सोचे लिख देते हैं। मेरी script एक 1F1B
+    pipeline simulate करती है, 8 stages, 32 microbatches, और पूछती है कि device
+    कर क्या रहा है। <strong>यह एक schedule की simulation है, DeepSeek की माप
+    नहीं।</strong>
+  </p>
+
+<pre><code>pipeline: 8 stages, 32 microbatches, compute 1.0, all-to-all 0.8 per microbatch
+
+  schedule            makespan   device busy   bubble
+  no overlap             70.20        45.6%     <span class="hl">54.4%</span>
+  comm hidden            39.00        82.1%     <span class="ok">17.9%</span>
+
+  wall-clock penalty for not overlapping: 1.80x
+  illustration only: a 56.7-day run with this shape becomes 102.1 days</code></pre>
+
+  <p>
+    दूसरा column ही घूरने लायक़ है। एक बार communication छिप गया, तो उसे
+    <em>और महँगा</em> करना तब तक मायने नहीं रखता जब तक वह compute से आगे न
+    निकल जाए:
+  </p>
+
+<pre><code>  comm    bubble (no overlap)   bubble (overlapped)   speedup
+   0.2                31.6%                 <span class="ok">17.9%</span>       1.20x
+   0.5                45.3%                 <span class="ok">17.9%</span>       1.50x
+   0.8                54.4%                 <span class="ok">17.9%</span>       1.80x
+   1.2                62.7%                 <span class="hl">31.6%</span>       1.83x
+   2.0                72.6%                 <span class="hl">59.0%</span>       1.50x</code></pre>
+
+  <div class="note">
+    <strong>वह सपाट 17.9% ही design का लक्ष्य है।</strong> communication की
+    लागत को compute की लागत से नीचे ले आइए और वह wall clock से पूरी तरह ग़ायब
+    हो जाती है। DualPipe मेरी simulation से आगे जाता है — वह pipeline को दोनों
+    सिरों से एक साथ चलाता है — पर यहाँ जो मायने रखता है वह हिस्सा है जो मैं
+    दिखा सकता हूँ: wire को गणित के पीछे छिपा दीजिए।
+  </div>
+
+  <h2>"abstraction layer के नीचे जाना" का असल मतलब</h2>
+
+  <p>
+    Report में तीन बातें हैं जिन्हें ज़्यादातर लेख छोड़ देते हैं, और वही वजह
+    हैं कि ऊपर के तीनों उपाय ख़्वाब न रहकर सचमुच हो पाए:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>उन्होंने क्या किया</th><th>क्यों</th></tr></thead>
+    <tbody>
+      <tr><td>communication kernels के लिए <strong>PTX</strong> लिखा, यानी CUDA से नीचे NVIDIA की assembly-स्तर की layer</td><td>dispatch/combine kernels को हाथ से tune करना ज़रूरी था. Inline asm, क्योंकि compiler वह नहीं करता</td></tr>
+      <tr><td>हर GPU के <strong>streaming multiprocessors</strong> का एक हिस्सा communication के लिए आरक्षित रखा</td><td>Comm और compute सचमुच साथ-साथ चलते हैं. आप cores का budget बनाते हैं, जैसे thread pool pin करते हैं</td></tr>
+      <tr><td><strong>Tensor parallelism</strong> से पूरी तरह बचे</td><td>यह सबसे ज़्यादा communication माँगने वाला parallelism है — यह हर layer के भीतर बात करता है. सँकरे link पर सबसे पहले यही हटता है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Multi-head latent attention भी उन्हीं का है, DeepSeek-V2 से: यह key-value
+    cache को प्रति token एक low-rank latent vector में दबा देता है, जिससे
+    long-context serving memory की समस्या नहीं रह जाती। उसका अपना पेज है —
+    <a href="../mla/">multi-head latent attention</a>, जो
+    <a href="../kv-cache/">KV cache page</a> की byte-गिनती पर खड़ा है — इसलिए
+    यहाँ मैंने जानबूझकर उसे दोबारा नहीं निकाला।
+  </p>
+
+  <h2>वह आँकड़ा जो सब ग़लत बताते हैं</h2>
+
+  <p>
+    आपसे $5.6M के बारे में पूछा जाएगा। एक बार ख़ुद भाग देकर देख लीजिए, फिर आप
+    उसे कभी लापरवाही से नहीं दोहराएँगे:
+  </p>
+
+<pre><code>  final pre-training GPU-hours (report) : 2,788,000 H800-hours
+  assumed rental price (report's own)   : $2.00 per GPU-hour
+  product                               : <span class="ok">$5.576M</span>
+  on 2048 GPUs that is 56.7 days of wall clock
+  tokens: 14.8e12 over 671e9 params, 37e9 active per token
+  tokens per active parameter           : 400
+  approx forward+backward FLOPs (6*N*D) : 3285.6 ZFLOP
+  implied MFU against BF16 peak         : 33.1%
+  against the FP8 peak they actually used: 16.5%</code></pre>
+
+  <div class="note">
+    <strong>वह आँकड़ा सिर्फ़ आख़िरी pre-training run का है</strong>, वह भी उस
+    किराए की क़ीमत पर जो report ख़ुद मान लेती है। इसमें शोध, ablations,
+    नाकाम runs, वे पुराने DeepSeek models जिन पर यह खड़ा है, तनख़्वाहें और
+    cluster — कुछ भी शामिल नहीं है। Report यह सीधे कहती है। "DeepSeek ने
+    $5.6M में एक frontier model बना लिया" — यह report का दावा नहीं है।
+  </div>
+
+  <p>
+    प्रति active parameter 400 tokens वाली बात
+    <a href="../scaling-laws/">scaling laws page</a> के साथ रखकर दोबारा देखने
+    लायक़ है — यह Chinchilla-optimal से कहीं आगे है, और यही आप तब करते हैं जब
+    इरादा model को <em>serve</em> करने का हो, न कि compute-optimal बहस जीतने का।
+  </p>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no GPU, no training run. Everything is arithmetic: bytes
+  counted, formats simulated, schedules stepped. Every function under 20 lines.
+</p>
+<p>
+  <a href="deepseek-v3_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 718 lines plus 7 runnable demos. Then:
+</p>
+<pre><code>python3 deepseek-v3_from_scratch.py</code></pre>
+
+<pre><code>def moe_flops_per_token():
+    """One token through top-8 SwiGLU experts. 3 matrices, 2 flops per MAC."""
+    per_expert = 3 * 2 * D_MODEL * EXPERT_HIDDEN
+    return TOPK_ROUTED * per_expert
+
+
+def all_to_all_bytes_per_token(nodes_touched, dispatch_bytes, combine_bytes):
+    """Bytes a single token pushes across each link type in one MoE layer.
+
+    Dispatch: the hidden vector goes OUT to every node holding a chosen
+    expert -- one InfiniBand copy per node, then NVLink fans it out to the
+    GPUs inside that node. Combine: the expert outputs come back the same
+    way. V3 dispatches in FP8 and combines in BF16, so the two directions
+    are not the same size.
+    """
+    ib = nodes_touched * D_MODEL * (dispatch_bytes + combine_bytes)
+    nvl = TOPK_ROUTED * D_MODEL * (dispatch_bytes + combine_bytes)
+    return ib, nvl
+
+
+def seconds(byte_count, bandwidth):
+    """Bytes / bandwidth. This is the whole 'timing' model. No GPU was run."""
+    return byte_count / bandwidth
+
+
+def route(X, W_g, bias=None, k=1):
+    """Affinity scores, then top-k selection. Bias shifts SELECTION only."""
+    scores = X @ W_g                       # (n_tokens, n_experts)
+    probs = softmax(scores)                # what the model believes
+    sel_scores = scores if bias is None else scores + bias
+    chosen = np.argsort(-sel_scores, axis=1)[:, :k]
+    return probs, chosen
+
+
+def bias_balance_step(bias, chosen, n_experts, gamma):
+    """V3's replacement, in three lines. Auxiliary-loss-free balancing.
+
+    Starved expert -&gt; bias up. Hot expert -&gt; bias down. Fixed step size,
+    sign only, like a thermostat. Never touches the loss, so it contributes
+    NO gradient to W_g -- the router keeps learning what it wanted to learn.
+    """
+    load = load_counts(chosen, n_experts)
+    err = load - load.mean()                 # + means overloaded
+    return bias - gamma * np.sign(err)
+
+
+def node_limited_topk(scores, n_nodes, k, m_cap):
+    """Restrict candidates to the m_cap best nodes, then take top-k."""
+    n_tokens, n_experts = scores.shape
+    node_id = node_of_expert(n_experts, n_nodes)
+    per_node = n_experts // n_nodes
+    node_score = scores.reshape(n_tokens, n_nodes, per_node).sum(axis=2)
+    keep = np.argsort(-node_score, axis=1)[:, :m_cap]      # (n_tokens, m_cap)
+    allowed = np.zeros((n_tokens, n_nodes), dtype=bool)
+    np.put_along_axis(allowed, keep, True, axis=1)
+    masked = np.where(allowed[:, node_id], scores, -np.inf)
+    return np.argsort(-masked, axis=1)[:, :k]</code></pre>
+
+<p class="muted">
+  <code>fp8_cast</code>, <code>fp8_blockwise</code> and <code>pipeline_bubble</code>
+  are the same shape and live in the script — the FP8 grid is <code>np.frexp</code>,
+  round the mantissa, overflow to <code>inf</code>; the pipeline is a dozen lines
+  of nested loop over stages and microbatches.
+</p>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode,
+  and every row below is one number in the script.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>demo_2_balancing</code>, set <code>train("aux", alpha=6.0)</code> as the main run</td><td>Balance stops improving at max/min 3.1 while router accuracy falls 0.9590 → 0.7324. You bought nothing and paid for it.</td></tr>
+    <tr><td>In <code>demo_2_balancing</code>, set <code>gamma=8.0</code> on the bias run</td><td>Occupancy stops settling and oscillates: <code>[202. 81.8 224. 202. 63.6 …]</code> instead of <code>[2. 1.6 2. 1.6 …]</code>. The controller's gain is too high.</td></tr>
+    <tr><td>In <code>demo_4_fp8</code>, call <code>fp8_cast(a, "e4m3")</code> instead of <code>fp8_blockwise</code></td><td>The activation tensor with the 1500 outlier goes to <code>inf</code> — relative error <code>inf</code>, one value overflowed, whole tensor dead. Gradients at N(0,1e-5) die the other way: 4096 of 4096 flushed to zero.</td></tr>
+    <tr><td>In <code>demo_3_node_limited_routing</code>, set <code>NODE_CAP_M = 32</code> (every node)</td><td>Cross-node traffic climbs from 330.1 MB to 585.9 MB, 6.60 ms → 11.72 ms at 50 GB/s. Tokens reach 8.00/8 of their preferred experts, and the IB leg no longer fits under the NVLink leg.</td></tr>
+    <tr><td>In <code>pipeline_bubble</code>, pass <code>overlap=False</code></td><td>Bubble 17.9% → 54.4%, makespan 39.00 → 70.20. A 56.7-day run becomes 102.1 days at that ratio.</td></tr>
+    <tr><td>In <code>all_to_all_bytes_per_token</code>, pass <code>dispatch_bytes=2</code> (BF16, not FP8)</td><td>All-to-all bytes per token go 258,048 → 344,064, a 33% increase on the link that was already the bottleneck.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the report — the infrastructure sections are the good
+  ones: the FP8 training framework, DualPipe and the communication kernels, and
+  the auxiliary-loss-free balancing part of the architecture section. Skip the
+  benchmark tables unless you're picking a model. For the cluster underneath it,
+  the Fire-Flyer paper is the companion. You'll find the report is mostly the
+  comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is almost no maths on this page, and that is not me being kind. The spine
+  of DeepSeek-V3 is division: bytes over bandwidth, FLOPs over throughput,
+  compare. If you have ever sized a queue, worked out whether a job is IO-bound,
+  or argued about payload compression, you already own the reasoning.
+</p>
+<p>
+  The two places actual maths appears, you can take on trust. The auxiliary loss
+  has a gradient and a bias term does not — that's a one-line consequence of what
+  "in the loss" means, and my script prints the two norms rather than deriving
+  them. FP8's range and precision come from counting exponent and mantissa bits,
+  which is a spec-sheet lookup, not analysis.
+</p>
+<p>
+  What this page does <em>not</em> give you: the actual convergence behaviour of
+  FP8 training, the real profile of their kernels, and anything about post-training.
+  Those need a cluster, and no amount of NumPy substitutes for one. What it gives
+  you is the ability to say why each choice exists, which is the interview question.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one angle: the interconnect as the cause, everything else as
+  effect. That deliberately underplays the model as a model. These three fill in
+  the rest.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2412.19437">
+      <span class="paper-title">DeepSeek-V3 Technical Report</span>
+      <span class="paper-meta">DeepSeek-AI, 2024. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the infrastructure section properly — it is unusually candid about
+      what was hard, and it is where the PTX, the reserved SMs and the FP8
+      framework live. The architecture section gives you MLA and the balancing
+      bias. The evaluation tables you can skim.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2408.14158">
+      <span class="paper-title">Fire-Flyer AI-HPC: A Cost-Effective Software-Hardware Co-Design</span>
+      <span class="paper-meta">DeepSeek-AI, 2024. The cluster underneath.</span>
+    </a>
+    <p class="paper-pitch">
+      The same team, four months earlier, describing the machine V3 was trained
+      on: network topology, storage, scheduling, failure handling. This page
+      treats the interconnect as a constraint that arrived from outside; this
+      paper is them designing around it deliberately, at the level of cabling.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jax-ml.github.io/scaling-book/">
+      <span class="paper-title">How to Scale Your Model</span>
+      <span class="paper-meta">Austin et al., Google DeepMind. Book-length, with the maths.</span>
+    </a>
+    <p class="paper-pitch">
+      The rigorous version of my one formula. Roofline analysis, every
+      parallelism strategy costed in bytes, and the collective operations
+      (all-gather, reduce-scatter, all-to-all) done properly rather than
+      hand-counted as I did. Go here when my table stops being enough.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://www.interconnects.ai/p/deepseek-v3-and-the-actual-cost-of">
+      <span class="paper-title">DeepSeek V3 and the actual cost of training frontier AI models</span>
+      <span class="paper-meta">Nathan Lambert. Analysis, not code.</span>
+    </a>
+    <p class="paper-pitch">
+      What the $5.6M does and doesn't cover, written by someone who has run
+      these budgets. Read it right after my last section, before you repeat the
+      number to anyone.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Lambert first, because it takes ten
+  minutes and stops you saying something wrong; then the V3 report's
+  infrastructure section; then Fire-Flyer for the machine; then the scaling book
+  when you want to do this arithmetic for your own deployment rather than read
+  mine.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

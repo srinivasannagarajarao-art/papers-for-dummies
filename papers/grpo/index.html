@@ -1,0 +1,1112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GRPO: reinforcement learning without a critic — for programmers</title>
+<meta name="description" content="GRPO explained as code. The value network is a baseline predictor; a group of answers to the same prompt is a cheaper one. Runnable NumPy and a tiny CPU torch loop, with printed gradient variance.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+<main class="main-content">
+  <div class="title-block">
+    <h1>GRPO: reinforcement learning without a critic</h1>
+    <p class="paper-meta">Shao et al., 2024 — DeepSeekMath</p>
+    <p class="lede">
+      The second model everyone trains alongside the policy is a baseline predictor. You can get a baseline
+      for free.
+    </p>
+    <p>
+      <a href="grpo_from_scratch.py" download>Download grpo_from_scratch.py</a> — everything below runs from
+      it. NumPy for the mechanism, plus a tiny CPU PyTorch loop for the training steps. Five and a half
+      seconds.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+
+  <p>
+    I'm an AI Engineer. I've shipped models, done the MLOps, and when DeepSeek-R1 landed and everyone started
+    saying "GRPO" I assumed it was a new algorithm I'd have to learn from scratch. It isn't. It's the policy
+    gradient from the <a href="../rlhf/">RLHF page</a> with one line changed — the line that computes the
+    baseline. That one line deletes a whole second neural network from your training job.
+  </p>
+  <p>
+    This page leans on two others. <a href="../rlhf/">RLHF</a>: fit a reward model to human votes, then climb
+    it with a policy while a KL penalty keeps you near the model you started from. <a href="../dpo/">DPO</a>:
+    skip the climbing, because the optimum of that objective has a closed form you can turn into a supervised
+    loss. <a href="../instructgpt/">InstructGPT</a>: the three-stage pipeline all of it sits inside. I won't
+    re-derive the reward model, the KL penalty or the policy gradient. GRPO keeps all three; it changes what
+    you subtract.
+  </p>
+  <h2>Grading on a curve</h2>
+  <p>
+    Here is the policy gradient, the shape everyone writes first:
+  </p>
+<pre><code>for answer, reward in sampled:
+    push_up(answer, by=reward)     # reward is 0..10, always positive</code></pre>
+  <p>
+    Spot the bug. Every reward is positive, so every sampled answer gets pushed up — the good ones and the bad
+    ones alike. The <em>differences</em> are what you meant to learn, and they're a ripple on a large
+    constant. It converges; practically, it's noise. So you subtract something. PPO's answer: hire a second
+    examiner. Train a <strong>value network</strong> — a critic, roughly the size of the policy — to predict
+    what this prompt should score, and subtract its prediction. It works, and it doubles your memory.
+  </p>
+  <p>GRPO's answer is the one every teacher already uses:</p>
+<pre><code>group   = [sample_answer(prompt) for _ in range(G)]   # G answers, one prompt
+rewards = [verify(a) for a in group]
+for answer, reward in zip(group, rewards):
+    A = (reward - mean(rewards)) / std(rewards)       # grade on the curve
+    push_up(answer, by=A)                             # A is signed now</code></pre>
+  <p>
+    Grade the class against the class. No second model, no extra forward pass — you already had those rewards,
+    and half the group comes out negative by construction. Nothing about the maths got better; the bill did.
+    PPO's critic is a second network of roughly policy size with its own weights, gradients and Adam moments,
+    and optimiser state is where RLHF memory actually goes. DeepSeekMath introduces GRPO in one setting:
+    mathematical reasoning, where the reward is a verifier checking the final answer. If you can grade an
+    answer with <code>==</code> you need no reward model, and now no critic either — the recipe DeepSeek-R1
+    was trained with.
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Baseline</strong> b(x)</td><td>A number subtracted from the reward before you use it as a gradient weight</td><td>The zero point on a diff. Only the delta is signal</td></tr>
+      <tr><td><strong>Advantage</strong> A</td><td>reward − baseline. "Better or worse than expected for this prompt"</td><td>Latency vs your p50, not raw milliseconds</td></tr>
+      <tr><td><strong>Critic</strong> / value net</td><td>A learned model predicting the baseline. PPO trains one alongside the policy</td><td>A second service you now have to deploy, monitor and debug</td></tr>
+      <tr><td><strong>Group</strong>, G</td><td>G answers sampled for the <em>same</em> prompt. Their mean is the baseline</td><td>Fan out the same request G ways, compare the responses</td></tr>
+      <tr><td><strong>Reference</strong> π<sub>ref</sub></td><td>The frozen model you started from</td><td>The <code>main</code> branch. Same as on the RLHF page</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h2>The one formula</h2>
+  <div class="formula">A<sub>i</sub> = ( r<sub>i</sub> − mean(r<sub>1..G</sub>) ) / std(r<sub>1..G</sub>)<br>
+  loss = −(1/G) Σ<sub>i</sub> A<sub>i</sub> · log π(y<sub>i</sub>|x) + β · KL( π ‖ π<sub>ref</sub> )</div>
+  <p>
+    That's it. The real paper writes the ratio-and-clip machinery PPO uses for multiple epochs on the same
+    batch; strip that and this is what's left. Read it as pipeline stages:
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>y<sub>1..G</sub> ∼ π(·|x)</code></td><td>G answers</td><td>The group. One prompt, G samples. This replaces the critic</td></tr>
+      <tr><td><code>r<sub>i</sub></code></td><td>G scalars</td><td>Reward per answer. In DeepSeekMath, a verifier's grade</td></tr>
+      <tr><td><code>− mean(r)</code></td><td>scalar</td><td><strong>The baseline.</strong> Costs zero parameters. Half the group goes negative</td></tr>
+      <tr><td><code>/ std(r)</code></td><td>scalar</td><td>Step size stops depending on how spread out this group happened to be</td></tr>
+      <tr><td><code>A<sub>i</sub> · log π(y<sub>i</sub>)</code></td><td>scalar</td><td>Policy gradient. Push up if A &gt; 0, down if A &lt; 0</td></tr>
+      <tr><td><code>+ β · KL</code></td><td>scalar ≥ 0</td><td>The leash from the RLHF page — but added to the <em>loss</em>, not to the reward</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h2>Why a baseline exists at all</h2>
+  <p>
+    The script builds a toy world in the shape of the RLHF one: 6 prompts, 12 candidate answers each, and a
+    reward. The reward here is a <em>verifier</em> — a direct 0-to-10 score, no learned reward model — because
+    that's the setting GRPO was invented for. The policy is a softmax over the 12 answers, one row of logits
+    per prompt, so the policy gradient is exactly <code>A * (onehot(a) − probs)</code> and I can measure the
+    thing everyone talks about and nobody prints: <strong>the variance of the gradient estimate</strong>. 400
+    independent estimates, only the advantage changes.
+  </p>
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+<pre><code>every reward in this world is POSITIVE: min 0.027   max 9.351
+gradient variance, G=8, 400 independent estimates:
+  no baseline           E||g - Eg||^2 =    <span class="hl">9.7489</span>
+  group-mean baseline   E||g - Eg||^2 =    <span class="ok">2.1146</span>
+  reduction: 4.6x
+both estimators point the same way on average:
+  cosine(Eg_none, Eg_group) = <span class="ok">0.9961</span></code></pre>
+  <div class="note">
+    <strong>The baseline changes nothing in expectation. That's the point.</strong> Both estimators aim at the
+    same gradient — cosine 0.9961 between their means. Subtracting a number that doesn't depend on which
+    answer you sampled is free, because the gradient of a distribution sums to zero against a constant. All a
+    baseline buys is variance. Every baseline argument in RL, PPO's critic included, is an argument about
+    which free constant to pick.
+  </div>
+  <h2>The group is the baseline</h2>
+  <p>
+    One group, printed so you can do the arithmetic yourself. Prompt 2, G = 8 samples from the reference
+    policy, drawn with replacement — so answer 3 comes up four times. A group is just G more decodes of a
+    prompt already in the batch.
+  </p>
+<pre><code>prompt 2, G=8 sampled answers: [ 3  7  7  3  0 11  3  3]
+rewards            : [6.67  2.645 2.645 6.67  4.185 2.11  6.67  6.67 ]
+group mean         : 4.7828
+group std          : 1.9649
+advantage = (r - mean) / std :
+   answer  3  r  6.670  -&gt;  A <span class="ok">+0.9603</span>
+   answer  7  r  2.645  -&gt;  A -1.0881
+   answer  7  r  2.645  -&gt;  A -1.0881
+   answer  3  r  6.670  -&gt;  A +0.9603
+   answer  0  r  4.185  -&gt;  A -0.3044
+   answer 11  r  2.110  -&gt;  A <span class="hl">-1.3604</span>
+   answer  3  r  6.670  -&gt;  A +0.9603
+   answer  3  r  6.670  -&gt;  A +0.9603
+sum of advantages  : -0.000000   (zero, by construction)</code></pre>
+  <p>
+    (6.670 − 4.7828) / 1.9649 = 0.9603. Do it on a phone calculator. That's the algorithm. The <code>/
+    std</code> isn't cosmetic: without it your update size depends on how spread out this group's rewards
+    happened to be, which is a property of the prompt, not the answer.
+  </p>
+  <h2>The critic you delete</h2>
+  <p>
+    Same problem, same 400-estimate measurement, three baselines: none, a fitted value baseline (the PPO-style
+    critic, handed the exact expected reward per prompt — I'm being generous to it), and the group mean. Then
+    300 steps of training with each.
+  </p>
+<pre><code>gradient variance, G=8, 400 estimates:
+  no baseline                       <span class="hl">9.7489</span>
+  fitted value baseline (PPO)       2.3416
+  group-mean baseline (GRPO)        <span class="ok">2.1146</span>
+
+parameters:
+  policy (6 prompts x 12 logits)     72
+  critic MLP (8 -&gt; 16 -&gt; 1)         <span class="hl">161</span>
+  group baseline                      <span class="ok">0</span>   &lt;- the point
+
+300 steps, G=8, beta=0.02:
+  reference policy         true reward 3.0131
+  with critic              true reward 5.5041   KL 2.1683
+  group baseline           true reward <span class="ok">5.5390</span>   KL 2.5183</code></pre>
+  <p>
+    A 161-parameter critic against a 72-parameter policy, in a toy where the critic's job is embarrassingly
+    easy. In a real run it's a second 7B network with its own Adam state. And it buys nothing here: the group
+    baseline gets marginally lower variance and marginally more reward, for zero parameters.
+  </p>
+  <div class="note">
+    <strong>Don't over-read the toy.</strong> My critic sees a clean 8-dimensional embedding; a real one reads
+    text and has a hard regression to solve. The honest version: the critic isn't useless, it's <em>expensive
+    and fallible</em>, and the group gives you most of it for free. Two things that can be wrong in your
+    training run become one.
+  </div>
+  <h2>How big does the group need to be?</h2>
+  <p>
+    G is the one hyperparameter GRPO adds: a straight compute-versus-variance trade, G decodes per prompt per
+    step. The two ends of the sweep are the interesting ones.
+  </p>
+<pre><code>  G   grad variance   final true reward   note
+   1          <span class="hl">0.0000              3.0131</span>   advantage is identically 0
+   2          2.5451              5.5031
+   4          1.3656              5.5278
+   8          0.6290              5.5390
+  16          0.2994              5.5428
+  32          0.1455              <span class="ok">5.5442</span>
+
+  reference policy, untrained:  true reward 3.0131</code></pre>
+  <p>
+    G = 1 is worth staring at. With one sample the group mean <em>is</em> that sample, so every advantage is
+    exactly zero, the gradient is zero, and the policy never leaves the reference: 3.0131 in, 3.0131 out. No
+    error, no warning, no NaN — a training run that does nothing. You need two answers before there's a curve
+    to grade on.
+  </p>
+  <p>
+    At the other end variance keeps halving as G doubles, but the reward column stopped moving at G = 8. You
+    pay four times the decodes between 8 and 32 for the fourth decimal place. Real runs sit around 8 to 64 for
+    the same reason.
+  </p>
+  <h2>The leash, moved into the loss</h2>
+  <p>
+    GRPO keeps the KL penalty — same leash, same job as on the <a href="../rlhf/">RLHF page</a>: stop the
+    policy wandering somewhere the reward signal was never validated. Sweeping β does what you'd expect.
+  </p>
+<pre><code>  beta    final true reward   final KL(pi || pi_ref)
+  0.00               <span class="ok">5.5393</span>                 2.5190
+  0.02               5.5390                 2.5183
+  0.10               5.5380                 2.5114
+  0.50               5.4048                 1.9776
+  2.00               <span class="hl">3.8040</span>                 0.1162</code></pre>
+  <p>
+    Note what this table does <em>not</em> show: β = 0 is fine here, and gets the best reward. In this world
+    the reward is a verifier and the verifier is the truth — nothing to hack. The equivalent table on the
+    <a href="../rlhf/">RLHF page</a>, where the reward is a learned model, has β = 0 climbing the reward model
+    to 1.941 while true reward <em>falls</em> to 1.758. Verifiable reward versus modelled reward: that's why
+    "does GRPO need the KL term" has two right answers.
+  </p>
+  <p>
+    The placement is the interview detail. RLHF folds the KL penalty into the per-sample reward; GRPO adds it
+    as a term in the loss, over the whole distribution. Sounds like bookkeeping. It isn't:
+  </p>
+<pre><code>  beta 0.1  KL in loss   true 5.5380  KL <span class="ok">2.5114</span>
+  beta 0.1  KL in reward true 5.4884  KL <span class="hl">1.8684</span>
+  beta 0.5  KL in loss   true 5.4048  KL 1.9776
+  beta 0.5  KL in reward true 5.3146  KL 1.2440</code></pre>
+  <p>
+    Same β, visibly different leash. Folded into the reward, the penalty goes through the group baseline with
+    everything else — mean subtracted, std divided — so the coefficient you set is not the one you get; it's
+    been rescaled by that group's reward spread. As a loss term its gradient is taken directly against the
+    reference, and β means what it says.
+  </p>
+  <h2>The baseline must be per-prompt</h2>
+  <p>
+    Why the paper says <em>group</em> and not <em>batch</em>. Prompt 0 is easy (average reward 6.2), prompt 5
+    is hard (average 1.0). Take the mean over the whole batch instead of within each prompt's group, and look
+    at what the advantage is now measuring.
+  </p>
+<pre><code>mean advantage per prompt, one batch (easy -&gt; hard):
+ prompt  mean reward   group baseline   batch baseline
+   0          6.227            <span class="ok">0.000</span>            <span class="hl">3.018</span>
+   1          3.470            0.000            0.261
+   2          4.783           -0.000            1.574
+   3          2.138           -0.000           -1.070
+   4          1.645           -0.000           -1.564
+   5          0.989            0.000           <span class="hl">-2.220</span>
+
+gradient variance   group 2.1146   batch 3.6445</code></pre>
+  <p>
+    Read the last column. On prompt 5 every sampled answer has a negative advantage, the group's best
+    included: the number now says "how hard was this prompt", not "how good was this answer". Probability
+    drains off everything the policy sampled and onto whatever it didn't. On prompt 0, the reverse.
+  </p>
+<pre><code>final true reward per prompt after 300 steps:
+ prompt   best possible   group baseline   batch baseline
+   0              9.351            <span class="ok">9.341</span>            9.217
+   ...
+   5              1.884            1.879            <span class="hl">1.822</span>
+  overall 5.5390 (group)  vs  5.4709 (batch)</code></pre>
+  <p>
+    Worse on every prompt, not just the hard ones, with 70% more gradient variance. In fairness it's still
+    unbiased in the limit — a constant is a constant — but with a finite batch each update is about the
+    prompt's difficulty rather than the answer's quality, which is what the numbers above are. "Group
+    relative" is the name of the algorithm, and this is why.
+  </p>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. Models ship செய்திருக்கிறேன், MLOps செய்திருக்கிறேன். DeepSeek-R1 வெளிவந்து எல்லோரும்
+    "GRPO" என்று சொல்லத் தொடங்கியபோது, இது நான் புதிதாகக் கற்க வேண்டிய ஒரு algorithm என்று நினைத்தேன். இல்லை.
+    இது <a href="../rlhf/">RLHF பக்கத்தில்</a> உள்ள policy gradient-தான் — ஒரே ஒரு வரி மாறியிருக்கிறது, baseline-ஐக்
+    கணக்கிடும் வரி. அந்த ஒரு வரி உங்கள் training job-லிருந்து ஒரு முழு இரண்டாவது neural network-ஐ அழிக்கிறது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (policy gradient, baseline, critic, value network,
+    advantage, group, KL, PPO, reward model…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும்
+    நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>
+    இந்தப் பக்கம் இரண்டு பக்கங்களின் மேல் சாய்கிறது. <a href="../rlhf/">RLHF</a>: மனித votes-க்கு ஒரு reward model
+    fit செய்து, ஒரு policy-யால் அதை ஏறுங்கள் — KL penalty நீங்கள் தொடங்கிய model-க்கு அருகில் வைத்திருக்கும்.
+    <a href="../dpo/">DPO</a>: ஏறுவதையே தவிர்க்கவும், ஏனெனில் அந்த objective-ன் optimum-க்கு ஒரு closed form
+    இருக்கிறது; அதை ஒரு supervised loss ஆக மாற்றலாம். <a href="../instructgpt/">InstructGPT</a>: இவை அனைத்தும்
+    உள்ளே அமரும் மூன்று-நிலை pipeline. Reward model-ஐயோ, KL penalty-யையோ, policy gradient-ஐயோ நான் மீண்டும்
+    பெறமாட்டேன். GRPO மூன்றையும் வைத்திருக்கிறது; அது மாற்றுவது நீங்கள் <em>கழிப்பது</em> என்ன என்பதுதான்.
+  </p>
+
+  <h2>வகுப்பிற்குள்ளேயே curve-ல் மதிப்பெண்</h2>
+
+  <p>
+    இதோ policy gradient — எல்லோரும் முதலில் எழுதும் வடிவம்:
+  </p>
+
+<pre><code>for answer, reward in sampled:
+    push_up(answer, by=reward)     # reward 0..10, எப்போதும் நேர்மறை</code></pre>
+
+  <p>
+    Bug-ஐக் கண்டுபிடியுங்கள். ஒவ்வொரு reward-ம் நேர்மறை, எனவே sample செய்யப்பட்ட ஒவ்வொரு answer-ம் மேலே
+    தள்ளப்படுகிறது — நல்லவையும் மோசமானவையும் சேர்த்து. நீங்கள் கற்க நினைத்தது <em>வேறுபாடுகள்</em>தான்;
+    அவை ஒரு பெரிய மாறிலியின் மேல் உள்ள சிறு அலை. இது converge ஆகும்; நடைமுறையில் இது noise. எனவே
+    நீங்கள் ஏதாவது ஒன்றைக் கழிக்கிறீர்கள். PPO-வின் பதில்: இரண்டாவது examiner-ஐ வேலைக்கு அமர்த்துங்கள்.
+    ஒரு <strong>value network</strong> — ஒரு critic, தோராயமாக policy-யின் அளவு — இந்த prompt எவ்வளவு
+    score செய்ய வேண்டும் என்று கணிக்கப் பயிற்றுவியுங்கள், அதன் கணிப்பைக் கழியுங்கள். இது வேலை செய்கிறது,
+    மேலும் உங்கள் memory-ஐ இரட்டிப்பாக்குகிறது.
+  </p>
+
+  <p>GRPO-வின் பதில், ஒவ்வொரு ஆசிரியரும் ஏற்கனவே பயன்படுத்துவதுதான்:</p>
+
+<pre><code>group   = [sample_answer(prompt) for _ in range(G)]   # G answers, ஒரே prompt
+rewards = [verify(a) for a in group]
+for answer, reward in zip(group, rewards):
+    A = (reward - mean(rewards)) / std(rewards)       # curve-ல் மதிப்பெண்
+    push_up(answer, by=A)                             # A இப்போது குறியுடன்</code></pre>
+
+  <p>
+    வகுப்பை வகுப்பிற்கு எதிராகவே மதிப்பிடுங்கள். இரண்டாவது model இல்லை, கூடுதல் forward pass இல்லை — அந்த
+    rewards ஏற்கனவே உங்களிடம் இருந்தன, மேலும் group-ல் பாதி அமைப்பாலேயே எதிர்மறையாக வருகிறது. கணிதத்தில்
+    எதுவும் மேம்படவில்லை; bill-தான் மேம்பட்டது. PPO-வின் critic என்பது தோராயமாக policy அளவுள்ள இரண்டாவது
+    network — அதற்கே சொந்தமான weights, gradients, Adam moments உண்டு; RLHF-ன் memory உண்மையில் போவது
+    optimiser state-க்குத்தான். DeepSeekMath ஒரு அமைப்பில் GRPO-வை அறிமுகப்படுத்துகிறது: mathematical
+    reasoning, அங்கே reward என்பது இறுதி விடையைச் சரிபார்க்கும் ஒரு verifier. ஒரு answer-ஐ
+    <code>==</code> வைத்து மதிப்பிட முடிந்தால் உங்களுக்கு reward model தேவையில்லை, இப்போது critic-ம்
+    தேவையில்லை — DeepSeek-R1 பயிற்றுவிக்கப்பட்ட செய்முறை இதுதான்.
+  </p>
+
+  <p class="thanglish">
+    PPO rendaavadhu examiner-a velaikku vaikkudhu. GRPO sollradhu: ore prompt-kku
+    G answers eduthutta, andha G-oda mean-e baseline. Zero parameters, half the
+    group negative — class-a class-kku edhiraave grade pannradhu.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-ன் ஒப்புமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Baseline</strong> b(x)</td><td>Gradient-ன் எடையாகப் பயன்படுத்தும் முன் reward-லிருந்து கழிக்கப்படும் ஒரு எண்</td><td>ஒரு diff-ன் பூஜ்ஜியப் புள்ளி. Delta மட்டுமே signal</td></tr>
+      <tr><td><strong>Advantage</strong> A</td><td>reward − baseline. "இந்த prompt-க்கு எதிர்பார்த்ததை விட நல்லதா, மோசமா"</td><td>உங்கள் p50-உடன் ஒப்பிட்ட latency, மூல milliseconds அல்ல</td></tr>
+      <tr><td><strong>Critic</strong> / value net</td><td>Baseline-ஐக் கணிக்கும் கற்கப்பட்ட model. PPO ஒன்றை policy-யுடன் சேர்த்துப் பயிற்றுவிக்கிறது</td><td>நீங்கள் இப்போது deploy, monitor, debug செய்ய வேண்டிய இரண்டாவது service</td></tr>
+      <tr><td><strong>Group</strong>, G</td><td><em>ஒரே</em> prompt-க்கு sample செய்யப்பட்ட G answers. அவற்றின் mean-தான் baseline</td><td>ஒரே request-ஐ G வழிகளில் fan out செய்து, பதில்களை ஒப்பிடுங்கள்</td></tr>
+      <tr><td><strong>Reference</strong> π<sub>ref</sub></td><td>நீங்கள் தொடங்கிய freeze செய்யப்பட்ட model</td><td><code>main</code> branch. RLHF பக்கத்தில் உள்ளதே</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">A<sub>i</sub> = ( r<sub>i</sub> − mean(r<sub>1..G</sub>) ) / std(r<sub>1..G</sub>)<br>
+  loss = −(1/G) Σ<sub>i</sub> A<sub>i</sub> · log π(y<sub>i</sub>|x) + β · KL( π ‖ π<sub>ref</sub> )</div>
+
+  <p>
+    அவ்வளவுதான். ஒரே batch-ன் மேல் பல epochs எடுக்க PPO பயன்படுத்தும் ratio-and-clip இயந்திரத்தை உண்மையான
+    paper எழுதுகிறது; அதை நீக்கிவிட்டால் மிஞ்சுவது இதுதான். இதை pipeline நிலைகளாகப் படியுங்கள்:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>நிலை</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>y<sub>1..G</sub> ∼ π(·|x)</code></td><td>G answers</td><td>Group. ஒரு prompt, G samples. இதுதான் critic-ஐ இடமாற்றுகிறது</td></tr>
+      <tr><td><code>r<sub>i</sub></code></td><td>G scalars</td><td>ஒரு answer-க்கு ஒரு reward. DeepSeekMath-ல், ஒரு verifier-ன் மதிப்பெண்</td></tr>
+      <tr><td><code>− mean(r)</code></td><td>scalar</td><td><strong>Baseline.</strong> பூஜ்ஜிய parameters செலவு. Group-ல் பாதி எதிர்மறையாகிறது</td></tr>
+      <tr><td><code>/ std(r)</code></td><td>scalar</td><td>இந்த group எவ்வளவு பரவலாக இருந்தது என்பதைச் சார்ந்து step size இருப்பது நின்றுவிடுகிறது</td></tr>
+      <tr><td><code>A<sub>i</sub> · log π(y<sub>i</sub>)</code></td><td>scalar</td><td>Policy gradient. A &gt; 0 எனில் மேலே, A &lt; 0 எனில் கீழே தள்ளு</td></tr>
+      <tr><td><code>+ β · KL</code></td><td>scalar ≥ 0</td><td>RLHF பக்கத்தின் கயிறு — ஆனால் reward-க்கு அல்ல, <em>loss</em>-க்குச் சேர்க்கப்படுகிறது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Baseline ஏன் இருக்கிறது</h2>
+
+  <p>
+    Script ஒரு பொம்மை உலகை RLHF-ன் வடிவத்திலேயே கட்டுகிறது: 6 prompts, ஒவ்வொன்றுக்கும் 12 candidate answers,
+    மற்றும் ஒரு reward. இங்கே reward ஒரு <em>verifier</em> — நேரடி 0-முதல்-10 மதிப்பெண், கற்கப்பட்ட reward model
+    இல்லை — ஏனெனில் GRPO கண்டுபிடிக்கப்பட்ட அமைப்பு அதுதான். Policy என்பது 12 answers மேல் ஒரு softmax, ஒரு
+    prompt-க்கு ஒரு வரிசை logits; எனவே policy gradient சரியாக <code>A * (onehot(a) − probs)</code>. இதனால்
+    எல்லோரும் பேசி யாரும் print செய்யாத ஒன்றை என்னால் அளக்க முடிகிறது: <strong>gradient estimate-ன்
+    variance</strong>. 400 சுயேச்சையான estimates, advantage மட்டுமே மாறுகிறது.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>every reward in this world is POSITIVE: min 0.027   max 9.351
+gradient variance, G=8, 400 independent estimates:
+  no baseline           E||g - Eg||^2 =    <span class="hl">9.7489</span>
+  group-mean baseline   E||g - Eg||^2 =    <span class="ok">2.1146</span>
+  reduction: 4.6x
+both estimators point the same way on average:
+  cosine(Eg_none, Eg_group) = <span class="ok">0.9961</span></code></pre>
+
+  <div class="note">
+    <strong>Expectation-ல் baseline எதையும் மாற்றுவதில்லை. அதுதான் விஷயமே.</strong> இரு estimators-ம் ஒரே
+    gradient-ஐ நோக்கியே குறிவைக்கின்றன — அவற்றின் means-க்கு இடையே cosine 0.9961. நீங்கள் எந்த answer-ஐ
+    sample செய்தீர்கள் என்பதைச் சாராத ஒரு எண்ணைக் கழிப்பது இலவசம், ஏனெனில் ஒரு distribution-ன் gradient
+    ஒரு மாறிலிக்கு எதிராகக் கூட்டினால் பூஜ்ஜியம். ஒரு baseline வாங்கித் தருவது variance மட்டுமே. RL-ல் உள்ள
+    ஒவ்வொரு baseline வாதமும், PPO-வின் critic உட்பட, எந்த இலவச மாறிலியைத் தேர்ந்தெடுப்பது என்பது பற்றியதுதான்.
+  </div>
+
+  <h2>Group-தான் baseline</h2>
+
+  <p>
+    ஒரு group, நீங்களே கணக்குப் போட்டுப் பார்க்க print செய்யப்பட்டது. Prompt 2, reference policy-லிருந்து G = 8
+    samples, replacement-உடன் எடுக்கப்பட்டது — எனவே answer 3 நான்கு முறை வருகிறது. ஒரு group என்பது ஏற்கனவே
+    batch-ல் இருக்கும் ஒரு prompt-ன் இன்னும் G decodes மட்டுமே.
+  </p>
+
+<pre><code>prompt 2, G=8 sampled answers: [ 3  7  7  3  0 11  3  3]
+rewards            : [6.67  2.645 2.645 6.67  4.185 2.11  6.67  6.67 ]
+group mean         : 4.7828
+group std          : 1.9649
+advantage = (r - mean) / std :
+   answer  3  r  6.670  -&gt;  A <span class="ok">+0.9603</span>
+   answer  7  r  2.645  -&gt;  A -1.0881
+   answer  7  r  2.645  -&gt;  A -1.0881
+   answer  3  r  6.670  -&gt;  A +0.9603
+   answer  0  r  4.185  -&gt;  A -0.3044
+   answer 11  r  2.110  -&gt;  A <span class="hl">-1.3604</span>
+   answer  3  r  6.670  -&gt;  A +0.9603
+   answer  3  r  6.670  -&gt;  A +0.9603
+sum of advantages  : -0.000000   (zero, by construction)</code></pre>
+
+  <p>
+    (6.670 − 4.7828) / 1.9649 = 0.9603. Phone calculator-ல் செய்து பாருங்கள். அதுதான் algorithm. அந்த
+    <code>/ std</code> அலங்காரம் அல்ல: அது இல்லாவிட்டால் உங்கள் update அளவு, இந்த group-ன் rewards எவ்வளவு
+    பரவலாக இருந்தன என்பதைச் சார்ந்திருக்கும் — அது answer-ன் பண்பு அல்ல, prompt-ன் பண்பு.
+  </p>
+
+  <h2>நீங்கள் அழிக்கும் critic</h2>
+
+  <p>
+    அதே பிரச்சனை, அதே 400-estimate அளவீடு, மூன்று baselines: எதுவும் இல்லை, ஒரு fitted value baseline
+    (PPO-பாணி critic, ஒவ்வொரு prompt-க்கும் சரியான expected reward கொடுக்கப்பட்டது — நான் அதற்குத் தாராளமாக
+    இருக்கிறேன்), மற்றும் group mean. பிறகு ஒவ்வொன்றுடனும் 300 steps training.
+  </p>
+
+<pre><code>gradient variance, G=8, 400 estimates:
+  no baseline                       <span class="hl">9.7489</span>
+  fitted value baseline (PPO)       2.3416
+  group-mean baseline (GRPO)        <span class="ok">2.1146</span>
+
+parameters:
+  policy (6 prompts x 12 logits)     72
+  critic MLP (8 -&gt; 16 -&gt; 1)         <span class="hl">161</span>
+  group baseline                      <span class="ok">0</span>   &lt;- இதுதான் விஷயம்
+
+300 steps, G=8, beta=0.02:
+  reference policy         true reward 3.0131
+  with critic              true reward 5.5041   KL 2.1683
+  group baseline           true reward <span class="ok">5.5390</span>   KL 2.5183</code></pre>
+
+  <p>
+    72-parameter policy-க்கு எதிராக 161-parameter critic — critic-ன் வேலை வெட்கப்படும் அளவுக்கு எளிதான ஒரு
+    பொம்மை உலகில். உண்மையான ஒரு run-ல் அது சொந்த Adam state-உடன் கூடிய இரண்டாவது 7B network. இங்கே அது
+    எதையும் வாங்கித் தரவில்லை: group baseline சற்றே குறைந்த variance-ஐயும் சற்றே அதிக reward-ஐயும் பெறுகிறது,
+    பூஜ்ஜிய parameters-க்கு.
+  </p>
+
+  <div class="note">
+    <strong>பொம்மையை அளவுக்கு மீறிப் படிக்காதீர்கள்.</strong> என் critic ஒரு சுத்தமான 8-பரிமாண embedding-ஐப்
+    பார்க்கிறது; உண்மையான ஒன்று text-ஐப் படிக்கிறது, தீர்க்கக் கடினமான ஒரு regression வைத்திருக்கிறது. நேர்மையான
+    வடிவம்: critic பயனற்றது அல்ல, அது <em>விலை உயர்ந்தது, தவறக்கூடியது</em>; group அதில் பெரும்பகுதியை இலவசமாகத்
+    தருகிறது. உங்கள் training run-ல் தவறாகப் போகக்கூடிய இரண்டு விஷயங்கள் ஒன்றாகின்றன.
+  </div>
+
+  <h2>Group எவ்வளவு பெரிதாக இருக்க வேண்டும்?</h2>
+
+  <p>
+    GRPO சேர்க்கும் ஒரே hyperparameter G: நேரடியான compute-க்கு-எதிரான-variance பரிமாற்றம், ஒரு prompt-க்கு ஒரு
+    step-க்கு G decodes. Sweep-ன் இரு முனைகள்தான் சுவாரஸ்யமானவை.
+  </p>
+
+<pre><code>  G   grad variance   final true reward   note
+   1          <span class="hl">0.0000              3.0131</span>   advantage is identically 0
+   2          2.5451              5.5031
+   4          1.3656              5.5278
+   8          0.6290              5.5390
+  16          0.2994              5.5428
+  32          0.1455              <span class="ok">5.5442</span>
+
+  reference policy, untrained:  true reward 3.0131</code></pre>
+
+  <p>
+    G = 1 உற்றுப் பார்க்கத் தகுந்தது. ஒரே sample-உடன் group mean <em>அந்த</em> sample-ஆகவே இருக்கிறது, எனவே
+    ஒவ்வொரு advantage-ம் சரியாகப் பூஜ்ஜியம், gradient பூஜ்ஜியம், policy reference-ஐ விட்டு எங்கும் நகர்வதில்லை:
+    3.0131 உள்ளே, 3.0131 வெளியே. Error இல்லை, warning இல்லை, NaN இல்லை — எதுவும் செய்யாத ஒரு training run.
+    Grade செய்ய ஒரு curve உருவாக இரண்டு answers தேவை.
+  </p>
+
+  <p>
+    மறுமுனையில், G இரட்டிக்கும்போது variance பாதியாகிக் கொண்டே போகிறது, ஆனால் reward நெடுவரிசை G = 8-ல் நகர்வதை
+    நிறுத்திவிட்டது. நான்காவது தசம இடத்திற்காக 8-க்கும் 32-க்கும் இடையே நான்கு மடங்கு decodes கட்டுகிறீர்கள்.
+    உண்மையான runs இதே காரணத்திற்காக 8 முதல் 64 வரை அமர்கின்றன.
+  </p>
+
+  <p class="thanglish">
+    G=1-la advantage ellaame exactly zero — training run onnume pannaadhu, error-um
+    varaadhu. Innoru pakkam G=8 kku appuram reward nikkidhu, decodes mattum kootum.
+  </p>
+
+  <h2>கயிறு, loss-க்குள் நகர்த்தப்பட்டது</h2>
+
+  <p>
+    GRPO KL penalty-ஐ வைத்திருக்கிறது — <a href="../rlhf/">RLHF பக்கத்தில்</a> உள்ள அதே கயிறு, அதே வேலை: reward
+    signal ஒருபோதும் சரிபார்க்கப்படாத இடத்திற்கு policy அலைந்து செல்வதை நிறுத்துவது. β-வை sweep செய்தால்
+    நீங்கள் எதிர்பார்ப்பதே நடக்கிறது.
+  </p>
+
+<pre><code>  beta    final true reward   final KL(pi || pi_ref)
+  0.00               <span class="ok">5.5393</span>                 2.5190
+  0.02               5.5390                 2.5183
+  0.10               5.5380                 2.5114
+  0.50               5.4048                 1.9776
+  2.00               <span class="hl">3.8040</span>                 0.1162</code></pre>
+
+  <p>
+    இந்த அட்டவணை <em>காட்டாததைக்</em> கவனியுங்கள்: இங்கே β = 0 நன்றாகவே இருக்கிறது, சிறந்த reward-ஐயும்
+    பெறுகிறது. இந்த உலகில் reward ஒரு verifier, verifier-தான் உண்மை — hack செய்ய எதுவும் இல்லை.
+    <a href="../rlhf/">RLHF பக்கத்தில்</a> reward ஒரு கற்கப்பட்ட model; அங்கே இதற்கு இணையான அட்டவணையில் β = 0
+    reward model-ஐ 1.941 வரை ஏறுகிறது, அதே நேரம் true reward 1.758-க்கு <em>விழுகிறது</em>. சரிபார்க்கக்கூடிய
+    reward-க்கும் model செய்யப்பட்ட reward-க்கும் உள்ள வேறுபாடு — "GRPO-க்கு KL term தேவையா" என்பதற்கு இரண்டு
+    சரியான பதில்கள் இருப்பதற்குக் காரணம் இதுதான்.
+  </p>
+
+  <p>
+    இடம்தான் interview விவரம். RLHF, KL penalty-ஐ ஒவ்வொரு sample-ன் reward-க்குள் மடிக்கிறது; GRPO அதை
+    loss-ல் ஒரு term ஆக, முழு distribution மேல் சேர்க்கிறது. கணக்கு வைப்பது போலத் தோன்றும். இல்லை:
+  </p>
+
+<pre><code>  beta 0.1  KL in loss   true 5.5380  KL <span class="ok">2.5114</span>
+  beta 0.1  KL in reward true 5.4884  KL <span class="hl">1.8684</span>
+  beta 0.5  KL in loss   true 5.4048  KL 1.9776
+  beta 0.5  KL in reward true 5.3146  KL 1.2440</code></pre>
+
+  <p>
+    ஒரே β, ஆனால் கண்ணுக்குத் தெரியும் அளவு வேறுபட்ட கயிறு. Reward-க்குள் மடிக்கப்பட்டால், அந்த penalty
+    மற்ற எல்லாவற்றுடனும் சேர்ந்து group baseline வழியாகச் செல்கிறது — mean கழிக்கப்பட்டு, std வகுக்கப்பட்டு —
+    எனவே நீங்கள் அமைத்த coefficient நீங்கள் பெறுவது அல்ல; அது அந்த group-ன் reward பரவலால் அளவு மாற்றப்பட்டது.
+    ஒரு loss term ஆக இருக்கும்போது அதன் gradient நேரடியாக reference-க்கு எதிராக எடுக்கப்படுகிறது, β
+    சொல்வதையே அர்த்தப்படுத்துகிறது.
+  </p>
+
+  <h2>Baseline ஒவ்வொரு prompt-க்கும் தனித்தனியாக இருக்க வேண்டும்</h2>
+
+  <p>
+    Paper ஏன் <em>batch</em> என்று சொல்லாமல் <em>group</em> என்று சொல்கிறது. Prompt 0 எளிது (சராசரி reward 6.2),
+    prompt 5 கடினம் (சராசரி 1.0). ஒவ்வொரு prompt-ன் group-க்குள் அல்லாமல் முழு batch மேல் mean எடுங்கள், பிறகு
+    advantage இப்போது எதை அளக்கிறது என்று பாருங்கள்.
+  </p>
+
+<pre><code>mean advantage per prompt, one batch (easy -&gt; hard):
+ prompt  mean reward   group baseline   batch baseline
+   0          6.227            <span class="ok">0.000</span>            <span class="hl">3.018</span>
+   1          3.470            0.000            0.261
+   2          4.783           -0.000            1.574
+   3          2.138           -0.000           -1.070
+   4          1.645           -0.000           -1.564
+   5          0.989            0.000           <span class="hl">-2.220</span>
+
+gradient variance   group 2.1146   batch 3.6445</code></pre>
+
+  <p>
+    கடைசி நெடுவரிசையைப் படியுங்கள். Prompt 5-ல் sample செய்யப்பட்ட ஒவ்வொரு answer-க்கும் advantage எதிர்மறை,
+    group-ன் சிறந்ததும் உட்பட: அந்த எண் இப்போது "இந்த answer எவ்வளவு நல்லது" என்று சொல்லவில்லை, "இந்த prompt
+    எவ்வளவு கடினம்" என்று சொல்கிறது. Policy sample செய்த எல்லாவற்றிலிருந்தும் probability வடிந்து, அது sample
+    செய்யாதவற்றின் மேல் சேர்கிறது. Prompt 0-ல், நேர்மாறாக.
+  </p>
+
+<pre><code>final true reward per prompt after 300 steps:
+ prompt   best possible   group baseline   batch baseline
+   0              9.351            <span class="ok">9.341</span>            9.217
+   ...
+   5              1.884            1.879            <span class="hl">1.822</span>
+  overall 5.5390 (group)  vs  5.4709 (batch)</code></pre>
+
+  <p>
+    கடினமான prompts-ல் மட்டுமல்ல, ஒவ்வொரு prompt-லும் மோசம் — 70% அதிக gradient variance-உடன். நியாயமாகச்
+    சொன்னால், limit-ல் அது இன்னும் unbiased-தான் — ஒரு மாறிலி ஒரு மாறிலிதான் — ஆனால் finite batch-உடன்
+    ஒவ்வொரு update-ம் answer-ன் தரத்தைப் பற்றியதாக இல்லாமல் prompt-ன் கடினத்தன்மையைப் பற்றியதாகிறது; மேலே
+    உள்ள எண்கள் காட்டுவது அதைத்தான். "Group relative" என்பதுதான் algorithm-ன் பெயர், காரணம் இதுதான்.
+  </p>
+
+</section>
+
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने models ship किए हैं, MLOps किया है। जब DeepSeek-R1 आया और सब "GRPO" कहने
+    लगे, तो मुझे लगा यह कोई नया algorithm है जो मुझे शुरू से सीखना पड़ेगा। ऐसा नहीं है। यह
+    <a href="../rlhf/">RLHF पेज</a> वाला policy gradient ही है, बस एक line बदली हुई — वह line जो baseline
+    निकालती है। वही एक line आपके training job से एक पूरा दूसरा neural network मिटा देती है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (policy gradient, baseline, critic, value network,
+    advantage, group, KL, PPO, reward model…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में
+    आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    यह पेज दो और पेजों पर टिका है। <a href="../rlhf/">RLHF</a>: इंसानी votes पर एक reward model fit करो, फिर
+    policy से उस पर चढ़ो, और KL penalty आपको शुरुआती model के पास बनाए रखे। <a href="../dpo/">DPO</a>: चढ़ाई
+    छोड़ ही दो, क्योंकि उस objective के optimum का एक closed form है जिसे आप supervised loss में बदल सकते हैं।
+    <a href="../instructgpt/">InstructGPT</a>: वह तीन-चरणों वाली pipeline जिसके अंदर यह सब बैठता है। मैं reward
+    model, KL penalty या policy gradient दोबारा नहीं निकालूँगा। GRPO तीनों रखता है; वह सिर्फ़ यह बदलता है कि आप
+    <em>घटाते</em> क्या हैं।
+  </p>
+
+  <h2>क्लास के भीतर ही curve पर नंबर देना</h2>
+
+  <p>
+    यह रहा policy gradient, वही रूप जो सब पहले लिखते हैं:
+  </p>
+
+<pre><code>for answer, reward in sampled:
+    push_up(answer, by=reward)     # reward 0..10, हमेशा धनात्मक</code></pre>
+
+  <p>
+    Bug पकड़िए। हर reward धनात्मक है, इसलिए हर sample किया गया answer ऊपर धकेला जाता है — अच्छे भी, बुरे भी।
+    आप सीखना <em>अंतर</em> चाहते थे, और वह एक बड़े स्थिरांक के ऊपर की छोटी सी लहर है। यह converge तो होता है;
+    व्यवहार में यह noise है। इसलिए आप कुछ घटाते हैं। PPO का जवाब: दूसरा examiner रख लो। एक
+    <strong>value network</strong> — एक critic, लगभग policy जितना बड़ा — को train करो कि यह prompt कितना score
+    करना चाहिए, और उसका अनुमान घटा दो। यह काम करता है, और आपकी memory दोगुनी कर देता है।
+  </p>
+
+  <p>GRPO का जवाब वही है जो हर शिक्षक पहले से इस्तेमाल करता है:</p>
+
+<pre><code>group   = [sample_answer(prompt) for _ in range(G)]   # G answers, एक prompt
+rewards = [verify(a) for a in group]
+for answer, reward in zip(group, rewards):
+    A = (reward - mean(rewards)) / std(rewards)       # curve पर नंबर
+    push_up(answer, by=A)                             # A अब चिह्न सहित</code></pre>
+
+  <p>
+    क्लास को क्लास के ही सामने आँकिए। कोई दूसरा model नहीं, कोई अतिरिक्त forward pass नहीं — वे rewards तो
+    आपके पास पहले से थे, और आधा group रचना से ही ऋणात्मक निकलता है। गणित में कुछ बेहतर नहीं हुआ; bill बेहतर
+    हुआ। PPO का critic लगभग policy जितना बड़ा दूसरा network है, अपने weights, gradients और Adam moments के
+    साथ — और RLHF की memory असल में optimiser state में ही जाती है। DeepSeekMath GRPO को एक ही setting में
+    पेश करता है: mathematical reasoning, जहाँ reward एक verifier है जो अंतिम उत्तर जाँचता है। अगर आप किसी
+    answer को <code>==</code> से आँक सकते हैं तो आपको reward model नहीं चाहिए, और अब critic भी नहीं — यही वह
+    नुस्ख़ा है जिससे DeepSeek-R1 train हुआ।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Baseline</strong> b(x)</td><td>वह संख्या जो reward में से घटाई जाती है, उसे gradient का भार बनाने से पहले</td><td>किसी diff का शून्य बिंदु। सिर्फ़ delta ही signal है</td></tr>
+      <tr><td><strong>Advantage</strong> A</td><td>reward − baseline. "इस prompt के लिए उम्मीद से बेहतर या बदतर"</td><td>अपने p50 के मुक़ाबले latency, कच्चे milliseconds नहीं</td></tr>
+      <tr><td><strong>Critic</strong> / value net</td><td>Baseline का अनुमान लगाने वाला सीखा हुआ model। PPO इसे policy के साथ train करता है</td><td>एक दूसरी service जिसे अब deploy, monitor और debug करना है</td></tr>
+      <tr><td><strong>Group</strong>, G</td><td><em>एक ही</em> prompt के लिए sample किए गए G answers। उनका mean ही baseline है</td><td>एक ही request को G तरफ़ fan out कीजिए, जवाबों की तुलना कीजिए</td></tr>
+      <tr><td><strong>Reference</strong> π<sub>ref</sub></td><td>वह जमा हुआ model जिससे आपने शुरू किया</td><td><code>main</code> branch. वही जो RLHF पेज पर है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">A<sub>i</sub> = ( r<sub>i</sub> − mean(r<sub>1..G</sub>) ) / std(r<sub>1..G</sub>)<br>
+  loss = −(1/G) Σ<sub>i</sub> A<sub>i</sub> · log π(y<sub>i</sub>|x) + β · KL( π ‖ π<sub>ref</sub> )</div>
+
+  <p>
+    बस इतना ही। असली paper वह ratio-and-clip मशीनरी भी लिखता है जो PPO एक ही batch पर कई epochs के लिए
+    इस्तेमाल करता है; उसे हटा दीजिए तो यही बचता है। इसे pipeline के चरणों की तरह पढ़िए:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>y<sub>1..G</sub> ∼ π(·|x)</code></td><td>G answers</td><td>Group. एक prompt, G samples. यही critic की जगह लेता है</td></tr>
+      <tr><td><code>r<sub>i</sub></code></td><td>G scalars</td><td>हर answer का reward. DeepSeekMath में, एक verifier का नंबर</td></tr>
+      <tr><td><code>− mean(r)</code></td><td>scalar</td><td><strong>यही baseline है।</strong> शून्य parameters का ख़र्च। आधा group ऋणात्मक हो जाता है</td></tr>
+      <tr><td><code>/ std(r)</code></td><td>scalar</td><td>Step size अब इस बात पर निर्भर नहीं रहता कि यह group कितना फैला हुआ निकला</td></tr>
+      <tr><td><code>A<sub>i</sub> · log π(y<sub>i</sub>)</code></td><td>scalar</td><td>Policy gradient. A &gt; 0 हो तो ऊपर, A &lt; 0 हो तो नीचे</td></tr>
+      <tr><td><code>+ β · KL</code></td><td>scalar ≥ 0</td><td>RLHF पेज वाली रस्सी — पर reward में नहीं, <em>loss</em> में जोड़ी गई</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Baseline होता ही क्यों है</h2>
+
+  <p>
+    Script एक खिलौना दुनिया बनाता है, RLHF वाली शक्ल में: 6 prompts, हर एक के 12 candidate answers, और एक
+    reward. यहाँ reward एक <em>verifier</em> है — सीधा 0-से-10 का नंबर, कोई सीखा हुआ reward model नहीं —
+    क्योंकि GRPO इसी setting के लिए बना था। Policy 12 answers पर एक softmax है, हर prompt के लिए logits की
+    एक पंक्ति, इसलिए policy gradient ठीक-ठीक <code>A * (onehot(a) − probs)</code> है और मैं वह चीज़ नाप सकता
+    हूँ जिसकी बात सब करते हैं पर print कोई नहीं करता: <strong>gradient estimate का variance</strong>. 400
+    स्वतंत्र estimates, सिर्फ़ advantage बदलता है।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>every reward in this world is POSITIVE: min 0.027   max 9.351
+gradient variance, G=8, 400 independent estimates:
+  no baseline           E||g - Eg||^2 =    <span class="hl">9.7489</span>
+  group-mean baseline   E||g - Eg||^2 =    <span class="ok">2.1146</span>
+  reduction: 4.6x
+both estimators point the same way on average:
+  cosine(Eg_none, Eg_group) = <span class="ok">0.9961</span></code></pre>
+
+  <div class="note">
+    <strong>Expectation में baseline कुछ नहीं बदलता। यही तो बात है।</strong> दोनों estimators एक ही gradient
+    की तरफ़ निशाना लगाते हैं — उनके means के बीच cosine 0.9961. ऐसी संख्या घटाना जो इस पर निर्भर न हो कि आपने
+    कौन सा answer sample किया, मुफ़्त है, क्योंकि किसी distribution का gradient एक स्थिरांक के विरुद्ध जोड़ने
+    पर शून्य हो जाता है। Baseline से मिलता सिर्फ़ variance है। RL में हर baseline की बहस, PPO के critic समेत,
+    इसी बारे में है कि कौन सा मुफ़्त स्थिरांक चुना जाए।
+  </div>
+
+  <h2>Group ही baseline है</h2>
+
+  <p>
+    एक group, इस तरह print किया गया कि आप ख़ुद हिसाब लगा सकें। Prompt 2, reference policy से G = 8 samples,
+    replacement के साथ — इसलिए answer 3 चार बार आता है। एक group बस उसी prompt के G और decodes हैं जो पहले
+    से batch में है।
+  </p>
+
+<pre><code>prompt 2, G=8 sampled answers: [ 3  7  7  3  0 11  3  3]
+rewards            : [6.67  2.645 2.645 6.67  4.185 2.11  6.67  6.67 ]
+group mean         : 4.7828
+group std          : 1.9649
+advantage = (r - mean) / std :
+   answer  3  r  6.670  -&gt;  A <span class="ok">+0.9603</span>
+   answer  7  r  2.645  -&gt;  A -1.0881
+   answer  7  r  2.645  -&gt;  A -1.0881
+   answer  3  r  6.670  -&gt;  A +0.9603
+   answer  0  r  4.185  -&gt;  A -0.3044
+   answer 11  r  2.110  -&gt;  A <span class="hl">-1.3604</span>
+   answer  3  r  6.670  -&gt;  A +0.9603
+   answer  3  r  6.670  -&gt;  A +0.9603
+sum of advantages  : -0.000000   (zero, by construction)</code></pre>
+
+  <p>
+    (6.670 − 4.7828) / 1.9649 = 0.9603. फ़ोन के calculator पर कर लीजिए। यही algorithm है। वह <code>/
+    std</code> सजावट नहीं है: उसके बिना आपके update का आकार इस पर निर्भर करेगा कि इस group के rewards कितने
+    फैले हुए निकले — जो prompt का गुण है, answer का नहीं।
+  </p>
+
+  <h2>वह critic जिसे आप मिटा देते हैं</h2>
+
+  <p>
+    वही समस्या, वही 400-estimate माप, तीन baselines: कोई नहीं, एक fitted value baseline (PPO जैसा critic,
+    जिसे हर prompt का ठीक expected reward थमा दिया गया — मैं उसके साथ उदार हूँ), और group mean. फिर हर एक
+    के साथ 300 steps की training.
+  </p>
+
+<pre><code>gradient variance, G=8, 400 estimates:
+  no baseline                       <span class="hl">9.7489</span>
+  fitted value baseline (PPO)       2.3416
+  group-mean baseline (GRPO)        <span class="ok">2.1146</span>
+
+parameters:
+  policy (6 prompts x 12 logits)     72
+  critic MLP (8 -&gt; 16 -&gt; 1)         <span class="hl">161</span>
+  group baseline                      <span class="ok">0</span>   &lt;- यही बात है
+
+300 steps, G=8, beta=0.02:
+  reference policy         true reward 3.0131
+  with critic              true reward 5.5041   KL 2.1683
+  group baseline           true reward <span class="ok">5.5390</span>   KL 2.5183</code></pre>
+
+  <p>
+    72-parameter policy के मुक़ाबले 161-parameter critic, वह भी ऐसी खिलौना दुनिया में जहाँ critic का काम
+    शर्मनाक हद तक आसान है। असली run में वह अपने Adam state वाला दूसरा 7B network होता है। और यहाँ वह कुछ
+    नहीं देता: group baseline को थोड़ा कम variance और थोड़ा ज़्यादा reward मिलता है, शून्य parameters में।
+  </p>
+
+  <div class="note">
+    <strong>खिलौने को ज़्यादा मत पढ़िए।</strong> मेरा critic एक साफ़-सुथरा 8-आयामी embedding देखता है; असली
+    वाला text पढ़ता है और उसके सामने एक कठिन regression है। ईमानदार बात: critic बेकार नहीं है, वह
+    <em>महँगा और ग़लती करने वाला</em> है, और group आपको उसका ज़्यादातर हिस्सा मुफ़्त दे देता है। आपके training
+    run में जो दो चीज़ें ग़लत हो सकती थीं, वे एक रह जाती हैं।
+  </div>
+
+  <h2>Group कितना बड़ा होना चाहिए?</h2>
+
+  <p>
+    G ही अकेला hyperparameter है जो GRPO जोड़ता है: सीधा compute-बनाम-variance का सौदा, हर prompt पर हर step
+    में G decodes. Sweep के दोनों सिरे ही दिलचस्प हैं।
+  </p>
+
+<pre><code>  G   grad variance   final true reward   note
+   1          <span class="hl">0.0000              3.0131</span>   advantage is identically 0
+   2          2.5451              5.5031
+   4          1.3656              5.5278
+   8          0.6290              5.5390
+  16          0.2994              5.5428
+  32          0.1455              <span class="ok">5.5442</span>
+
+  reference policy, untrained:  true reward 3.0131</code></pre>
+
+  <p>
+    G = 1 पर ठहरकर देखिए। एक ही sample हो तो group mean वही sample <em>है</em>, इसलिए हर advantage ठीक शून्य
+    है, gradient शून्य है, और policy reference से हिलती ही नहीं: 3.0131 अंदर, 3.0131 बाहर। न error, न warning,
+    न NaN — एक training run जो कुछ नहीं करता। Curve बनने के लिए कम से कम दो answers चाहिए।
+  </p>
+
+  <p>
+    दूसरे सिरे पर G दोगुना होने के साथ variance आधा होता जाता है, पर reward का column G = 8 पर ही रुक गया।
+    चौथे दशमलव के लिए आप 8 से 32 के बीच चार गुना decodes चुकाते हैं। असली runs इसी वजह से 8 से 64 के आसपास
+    बैठते हैं।
+  </p>
+
+  <h2>रस्सी, loss के भीतर ले जाई गई</h2>
+
+  <p>
+    GRPO KL penalty रखता है — वही रस्सी, वही काम जो <a href="../rlhf/">RLHF पेज</a> पर था: policy को वहाँ
+    भटकने से रोकना जहाँ reward signal कभी जाँचा ही नहीं गया। β को sweep कीजिए तो वही होता है जिसकी उम्मीद है।
+  </p>
+
+<pre><code>  beta    final true reward   final KL(pi || pi_ref)
+  0.00               <span class="ok">5.5393</span>                 2.5190
+  0.02               5.5390                 2.5183
+  0.10               5.5380                 2.5114
+  0.50               5.4048                 1.9776
+  2.00               <span class="hl">3.8040</span>                 0.1162</code></pre>
+
+  <p>
+    ध्यान दीजिए कि यह तालिका क्या <em>नहीं</em> दिखाती: यहाँ β = 0 ठीक है, और सबसे अच्छा reward देता है। इस
+    दुनिया में reward एक verifier है और verifier ही सच है — hack करने को कुछ नहीं। <a href="../rlhf/">RLHF
+    पेज</a> पर, जहाँ reward एक सीखा हुआ model है, उसी तालिका में β = 0 reward model को 1.941 तक चढ़ा देता है
+    जबकि true reward <em>गिरकर</em> 1.758 हो जाता है। सत्यापन-योग्य reward बनाम model किया गया reward — इसी
+    वजह से "क्या GRPO को KL term चाहिए" के दो सही जवाब हैं।
+  </p>
+
+  <p>
+    जगह ही असली interview वाली बारीक़ी है। RLHF, KL penalty को हर sample के reward में मोड़ देता है; GRPO उसे
+    loss में एक term की तरह, पूरे distribution पर जोड़ता है। सुनने में हिसाब-किताब लगता है। है नहीं:
+  </p>
+
+<pre><code>  beta 0.1  KL in loss   true 5.5380  KL <span class="ok">2.5114</span>
+  beta 0.1  KL in reward true 5.4884  KL <span class="hl">1.8684</span>
+  beta 0.5  KL in loss   true 5.4048  KL 1.9776
+  beta 0.5  KL in reward true 5.3146  KL 1.2440</code></pre>
+
+  <p>
+    वही β, पर साफ़ दिखने लायक़ अलग रस्सी। Reward में मोड़ देने पर वह penalty बाक़ी सब के साथ group baseline से
+    होकर गुज़रती है — mean घटता है, std से भाग होता है — इसलिए जो coefficient आपने रखा वह वह नहीं है जो आपको
+    मिलता है; वह उस group के reward-फैलाव से दोबारा नाप लिया गया है। Loss term के रूप में उसका gradient सीधे
+    reference के विरुद्ध लिया जाता है, और β का मतलब वही होता है जो वह कहता है।
+  </p>
+
+  <h2>Baseline हर prompt के लिए अलग होना चाहिए</h2>
+
+  <p>
+    Paper <em>batch</em> क्यों नहीं, <em>group</em> क्यों कहता है। Prompt 0 आसान है (औसत reward 6.2), prompt 5
+    कठिन (औसत 1.0). हर prompt के group के भीतर के बजाय पूरे batch पर mean लीजिए, और देखिए कि advantage अब
+    नाप क्या रहा है।
+  </p>
+
+<pre><code>mean advantage per prompt, one batch (easy -&gt; hard):
+ prompt  mean reward   group baseline   batch baseline
+   0          6.227            <span class="ok">0.000</span>            <span class="hl">3.018</span>
+   1          3.470            0.000            0.261
+   2          4.783           -0.000            1.574
+   3          2.138           -0.000           -1.070
+   4          1.645           -0.000           -1.564
+   5          0.989            0.000           <span class="hl">-2.220</span>
+
+gradient variance   group 2.1146   batch 3.6445</code></pre>
+
+  <p>
+    आख़िरी column पढ़िए। Prompt 5 पर हर sample किए गए answer का advantage ऋणात्मक है, group का सबसे अच्छा भी:
+    वह संख्या अब कहती है "यह prompt कितना कठिन था", न कि "यह answer कितना अच्छा था"। Policy ने जो कुछ sample
+    किया उससे probability बहकर उस पर चली जाती है जो उसने sample किया ही नहीं। Prompt 0 पर उल्टा।
+  </p>
+
+<pre><code>final true reward per prompt after 300 steps:
+ prompt   best possible   group baseline   batch baseline
+   0              9.351            <span class="ok">9.341</span>            9.217
+   ...
+   5              1.884            1.879            <span class="hl">1.822</span>
+  overall 5.5390 (group)  vs  5.4709 (batch)</code></pre>
+
+  <p>
+    सिर्फ़ कठिन prompts पर नहीं, हर prompt पर ख़राब — और 70% ज़्यादा gradient variance के साथ। इंसाफ़ की बात है
+    कि limit में यह अब भी unbiased है — स्थिरांक तो स्थिरांक ही है — पर finite batch के साथ हर update answer
+    की गुणवत्ता के बजाय prompt की कठिनाई के बारे में हो जाता है, और ऊपर के आँकड़े यही दिखाते हैं। "Group
+    relative" ही इस algorithm का नाम है, और वजह यही है।
+  </p>
+
+</section>
+
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism — advantages, the policy gradient by hand, the variance measurements. A tiny CPU
+  PyTorch loop for the training steps and the critic, because Adam and <code>.backward()</code> are not the
+  idea. Every function under 35 lines.
+</p>
+<p>
+  <a href="grpo_from_scratch.py" download><strong>Download the full script</strong></a> — about 220 lines of
+  mechanism plus seven runnable demos. Then:
+</p>
+<pre><code>python3 grpo_from_scratch.py</code></pre>
+<pre><code>def policy_gradient(logits, samples, advantages):
+    """samples: (P, G) sampled answer indices. advantages: (P, G) scalars."""
+    probs = softmax(logits)
+    grad = np.zeros_like(logits)
+    G = samples.shape[1]
+    for p in range(logits.shape[0]):
+        for i in range(G):
+            onehot = np.zeros(logits.shape[1])
+            onehot[samples[p, i]] = 1.0
+            grad[p] += advantages[p, i] * (onehot - probs[p]) / G
+    return grad
+
+
+def sample_group(logits, G, rng):
+    """Sample G answers per prompt, WITH replacement -- a group. (P, G)."""
+    probs = softmax(logits)
+    return np.stack([rng.choice(N_ANSWERS, size=G, p=probs[p])
+                     for p in range(logits.shape[0])])
+
+
+# ---------------------------------------------------------------------------
+# STAGE 2 -- THE WHOLE PAPER. Two lines.
+#
+# A critic predicts "what should this prompt score?" and you subtract it.
+# GRPO says: you already sampled G answers for this prompt. Their own mean IS
+# that prediction, and it costs no parameters. Divide by the group's standard
+# deviation so the update size does not depend on how spread out the rewards
+# happened to be. Grading on a curve within the class.
+# ---------------------------------------------------------------------------
+def group_advantages(r, normalise=True):
+    """r: (P, G) rewards for a group. Returns (P, G) advantages."""
+    adv = r - r.mean(axis=1, keepdims=True)               # the group baseline
+    if normalise:
+        adv = adv / (r.std(axis=1, keepdims=True) + 1e-8)  # scale invariance
+    return adv</code></pre>
+<p>And the training step, with the KL where GRPO puts it:</p>
+<pre><code>        chosen = lp.gather(1, torch.tensor(samples))              # (P, G)
+        pg = -(adv_t * chosen).mean()
+        kl = (lp.exp() * (lp - torch.log_softmax(ref, dim=-1))).sum(-1).mean()
+        loss = pg + beta * kl                                     # KL in LOSS</code></pre>
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a living. Demos 6 and 7
+  run five of these for you, side by side with the working version.
+</p>
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Set <code>G=1</code> in <code>train(...)</code></td><td>Every advantage is exactly <code>0.</code> — the group mean is the sample. True reward after 300 steps: 3.0131, identical to the untrained reference. Silent no-op.</td></tr>
+    <tr><td>Pass <code>normalise=False</code> to <code>group_advantages</code></td><td>Update size tracks reward spread, not answer quality. Gradient row norms: prompt 0 (std 2.291) 1.0768, prompt 5 (std 0.601) 0.2764. Normalised they're 0.4700 and 0.4603.</td></tr>
+    <tr><td>Swap in <code>batch_advantages</code> — one mean over all prompts</td><td>Mean advantage becomes +3.018 on the easy prompt and −2.220 on the hard one. Variance 2.1146 → 3.6445, and every prompt ends lower.</td></tr>
+    <tr><td>Set <code>beta=0.0</code></td><td>KL climbs from 2.5183 to 2.5190 and reward is <em>fine</em> — because a verifier can't be hacked. Then read the same knob on <a href="../rlhf/">the RLHF page</a>, where β = 0 sends true reward from 2.360 down to 1.758.</td></tr>
+    <tr><td>Pass <code>critic_value=np.zeros(N_PROMPTS)</code> to <code>grad_variance</code> — a critic that never learned anything</td><td>A constant baseline is no baseline: variance 9.7489, exactly the no-baseline number, versus 2.3416 fitted and 2.1146 for the group mean.</td></tr>
+    <tr><td>In <code>group_advantages</code>, use <code>r.max()</code> instead of <code>r.mean()</code></td><td>Every advantage ≤ 0, so the update only ever pushes answers down. It converges to whatever the policy never sampled.</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="note">
+  <strong>Then</strong> read the paper — but only the reinforcement-learning section, where GRPO is defined
+  and compared against PPO, and the unified paradigm discussion at the end that puts rejection sampling, DPO
+  and PPO in one frame. Skip the data-pipeline and pre-training half of DeepSeekMath entirely; it's a good
+  paper about a maths corpus that happens to contain the algorithm you came for. You'll find it's just the
+  comments you've already read.
+</div>
+<h2>On the maths anxiety</h2>
+<p>
+  Less here than the notation suggests: a mean, a standard deviation, and one fact — subtracting a constant
+  from the reward doesn't change where the gradient points on average. That fact is the whole justification
+  for baselines, and the script demonstrates it rather than proving it (cosine 0.9961).
+</p>
+<p>
+  You don't need the policy gradient theorem. For a softmax policy the gradient of <code>log π(a)</code> with
+  respect to the logits is <code>onehot(a) − probs</code>; for anything real it's
+  <code>loss.backward()</code>. What is worth internalising is the word "variance", which RL people say
+  constantly and which means one concrete thing: run the same estimator twice on the same policy and see how
+  far apart the two answers land. That's <code>grad_variance</code>.
+</p>
+<p>
+  What I skipped: PPO's clipped ratio, which lets you take several optimiser steps on one batch of samples
+  without the policy running away from them. Real GRPO keeps it. I take one step per batch, so the ratio is
+  identically 1 and clipping is a no-op. Asked what GRPO inherits from PPO, that's the answer — the clipping,
+  minus the critic.
+</p>
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the baseline, and why deleting the critic is cheap. That's deliberately
+  narrow. Three other places cover what I skipped.
+</p>
+<ul class="paper-list">
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2402.03300">
+      <span class="paper-title">DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models</span>
+      <span class="paper-meta">Shao et al., 2024. The original — GRPO is section 4.</span>
+    </a>
+    <p class="paper-pitch">
+      The reinforcement-learning section for the algorithm and the PPO comparison, then the unified-paradigm
+      discussion — the best short account anywhere of how SFT, rejection sampling, DPO and PPO are one
+      gradient with different data sources. Skip the corpus half.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2018-04-08-policy-gradient/">
+      <span class="paper-title">Policy Gradient Algorithms</span>
+      <span class="paper-meta">Lilian Weng. The maths, laid out in order.</span>
+    </a>
+    <p class="paper-pitch">
+      The derivation I waved at: why a baseline leaves the gradient unbiased, where actor-critic comes from,
+      what PPO's clipped objective does. Go here when "trust me, the constant cancels" stops being enough.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/docs/trl/main/en/grpo_trainer">
+      <span class="paper-title">GRPO Trainer</span>
+      <span class="paper-meta">Hugging Face TRL. The implementation you'd actually run.</span>
+    </a>
+    <p class="paper-pitch">
+      My 12-answer softmax against a real one: token-level log-probs, reward functions you write yourself,
+      <code>num_generations</code> (my G), and the config knobs for the KL term. Shows which of my
+      simplifications the library also makes, and which it doesn't.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2501.12948">
+      <span class="paper-title">DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning</span>
+      <span class="paper-meta">DeepSeek-AI, 2025. GRPO at full scale.</span>
+    </a>
+    <p class="paper-pitch">
+      What this algorithm does pointed at a real model with rule-based rewards and no supervised warm-up. Read
+      it for the reward design and the training-behaviour section; the algorithm is a back-reference to this
+      page.
+    </p>
+  </li>
+</ul>
+<div class="note">
+  <strong>Order I'd take them in:</strong> <a href="../rlhf/">RLHF</a> first for the reward model and the
+  leash, this page second for the baseline, then Lilian Weng if the maths is nagging you and R1 if the scale
+  is. <a href="../dpo/">DPO</a> fits anywhere after RLHF — it's the other way out of the same expense.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

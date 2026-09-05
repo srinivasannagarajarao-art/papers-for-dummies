@@ -1,0 +1,1384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-head Latent Attention — for programmers</title>
+<meta name="description" content="DeepSeek's MLA explained as code: cache one compressed latent per token instead of all the keys and values, and fold the decompression into the query matrix so it costs nothing. Runnable NumPy, printed byte counts, and the RoPE problem everyone skips.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Tamil:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Multi-head Latent Attention: the KV cache, compressed</h1>
+    <p class="paper-meta">DeepSeek-AI, 2024</p>
+    <p class="lede">
+      The sequel to the KV-cache page. Same formula, one term attacked from a
+      completely different direction.
+    </p>
+    <p>
+      <a href="mla_from_scratch.py" download>Download mla_from_scratch.py</a>
+      — everything below runs from it. NumPy only, under a second.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
+
+  <p>
+    The <a href="../kv-cache/">KV-cache page</a> ends on the number that decides
+    what you can serve: bytes per token. I'm not going to re-derive the cache
+    here — go read that first if you haven't, because everything below assumes
+    it. This page is about one line in that formula.
+  </p>
+
+  <p>
+    Multi-query and grouped-query attention attack <code>kv_heads</code> by
+    sharing keys and values across heads, and the GQA paper's own ablations show
+    them losing quality doing it — that's the trade
+    <a href="../llama/">Llama-2 70B</a> took with GQA-8. MLA doesn't touch
+    <code>kv_heads</code>. It changes what a cache entry <em>is</em>.
+  </p>
+
+  <h2>Store the archive, not the files</h2>
+
+  <p>
+    You've made this call before. A directory of files is too big to keep
+    around, so you tar and gzip it:
+  </p>
+
+<pre><code>store(tar_gz(files))            # small on disk
+files = untar(gunzip(archive))  # pay CPU to get them back</code></pre>
+
+  <p>
+    The usual objection is that decompression costs you on every read. Now the
+    twist. Suppose the only thing you ever do with the decompressed files is
+    feed them into one specific function — and that function is a matrix
+    multiply, and so is the decompression:
+  </p>
+
+<pre><code>scores = (x @ W_q) @ (c @ W_uk).T     # decompress c into keys, then dot
+scores = x @ (W_q @ W_uk.T) @ c.T     # same thing. Fold the two matrices
+W_abs  = W_q @ W_uk.T                 # once, at load. Now:
+scores = (x @ W_abs) @ c.T            # the keys are NEVER built</code></pre>
+
+  <p>
+    That's the whole paper. The decompression step folds into the operation you
+    were going to do anyway, so at inference it costs nothing. Matrix
+    multiplication being associative is not a deep fact. Noticing that it makes
+    a 57× cache reduction free is.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Latent c</strong></td><td>One small vector per token per layer, <code>x @ W_dkv</code></td><td>The gzip archive. The only thing on disk</td></tr>
+      <tr><td><strong>d<sub>c</sub></strong></td><td>How many numbers the latent has. 512 in DeepSeek-V2</td><td>Compression level</td></tr>
+      <tr><td><strong>W<sub>uk</sub>, W<sub>uv</sub></strong></td><td>Up-projections: latent → keys, latent → values</td><td><code>gunzip</code>, twice, for two different outputs</td></tr>
+      <tr><td><strong>Absorption</strong></td><td>Folding W<sub>uk</sub> into W<sub>q</sub> once at load</td><td>Constant folding two adjacent multiplies</td></tr>
+      <tr><td><strong>Decoupled RoPE dims</strong></td><td>A small extra block that carries position, cached separately</td><td>The one field you can't compress because it's indexed</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <p>
+    Not an attention formula. The cache formula from the previous page, and
+    what MLA does to it:
+  </p>
+
+  <div class="formula">MHA: 2 × layers × kv<sub>heads</sub> × head<sub>dim</sub> × seq × dtype<br>MLA: &nbsp;&nbsp;&nbsp;&nbsp;layers × (d<sub>c</sub> + d<sub>rope</sub>) &nbsp;&nbsp;&nbsp;&nbsp;× seq × dtype</div>
+
+  <p>Two things changed. Read them as terms:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Value</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>2</code></td><td><strong>gone</strong></td><td>K and V are compressed <em>jointly</em>. One latent serves both, so there is no separate V to store</td></tr>
+      <tr><td><code>kv_heads × head_dim</code></td><td><strong>gone</strong></td><td>Replaced by d<sub>c</sub>. The latent is shared across every head, so adding heads no longer adds cache</td></tr>
+      <tr><td><code>d<sub>c</sub></code></td><td>512</td><td>The latent width. This is the dial. DeepSeek-V2 runs 512 against 128 × 128 = 16384 expanded dimensions</td></tr>
+      <tr><td><code>d<sub>rope</sub></code></td><td>64</td><td>The decoupled position block. Also shared across heads. Exists only because RoPE breaks the trick — see below</td></tr>
+      <tr><td><code>layers</code>, <code>seq</code>, <code>dtype</code></td><td>unchanged</td><td>Still the model, still your users, still fp16</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The table that is the whole argument</h2>
+
+  <p>
+    Same arithmetic as the KV-cache page — I reuse its <code>kv_cache_bytes</code>
+    function unchanged — plus one new line for MLA. Two shapes: a Llama-2-7B one
+    you already know, and a DeepSeek-V2 one.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>Llama-2-7B shape: layers=32 heads=32 head_dim=128 d_c=512 d_rope=64, fp16
+    multi-head     :    524,288 bytes/token   1.0x
+    grouped-query 8:    131,072 bytes/token   4.0x smaller
+    MLA            :     36,864 bytes/token  14.2x smaller
+    MLA vs GQA-8   :   3.6x smaller
+
+DeepSeek-V2 shape: layers=60 heads=128 head_dim=128 d_c=512 d_rope=64, fp16
+    multi-head     :  3,932,160 bytes/token   1.0x
+    grouped-query 8:    245,760 bytes/token  16.0x smaller
+    MLA            :     69,120 bytes/token <span class="ok"> 56.9x smaller ✓</span>
+    MLA vs GQA-8   :   3.6x smaller</code></pre>
+
+  <p>
+    Look at what happens when the head count goes from 32 to 128. Multi-head
+    cache goes up 7.5×, to 3.75 MiB per token per sequence — unservable, which
+    is why nobody builds that. GQA-8 only doubles, and that doubling comes from
+    the layer count (32 to 60), not the heads — it pinned <code>kv_heads</code>
+    at 8. MLA doesn't move <em>at all</em>: 576 floats per
+    layer regardless of how many heads read them. That invariance is the
+    property, and it's what lets DeepSeek run 128 heads in the first place.
+  </p>
+
+  <div class="note">
+    <strong>The MLA-vs-GQA number is 3.6× at both shapes, and that's the honest
+    comparison.</strong> The eye-catching 57× is against a multi-head baseline
+    nobody would have shipped at 128 heads. DeepSeek report their own reduction
+    against DeepSeek-V1's actual architecture, and separately report MLA
+    outperforming GQA in their ablations at comparable cache. Quote both
+    carefully; they are different claims.
+  </div>
+
+  <h2>Is it still attention? At full rank, exactly</h2>
+
+  <p>
+    A cache that changes the answer isn't a cache. So the script builds one toy
+    model, runs textbook multi-head attention through it, then runs the same
+    inputs through the down-projection and up-projection, and diffs.
+  </p>
+
+  <p>
+    One honesty note: to make the rank sweep mean anything I factor the joint
+    <code>[W_k | W_v]</code> with an SVD and shape its singular values to decay,
+    because trained weight matrices have a decaying spectrum and freshly
+    randomised ones don't.
+  </p>
+
+<pre><code>d_model=32 n_heads=4 head_dim=8
+full-rank latent d_c = 32
+  max |standard - through the latent| = 7.772e-15   <span class="ok">&lt;- float noise ✓</span>
+  identical to 1e-10?                 True
+
+now shrink the latent and watch what you are actually trading.
+errors are relative: max abs error / max abs value.
+   d_c | K reconstruction | attention output | cache bytes/token
+    32 |           0.0000 |           0.0000 |         64 B
+    24 |           0.0130 |           0.0113 |         48 B
+    16 |           0.0429 |           0.0540 |         32 B
+    12 |           0.1549 |           0.1228 |         24 B
+     8 |           0.1952 |           0.1889 |         16 B
+     4 |           0.5808 |           0.6061 |          8 B
+     2 |           0.8738 |           <span class="hl">0.8946</span> |          4 B</code></pre>
+
+  <p>
+    At full rank it's not an approximation at all — it's a lossless re-encoding,
+    and 7.8 × 10<sup>−15</sup> is float64 addition order. Below it you can watch
+    the price. Halving the cache costs about 5% on the output; quartering it
+    costs 60%. The output error tracks the key error closely, sometimes under
+    and sometimes over, because softmax renormalises whatever it's given.
+  </p>
+
+  <div class="note">
+    <strong>That curve is the entire design decision.</strong> Everything about
+    picking d<sub>c</sub> = 512 is finding where it turns, on real learned
+    weights instead of a shaped-spectrum toy. The mechanism is trivial; the
+    calibration is the work.
+  </div>
+
+  <h2>Absorption: the part that makes it free</h2>
+
+  <p>
+    Compressing the cache is easy and obvious. The reason it isn't a disaster is
+    the fold. Written out per head, with W<sub>q</sub> at
+    (d<sub>model</sub>, head<sub>dim</sub>) and W<sub>uk</sub> at
+    (d<sub>c</sub>, head<sub>dim</sub>):
+  </p>
+
+  <div class="formula">(x W<sub>q</sub>) · (c W<sub>uk</sub>)<sup>T</sup> &nbsp;=&nbsp; x W<sub>q</sub> W<sub>uk</sub><sup>T</sup> c<sup>T</sup> &nbsp;=&nbsp; (x (W<sub>q</sub> W<sub>uk</sub><sup>T</sup>)) · c<sup>T</sup></div>
+
+  <p>
+    Nothing in that expression is new attention — it is still the
+    <a href="../attention/">softmax(QK<sup>T</sup>/√d) V</a> lookup, with the K
+    factored. The middle term is the point: nothing in
+    <code>W_q @ W_uk.T</code> depends
+    on the data, so you compute it once when the model loads and never again.
+    The query gets projected straight into latent space and dotted against the
+    cache. Keys are never materialised.
+  </p>
+
+<pre><code>cached tokens n = 64, d_c = 16, head_dim = 8
+  W_q       (32, 8)   W_uk (16, 8)
+  W_absorbed = W_q @ W_uk.T -&gt; (32, 16)  (built ONCE at load)
+  expanded scores[0][:4] = [ 1.4168  1.7375  0.3522 -5.6463]
+  absorbed scores[0][:4] = [ 1.4168  1.7375  0.3522 -5.6463]
+  max abs difference     = 8.438e-15   <span class="ok">&lt;- same thing ✓</span>
+
+operation counts, per head per decode step:
+   cached n |  expanded MACs |  absorbed MACs | saving
+         64 |          8,960 |          1,536 |  5.83x
+        512 |         69,888 |          8,704 |  8.03x
+      4,096 |        557,312 |         66,048 |  8.44x
+     32,768 |      4,456,704 |        524,800 |  8.49x</code></pre>
+
+  <p>
+    Be careful with that second table in an interview. At this toy's ratio of
+    d<sub>c</sub> to head<sub>dim</sub> the absorbed path is genuinely fewer
+    multiply-accumulates; at DeepSeek's real ratios it isn't always. The
+    reliable win is that the expansion tensor never exists, so it never crosses
+    the memory bus — and decode is memory-bound, which the previous page
+    measured at 0.48 MACs per byte.
+  </p>
+
+  <h2>RoPE, and why the explanations stop here</h2>
+
+  <p>
+    Every blog post I read about MLA describes the compression, describes the
+    absorption, and then quietly moves on. Here's what they skipped.
+  </p>
+
+  <p>
+    <a href="../rope/">RoPE</a> rotates q and k by an angle proportional to
+    their <em>position</em>. So the score isn't
+    <code>(x W_q) · (c W_uk)</code>, it's
+    <code>(R(m) x W_q) · (R(n) c W_uk)</code> — and R(n) is a different matrix
+    for every cached token. There is no way to pull it out and fold it into a
+    fixed W<sub>q</sub> at load time. The absorption and the rotation do not
+    commute. Not "approximately"; at all.
+  </p>
+
+<pre><code>scores over 8 cached tokens, head 0, with RoPE applied:
+  correct (expand, then rotate) : [ 2.5354 -2.1796  0.0678 -3.9345]
+  absorbed then rotated         : [ 6.6998  2.1142  2.3629 -2.7651]
+  max abs difference            = <span class="hl">7.4962   &lt;- wrong</span>
+  ranking preserved?              <span class="hl">False</span></code></pre>
+
+  <p>
+    Not a rounding difference. The <em>ranking</em> of which tokens to attend to
+    is different, which means it isn't a slightly worse model, it's a different
+    one. DeepSeek's fix is to stop trying: split each head in two. Most
+    dimensions carry no position and stay absorbable. A small extra block of
+    d<sub>rope</sub> = 64 dimensions carries the rotation, is computed the
+    ordinary way, and is cached separately — <strong>one copy, shared by every
+    head</strong>. The score is the sum of the two parts.
+  </p>
+
+<pre><code>DeepSeek's fix -- split the head in two:
+  content part (absorbed, no position) : [ 2.2504 -0.2611 -0.1965 -0.022 ]
+  decoupled RoPE part (d_rope=8)   : [ -3.7696   8.6941 -19.5117   6.6326]
+  score = sum                          : [ -1.5192   8.4329 -19.7082   6.6107]
+  matches the explicit two-part sum?     <span class="ok">True, max diff 0.000e+00 ✓</span>
+
+what the decoupled block costs, per token, DeepSeek-V2 shape:
+  latent only        :  61,440 bytes/token
+  + decoupled RoPE   :  69,120 bytes/token (+7,680, +12.5%)
+  still vs multi-head: 56.9x smaller</code></pre>
+
+  <div class="note">
+    <strong>Twelve percent more cache, and the whole architecture survives.</strong>
+    That is what the decoupled dimensions are for. Not a tuning knob, not an
+    ablation — a structural repair to a hole that rotary embeddings punched in
+    the absorption. If someone explains MLA to you without mentioning it, they
+    have explained a model that doesn't work.
+  </div>
+
+  <h2>Where the saving actually lands</h2>
+
+  <p>
+    Cache bytes per token is an abstraction. The number your finance team feels
+    is how many concurrent sequences fit on one card. Fix a budget of 80 GiB for
+    cache alone, on the DeepSeek-V2 shape:
+  </p>
+
+<pre><code>   context | multi-head |    GQA-8 |      MLA | MLA seqs in 80 GiB
+     4,096 |     15.00G |    0.94G |    0.26G |    303
+    16,384 |     60.00G |    3.75G |    1.05G |     75
+    32,768 |    120.00G |    7.50G |    2.11G |     37
+   131,072 |    480.00G |   30.00G |    8.44G |      9
+
+  sequences that fit in 80 GiB at 32k context:
+    multi-head  :      <span class="hl">0</span> concurrent sequences
+    GQA-8       :     10 concurrent sequences
+    MLA         :     <span class="ok">37 concurrent sequences ✓</span></code></pre>
+
+  <p>
+    At 32k context this shape cannot serve a <em>single</em> multi-head sequence
+    in 80 GiB. GQA-8 fits 10. MLA fits 37. Per-token latency is identical in all
+    three — the weights are in flight anyway — so that's roughly 3.7× the tokens
+    per second per GPU, for the same silicon. This is the argument, and a lab
+    that serves its own model at scale is exactly who would make it.
+  </p>
+
+  <h2>What it costs, said plainly</h2>
+
+  <p>
+    MLA is not free, and I'd rather you had the honest version before an
+    interviewer hands it to you. Per attention layer, at DeepSeek-V2's shape:
+  </p>
+
+<pre><code>per attention layer, d_model=5120, 128 heads x 128:
+  multi-head    params:   335,544,320
+  GQA-8         params:   178,257,920
+  MLA           params:   229,441,536  (0.68x multi-head, 1.29x GQA-8)
+
+  cache at 32,768 tokens, batch 1:
+  multi-head :  120.00 GiB
+  GQA-8      :    7.50 GiB
+  MLA        :    <span class="ok">2.11 GiB ✓</span></code></pre>
+
+  <p>
+    Against 128-head multi-head, MLA is actually <em>cheaper</em> in parameters,
+    because the latent is a bottleneck. Against GQA-8 it costs about 1.29×, plus
+    arithmetic: an extra projection on every token and a wider per-head
+    dimension once the RoPE block is bolted on. The trade is a fixed cost you
+    pay once and share across the whole batch, in exchange for a per-sequence
+    per-token cost. That's a good deal at serving scale and a bad one at batch 1
+    on your laptop.
+  </p>
+
+  <p>
+    One more thing to keep straight, because it's the easiest place to be
+    confidently wrong. DeepSeek also apply a low-rank compression to the
+    <em>queries</em>. That one has nothing to do with the KV cache — queries are
+    never cached, as the previous page's break-it table showed. It reduces
+    activation memory during training. Same technique, different problem, and
+    the papers are clear about it even though summaries usually aren't.
+  </p>
+
+  <div class="note">
+    <strong>A caveat on quality.</strong> That MLA matches or beats grouped-query
+    attention on quality at comparable cache size is DeepSeek's reported claim
+    from their own ablations. Nothing on this page measures it. What I measured
+    here is bytes, MACs and reconstruction error — the parts that fit on a laptop.
+  </div>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    <a href="../kv-cache/">KV-cache பக்கம்</a> முடிவதே ஒரு எண்ணில்தான் — நீங்கள்
+    என்ன serve செய்ய முடியும் என்பதை முடிவு செய்யும் எண்: ஒரு token-க்கு எத்தனை
+    bytes. அந்த cache-ஐ இங்கே மீண்டும் வரையறுக்கப் போவதில்லை — படிக்கவில்லை
+    என்றால் முதலில் அதைப் படியுங்கள், ஏனெனில் இங்கே வருவது எல்லாமே அதை
+    அனுமானித்தே எழுதப்பட்டிருக்கிறது. இந்தப் பக்கம் அந்த formula-வின் ஒரே ஒரு
+    வரியைப் பற்றியது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (latent, absorption,
+    up-projection, down-projection, rank, KV cache, multi-head, grouped-query,
+    decoupled RoPE…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற
+    papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>
+    Multi-query மற்றும் grouped-query attention, heads-க்கு இடையே keys-ஐயும்
+    values-ஐயும் பகிர்ந்துகொண்டு <code>kv_heads</code>-ஐத் தாக்குகின்றன —
+    அப்படிச் செய்யும்போது தரம் குறைவதை GQA paper-ன் சொந்த ablations-ஏ
+    காட்டுகின்றன. <a href="../llama/">Llama-2 70B</a> GQA-8-உடன் ஏற்றுக்கொண்ட
+    trade அதுதான். MLA <code>kv_heads</code>-ஐத் தொடவே இல்லை. ஒரு cache entry
+    <em>என்றால் என்ன</em> என்பதையே மாற்றுகிறது.
+  </p>
+
+  <h2>Files-ஐ அல்ல, archive-ஐச் சேமியுங்கள்</h2>
+
+  <p>
+    இந்த முடிவை நீங்கள் ஏற்கனவே எடுத்திருக்கிறீர்கள். ஒரு directory-யிலுள்ள
+    files வைத்திருக்க முடியாத அளவு பெரிதாக இருக்கிறது, அதனால் tar செய்து gzip
+    செய்கிறீர்கள்:
+  </p>
+
+<pre><code>store(tar_gz(files))            # disk-ல் சிறியது
+files = untar(gunzip(archive))  # திரும்பப் பெற CPU செலவு</code></pre>
+
+  <p>
+    வழக்கமான ஆட்சேபனை: ஒவ்வொரு read-லும் decompression உங்களுக்குச் செலவு.
+    இப்போது திருப்பம். decompress செய்யப்பட்ட files-ஐ வைத்து நீங்கள் செய்யும்
+    ஒரே காரியம் ஒரு குறிப்பிட்ட function-க்குள் அதைச் செலுத்துவது மட்டுமே என்று
+    வைத்துக்கொள்ளுங்கள் — அந்த function ஒரு matrix multiply, decompression-ம்
+    ஒரு matrix multiply:
+  </p>
+
+<pre><code>scores = (x @ W_q) @ (c @ W_uk).T     # c-ஐ keys ஆக்கு, பிறகு dot
+scores = x @ (W_q @ W_uk.T) @ c.T     # அதே விஷயம். இரு matrix-ஐ மடி
+W_abs  = W_q @ W_uk.T                 # load-ல் ஒருமுறை. இப்போது:
+scores = (x @ W_abs) @ c.T            # keys ஒருபோதும் உருவாக்கப்படுவதில்லை</code></pre>
+
+  <p>
+    முழுப் paper-ம் இதுதான். decompression படி, நீங்கள் எப்படியும் செய்யப்போகும்
+    operation-க்குள் மடிந்துவிடுகிறது, அதனால் inference-ல் அதற்குச் செலவே
+    இல்லை. Matrix multiplication associative என்பது ஒன்றும் ஆழமான உண்மை அல்ல.
+    அது 57× cache குறைப்பை இலவசமாக்குகிறது என்று கவனிப்பதுதான் ஆழம்.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Latent c</strong></td><td>ஒரு token-க்கு, ஒரு layer-க்கு ஒரு சிறிய vector, <code>x @ W_dkv</code></td><td>gzip archive. disk-ல் இருப்பது இது மட்டுமே</td></tr>
+      <tr><td><strong>d<sub>c</sub></strong></td><td>latent-ல் எத்தனை எண்கள். DeepSeek-V2-ல் 512</td><td>Compression level</td></tr>
+      <tr><td><strong>W<sub>uk</sub>, W<sub>uv</sub></strong></td><td>Up-projections: latent → keys, latent → values</td><td><code>gunzip</code>, இரு வெவ்வேறு outputs-க்கு இருமுறை</td></tr>
+      <tr><td><strong>Absorption</strong></td><td>load-ல் ஒருமுறை W<sub>uk</sub>-ஐ W<sub>q</sub>-க்குள் மடிப்பது</td><td>அடுத்தடுத்த இரு multiplies-ஐ constant-fold செய்வது</td></tr>
+      <tr><td><strong>Decoupled RoPE dims</strong></td><td>position-ஐச் சுமக்கும் ஒரு சிறிய கூடுதல் block, தனியாக cache செய்யப்படுகிறது</td><td>index செய்யப்பட்டிருப்பதால் compress செய்ய முடியாத ஒரே field</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு formula</h2>
+
+  <p>
+    Attention formula அல்ல. முந்தைய பக்கத்தின் cache formula, மற்றும் MLA அதற்கு
+    என்ன செய்கிறது:
+  </p>
+
+  <div class="formula">MHA: 2 × layers × kv<sub>heads</sub> × head<sub>dim</sub> × seq × dtype<br>MLA: &nbsp;&nbsp;&nbsp;&nbsp;layers × (d<sub>c</sub> + d<sub>rope</sub>) &nbsp;&nbsp;&nbsp;&nbsp;× seq × dtype</div>
+
+  <p>இரண்டு விஷயங்கள் மாறின. அவற்றைத் தனித்தனிச் சொற்களாகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>மதிப்பு</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>2</code></td><td><strong>போய்விட்டது</strong></td><td>K-ம் V-ம் <em>இணைந்து</em> compress செய்யப்படுகின்றன. ஒரே latent இரண்டுக்கும் சேவை செய்கிறது, அதனால் தனியாக V சேமிக்க வேண்டியதில்லை</td></tr>
+      <tr><td><code>kv_heads × head_dim</code></td><td><strong>போய்விட்டது</strong></td><td>d<sub>c</sub> இதற்குப் பதிலாக வருகிறது. latent ஒவ்வொரு head-ஆலும் பகிரப்படுகிறது, அதனால் heads சேர்த்தால் cache கூடாது</td></tr>
+      <tr><td><code>d<sub>c</sub></code></td><td>512</td><td>latent-ன் அகலம். இதுதான் dial. விரிவாக்கப்பட்ட 128 × 128 = 16384 dimensions-க்கு எதிராக DeepSeek-V2 512-ஐ இயக்குகிறது</td></tr>
+      <tr><td><code>d<sub>rope</sub></code></td><td>64</td><td>decoupled position block. இதுவும் heads-க்கு இடையே பகிரப்படுகிறது. RoPE இந்தத் தந்திரத்தை உடைப்பதால் மட்டுமே இது இருக்கிறது — கீழே பாருங்கள்</td></tr>
+      <tr><td><code>layers</code>, <code>seq</code>, <code>dtype</code></td><td>மாறவில்லை</td><td>இன்னும் அதே model, அதே users, அதே fp16</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>முழு வாதமுமான அந்த table</h2>
+
+  <p>
+    KV-cache பக்கத்தின் அதே கணக்கு — அதன் <code>kv_cache_bytes</code>
+    function-ஐ மாற்றாமல் அப்படியே மீண்டும் பயன்படுத்துகிறேன் — கூடவே MLA-க்கு
+    ஒரு புதிய வரி. இரண்டு shapes: உங்களுக்குத் தெரிந்த Llama-2-7B ஒன்று,
+    மற்றொன்று DeepSeek-V2.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>Llama-2-7B shape: layers=32 heads=32 head_dim=128 d_c=512 d_rope=64, fp16
+    multi-head     :    524,288 bytes/token   1.0x
+    grouped-query 8:    131,072 bytes/token   4.0x smaller
+    MLA            :     36,864 bytes/token  14.2x smaller
+    MLA vs GQA-8   :   3.6x smaller
+
+DeepSeek-V2 shape: layers=60 heads=128 head_dim=128 d_c=512 d_rope=64, fp16
+    multi-head     :  3,932,160 bytes/token   1.0x
+    grouped-query 8:    245,760 bytes/token  16.0x smaller
+    MLA            :     69,120 bytes/token <span class="ok"> 56.9x smaller ✓</span>
+    MLA vs GQA-8   :   3.6x smaller</code></pre>
+
+  <p>
+    head எண்ணிக்கை 32-லிருந்து 128-க்குப் போகும்போது என்ன நடக்கிறது என்று
+    பாருங்கள். Multi-head cache 7.5× ஏறி, ஒரு sequence-ல் ஒரு token-க்கு
+    3.75 MiB ஆகிறது — serve செய்ய முடியாதது, அதனால்தான் யாரும் அப்படிக்
+    கட்டுவதில்லை. GQA-8 இரட்டிப்பாகிறது, அந்த இரட்டிப்பும் layer எண்ணிக்கையால்
+    வருகிறது (32-லிருந்து 60), heads-ஆல் அல்ல — அது <code>kv_heads</code>-ஐ
+    8-ல் நிறுத்தியது. MLA <em>சிறிதும்</em> அசையவில்லை: எத்தனை heads படித்தாலும்
+    ஒரு layer-க்கு 576 floats. அந்த மாறாத்தன்மைதான் இதன் இயல்பு, DeepSeek
+    முதலிலேயே 128 heads இயக்க முடிவதற்குக் காரணமும் அதுதான்.
+  </p>
+
+  <div class="note">
+    <strong>MLA-vs-GQA எண் இரு shapes-லும் 3.6×, அதுதான் நேர்மையான
+    ஒப்பீடு.</strong> கண்ணைக் கவரும் 57× என்பது, 128 heads-உடன் யாருமே ship
+    செய்திருக்க மாட்டார்கள் என்கிற multi-head baseline-க்கு எதிரானது. DeepSeek
+    தங்கள் சொந்தக் குறைப்பை DeepSeek-V1-ன் உண்மையான architecture-க்கு எதிராகவே
+    அறிக்கையிடுகிறார்கள்; ஒப்பிடத்தக்க cache-ல் MLA, GQA-ஐ மிஞ்சுவதாகத் தங்கள்
+    ablations-ல் தனியாகச் சொல்கிறார்கள். இரண்டையும் கவனமாக மேற்கோள்
+    காட்டுங்கள்; அவை வெவ்வேறு உரிமைகோரல்கள்.
+  </div>
+
+  <p class="thanglish">
+    Cache formula-la rendu term poidum: 2-um, kv_heads × head_dim-um. Latent
+    ellaa heads-kkum share aagum, adhanaala heads koodinaalum cache koodaadhu.
+    Aana honest-aana ottumottha comparison MLA vs GQA-8 = 3.6x dhaan; andha 57x
+    yaarum ship pannaadha multi-head baseline-kku edhiraana en sondha kanakku.
+  </p>
+
+  <h2>இது இன்னும் attention-தானா? Full rank-ல், சரியாக</h2>
+
+  <p>
+    விடையையே மாற்றும் cache, cache அல்ல. அதனால் script ஒரு toy model-ஐக்
+    கட்டி, அதன் வழியே பாடநூல் multi-head attention-ஐ இயக்கி, பிறகு அதே
+    inputs-ஐ down-projection மற்றும் up-projection வழியே இயக்கி, வித்தியாசம்
+    பார்க்கிறது.
+  </p>
+
+  <p>
+    ஒரு நேர்மைக் குறிப்பு: rank sweep-க்கு ஏதேனும் பொருள் இருக்க வேண்டும்
+    என்பதற்காக, இணைந்த <code>[W_k | W_v]</code>-ஐ SVD-யால் factor செய்து அதன்
+    singular values தேயும்படி வடிவமைக்கிறேன் — ஏனெனில் பயிற்சி பெற்ற weight
+    matrices-க்கு தேயும் spectrum இருக்கும், புதிதாக random ஆக்கப்பட்டவற்றுக்கு
+    இருக்காது.
+  </p>
+
+<pre><code>d_model=32 n_heads=4 head_dim=8
+full-rank latent d_c = 32
+  max |standard - through the latent| = 7.772e-15   <span class="ok">&lt;- float noise ✓</span>
+  identical to 1e-10?                 True
+
+now shrink the latent and watch what you are actually trading.
+errors are relative: max abs error / max abs value.
+   d_c | K reconstruction | attention output | cache bytes/token
+    32 |           0.0000 |           0.0000 |         64 B
+    24 |           0.0130 |           0.0113 |         48 B
+    16 |           0.0429 |           0.0540 |         32 B
+    12 |           0.1549 |           0.1228 |         24 B
+     8 |           0.1952 |           0.1889 |         16 B
+     4 |           0.5808 |           0.6061 |          8 B
+     2 |           0.8738 |           <span class="hl">0.8946</span> |          4 B</code></pre>
+
+  <p>
+    Full rank-ல் இது ஒரு approximation-ஏ அல்ல — இது இழப்பில்லாத மறு-encoding,
+    7.8 × 10<sup>−15</sup> என்பது float64 கூட்டல் வரிசையின் விளைவு. அதற்குக்
+    கீழே விலையைப் பார்க்கலாம். cache-ஐப் பாதியாக்கினால் output-ல் சுமார் 5%
+    செலவு; கால்பங்காக்கினால் 60% செலவு. output error, key error-ஐ நெருக்கமாகப்
+    பின்தொடர்கிறது — சில நேரம் குறைவாக, சில நேரம் அதிகமாக — ஏனெனில் softmax
+    தனக்குக் கிடைப்பதை மறுபடி normalise செய்துவிடுகிறது.
+  </p>
+
+  <div class="note">
+    <strong>அந்த curve-தான் முழு design முடிவு.</strong> d<sub>c</sub> = 512
+    தேர்வதென்பது, அது எங்கே திரும்புகிறது என்று கண்டுபிடிப்பதுதான் — அதுவும்
+    spectrum-ஐ வேண்டுமென்றே வடிவமைத்த toy-ல் அல்ல, உண்மையில் கற்ற weights-ல்.
+    இங்கே காட்டிய sweep அப்படி வேண்டுமென்றே வடிவமைக்கப்பட்ட spectrum-ஐப்
+    பயன்படுத்துகிறது. இயங்குமுறை சாதாரணம்; calibration-தான் வேலை.
+  </div>
+
+  <h2>Absorption: இதை இலவசமாக்கும் பகுதி</h2>
+
+  <p>
+    Cache-ஐ compress செய்வது எளிது, வெளிப்படையானது. அது ஒரு பேரழிவாக
+    இல்லாததற்குக் காரணம் அந்த மடிப்பு. W<sub>q</sub>
+    (d<sub>model</sub>, head<sub>dim</sub>)-ல், W<sub>uk</sub>
+    (d<sub>c</sub>, head<sub>dim</sub>)-ல் இருக்க, ஒரு head-க்கு எழுதினால்:
+  </p>
+
+  <div class="formula">(x W<sub>q</sub>) · (c W<sub>uk</sub>)<sup>T</sup> &nbsp;=&nbsp; x W<sub>q</sub> W<sub>uk</sub><sup>T</sup> c<sup>T</sup> &nbsp;=&nbsp; (x (W<sub>q</sub> W<sub>uk</sub><sup>T</sup>)) · c<sup>T</sup></div>
+
+  <p>
+    அந்த expression-ல் புதிய attention எதுவும் இல்லை — இது இன்னும் அதே
+    <a href="../attention/">softmax(QK<sup>T</sup>/√d) V</a> lookup, K மட்டும்
+    factor செய்யப்பட்டிருக்கிறது. நடுவிலிருக்கும் term-தான் விஷயம்:
+    <code>W_q @ W_uk.T</code>-ல் எதுவும் data-வைச் சார்ந்திருக்கவில்லை, அதனால்
+    model load ஆகும்போது ஒருமுறை கணக்கிட்டால் போதும், மீண்டும் வேண்டாம். Query
+    நேராக latent space-க்குள் project செய்யப்பட்டு cache-உடன் dot
+    செய்யப்படுகிறது. Keys ஒருபோதும் உருவாக்கப்படுவதில்லை.
+  </p>
+
+<pre><code>cached tokens n = 64, d_c = 16, head_dim = 8
+  W_q       (32, 8)   W_uk (16, 8)
+  W_absorbed = W_q @ W_uk.T -&gt; (32, 16)  (built ONCE at load)
+  expanded scores[0][:4] = [ 1.4168  1.7375  0.3522 -5.6463]
+  absorbed scores[0][:4] = [ 1.4168  1.7375  0.3522 -5.6463]
+  max abs difference     = 8.438e-15   <span class="ok">&lt;- same thing ✓</span>
+
+operation counts, per head per decode step:
+   cached n |  expanded MACs |  absorbed MACs | saving
+         64 |          8,960 |          1,536 |  5.83x
+        512 |         69,888 |          8,704 |  8.03x
+      4,096 |        557,312 |         66,048 |  8.44x
+     32,768 |      4,456,704 |        524,800 |  8.49x</code></pre>
+
+  <p>
+    Interview-ல் அந்த இரண்டாவது table-ஐக் கவனமாகக் கையாளுங்கள். இந்த toy-ன்
+    d<sub>c</sub> : head<sub>dim</sub> விகிதத்தில் absorbed பாதை உண்மையிலேயே
+    குறைவான multiply-accumulates; DeepSeek-ன் உண்மையான விகிதங்களில் எப்போதும்
+    அப்படி இல்லை. நம்பகமான வெற்றி என்னவென்றால், விரிவாக்கப்பட்ட tensor
+    ஒருபோதும் உருவாகவே இல்லை, அதனால் அது memory bus-ஐக் கடப்பதேயில்லை — decode
+    memory-bound, அதை முந்தைய பக்கம் ஒரு byte-க்கு 0.48 MACs என்று அளந்தது.
+  </p>
+
+  <p class="thanglish">
+    Absorption-oda point: W_q @ W_uk.T-la data dependency illa, adhanaala load
+    time-la oru thadava kanakku pannalaam. Keys epavum build aagaadhu, adhanaala
+    memory bus-ai adhu kadakkave illa — decode memory-bound aachaale idhu dhaan
+    unmaiyaana laabam.
+  </p>
+
+  <h2>RoPE, விளக்கங்கள் ஏன் இங்கேயே நின்றுவிடுகின்றன</h2>
+
+  <p>
+    MLA பற்றி நான் படித்த ஒவ்வொரு blog post-ம் compression-ஐ விவரிக்கிறது,
+    absorption-ஐ விவரிக்கிறது, பிறகு அமைதியாக அடுத்ததற்குச் சென்றுவிடுகிறது.
+    அவர்கள் தவிர்த்தது இதுதான்.
+  </p>
+
+  <p>
+    <a href="../rope/">RoPE</a>, q-ஐயும் k-ஐயும் அவற்றின்
+    <em>position</em>-க்கு விகிதாசாரமான கோணத்தில் சுழற்றுகிறது. அதனால் score
+    <code>(x W_q) · (c W_uk)</code> அல்ல, அது
+    <code>(R(m) x W_q) · (R(n) c W_uk)</code> — R(n) ஒவ்வொரு cache செய்யப்பட்ட
+    token-க்கும் வேறு matrix. அதை வெளியே இழுத்து, load நேரத்தில் நிலையான
+    W<sub>q</sub>-க்குள் மடிக்க வழியே இல்லை. Absorption-ம் சுழற்சியும்
+    commute ஆகாது. "தோராயமாக" அல்ல; சுத்தமாகவே இல்லை.
+  </p>
+
+<pre><code>scores over 8 cached tokens, head 0, with RoPE applied:
+  correct (expand, then rotate) : [ 2.5354 -2.1796  0.0678 -3.9345]
+  absorbed then rotated         : [ 6.6998  2.1142  2.3629 -2.7651]
+  max abs difference            = <span class="hl">7.4962   &lt;- wrong</span>
+  ranking preserved?              <span class="hl">False</span></code></pre>
+
+  <p>
+    இது rounding வித்தியாசம் அல்ல. எந்த tokens-க்கு attend செய்வது என்பதன்
+    <em>வரிசையே</em> வேறு, அதாவது இது சற்று மோசமான model அல்ல, இது வேறொரு
+    model. DeepSeek-ன் தீர்வு: முயற்சியை நிறுத்துவது — ஒவ்வொரு head-ஐயும்
+    இரண்டாகப் பிரிப்பது. பெரும்பாலான dimensions position-ஐச் சுமக்காமல்
+    absorb செய்யக்கூடியதாகவே இருக்கின்றன. d<sub>rope</sub> = 64
+    dimensions கொண்ட ஒரு சிறிய கூடுதல் block சுழற்சியைச் சுமந்து, சாதாரண
+    முறையில் கணக்கிடப்பட்டு, தனியாக cache செய்யப்படுகிறது —
+    <strong>ஒரே ஒரு நகல், ஒவ்வொரு head-ம் பகிர்ந்துகொள்கிறது</strong>. Score
+    என்பது இரு பகுதிகளின் கூட்டல்.
+  </p>
+
+<pre><code>DeepSeek's fix -- split the head in two:
+  content part (absorbed, no position) : [ 2.2504 -0.2611 -0.1965 -0.022 ]
+  decoupled RoPE part (d_rope=8)   : [ -3.7696   8.6941 -19.5117   6.6326]
+  score = sum                          : [ -1.5192   8.4329 -19.7082   6.6107]
+  matches the explicit two-part sum?     <span class="ok">True, max diff 0.000e+00 ✓</span>
+
+what the decoupled block costs, per token, DeepSeek-V2 shape:
+  latent only        :  61,440 bytes/token
+  + decoupled RoPE   :  69,120 bytes/token (+7,680, +12.5%)
+  still vs multi-head: 56.9x smaller</code></pre>
+
+  <div class="note">
+    <strong>பன்னிரண்டு சதவீதம் கூடுதல் cache, முழு architecture-ம்
+    தப்பிப்பிழைக்கிறது.</strong> decoupled dimensions இருப்பதற்குக் காரணம்
+    அதுதான். இது tuning knob அல்ல, ablation அல்ல — rotary embeddings
+    absorption-ல் போட்ட ஓட்டைக்குச் செய்யப்பட்ட கட்டமைப்புத் திருத்தம். இதைச்
+    சொல்லாமல் யாராவது உங்களுக்கு MLA-ஐ விளக்கினால், அவர்கள் விளக்கியது வேலை
+    செய்யாத ஒரு model.
+  </div>
+
+  <h2>சேமிப்பு உண்மையில் எங்கே விழுகிறது</h2>
+
+  <p>
+    ஒரு token-க்கு cache bytes என்பது ஒரு abstraction. உங்கள் finance team
+    உணரும் எண்: ஒரு card-ல் எத்தனை concurrent sequences பொருந்தும். cache-க்கு
+    மட்டும் 80 GiB என்று ஒரு budget-ஐ நிலைநிறுத்தி, DeepSeek-V2 shape-ல்:
+  </p>
+
+<pre><code>   context | multi-head |    GQA-8 |      MLA | MLA seqs in 80 GiB
+     4,096 |     15.00G |    0.94G |    0.26G |    303
+    16,384 |     60.00G |    3.75G |    1.05G |     75
+    32,768 |    120.00G |    7.50G |    2.11G |     37
+   131,072 |    480.00G |   30.00G |    8.44G |      9
+
+  sequences that fit in 80 GiB at 32k context:
+    multi-head  :      <span class="hl">0</span> concurrent sequences
+    GQA-8       :     10 concurrent sequences
+    MLA         :     <span class="ok">37 concurrent sequences ✓</span></code></pre>
+
+  <p>
+    32k context-ல் இந்த shape 80 GiB-ல் <em>ஒரே ஒரு</em> multi-head
+    sequence-ஐக் கூட serve செய்ய முடியாது. GQA-8-க்கு 10 பொருந்தும். MLA-க்கு
+    37. ஒரு token-க்கான latency மூன்றிலும் ஒன்றுதான் — weights எப்படியும்
+    பறந்துகொண்டிருக்கின்றன — அதனால் அதே silicon-ல் ஒரு GPU-க்கு ஒரு
+    விநாடிக்கான tokens சுமார் 3.7 மடங்கு. இதுதான் வாதம்; தன் சொந்த model-ஐப்
+    பெரிய அளவில் serve செய்யும் ஒரு lab-தான் இந்த வாதத்தை வைக்கும்.
+  </p>
+
+  <h2>இதன் விலை, நேரடியாகச் சொன்னால்</h2>
+
+  <p>
+    MLA இலவசம் அல்ல; ஒரு interviewer உங்களிடம் இதைத் தருவதற்கு முன்பே நேர்மையான
+    பதிப்பு உங்களிடம் இருக்க வேண்டும் என்றே விரும்புகிறேன். DeepSeek-V2-ன்
+    shape-ல், ஒரு attention layer-க்கு:
+  </p>
+
+<pre><code>per attention layer, d_model=5120, 128 heads x 128:
+  multi-head    params:   335,544,320
+  GQA-8         params:   178,257,920
+  MLA           params:   229,441,536  (0.68x multi-head, 1.29x GQA-8)
+
+  cache at 32,768 tokens, batch 1:
+  multi-head :  120.00 GiB
+  GQA-8      :    7.50 GiB
+  MLA        :    <span class="ok">2.11 GiB ✓</span></code></pre>
+
+  <p>
+    128-head multi-head-உடன் ஒப்பிடும்போது MLA parameters-ல் உண்மையில்
+    <em>மலிவானது</em>, ஏனெனில் latent ஒரு bottleneck. GQA-8-உடன் ஒப்பிடும்போது
+    சுமார் 1.29× செலவு, கூடவே கணக்கீடு: ஒவ்வொரு token-லும் ஒரு கூடுதல்
+    projection, RoPE block பொருத்தப்பட்ட பிறகு ஒரு head-க்கு அகலமான dimension.
+    இந்த trade என்பது — ஒருமுறை கட்டி முழு batch-ஆல் பகிரப்படும் நிலையான
+    செலவுக்கு ஈடாக, ஒரு sequence-க்கு ஒரு token-க்கான செலவைக் குறைப்பது. serve
+    செய்யும் அளவில் இது நல்ல பேரம், உங்கள் laptop-ல் batch 1-ல் மோசமான பேரம்.
+  </p>
+
+  <p>
+    இன்னொன்றைத் தெளிவாக வைத்திருங்கள், ஏனெனில் இங்குதான் நம்பிக்கையுடன் தவறாகச்
+    சொல்வது மிக எளிது. DeepSeek <em>queries</em>-க்கும் ஒரு low-rank
+    compression-ஐப் பயன்படுத்துகிறார்கள். அதற்கும் KV cache-க்கும் சம்பந்தமே
+    இல்லை — queries ஒருபோதும் cache செய்யப்படுவதில்லை, முந்தைய பக்கத்தின்
+    break-it table அதைக் காட்டியது. அது training-ன்போது activation memory-ஐக்
+    குறைக்கிறது. அதே நுட்பம், வேறு பிரச்சனை; papers இதில் தெளிவாக இருக்கின்றன,
+    சுருக்கங்கள் பொதுவாகத் தெளிவாக இருப்பதில்லை.
+  </p>
+
+  <div class="note">
+    <strong>தரம் பற்றிய ஒரு எச்சரிக்கை:</strong> MLA, GQA-ஐ விட நல்ல தரம்
+    தருகிறது என்பது DeepSeek தங்கள் paper-ல் அறிக்கையிட்ட உரிமைகோரல்; இந்தப்
+    பக்கத்தில் அது அளக்கப்படவில்லை. இங்கே நான் அளந்தது bytes, MACs, மற்றும்
+    reconstruction error மட்டுமே.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    <a href="../kv-cache/">KV-cache वाला पन्ना</a> उसी संख्या पर ख़त्म होता है
+    जो तय करती है कि आप क्या serve कर सकते हैं: प्रति token कितने bytes। उस
+    cache को यहाँ दोबारा नहीं निकालूँगा — अगर नहीं पढ़ा है तो पहले वही पढ़िए,
+    क्योंकि नीचे सब कुछ उसी को मानकर चलता है। यह पन्ना उस formula की सिर्फ़ एक
+    line के बारे में है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (latent, absorption,
+    up-projection, down-projection, rank, KV cache, multi-head, grouped-query,
+    decoupled RoPE…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में
+    आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    Multi-query और grouped-query attention, heads के बीच keys और values साझा
+    करके <code>kv_heads</code> पर हमला करते हैं — और ऐसा करने में गुणवत्ता गिरती
+    है, यह GQA paper के अपने ablations दिखाते हैं। यही सौदा
+    <a href="../llama/">Llama-2 70B</a> ने GQA-8 के साथ किया। MLA
+    <code>kv_heads</code> को छूता ही नहीं। वह यह बदल देता है कि एक cache entry
+    <em>होती क्या है</em>।
+  </p>
+
+  <h2>Files नहीं, archive रखिए</h2>
+
+  <p>
+    यह फ़ैसला आप पहले भी ले चुके हैं। files की एक directory रखने के लिए बहुत बड़ी
+    है, तो आप tar और gzip कर देते हैं:
+  </p>
+
+<pre><code>store(tar_gz(files))            # disk पर छोटा
+files = untar(gunzip(archive))  # वापस पाने के लिए CPU खर्च</code></pre>
+
+  <p>
+    आम आपत्ति यह है कि हर read पर decompression का ख़र्च पड़ता है। अब मोड़।
+    मान लीजिए decompress की गई files के साथ आप बस एक ही काम करते हैं — उन्हें एक
+    ख़ास function में डालना — और वह function एक matrix multiply है, और
+    decompression भी:
+  </p>
+
+<pre><code>scores = (x @ W_q) @ (c @ W_uk).T     # c को keys बनाओ, फिर dot
+scores = x @ (W_q @ W_uk.T) @ c.T     # वही बात। दोनों matrix मोड़ दो
+W_abs  = W_q @ W_uk.T                 # load पर एक बार। अब:
+scores = (x @ W_abs) @ c.T            # keys कभी बनते ही नहीं</code></pre>
+
+  <p>
+    पूरा paper यही है। decompression का क़दम उसी operation में मुड़ जाता है जो आप
+    वैसे भी करने वाले थे, इसलिए inference पर उसका कोई ख़र्च नहीं। Matrix
+    multiplication का associative होना कोई गहरी बात नहीं है। यह ध्यान देना कि
+    इससे 57× cache की कमी मुफ़्त हो जाती है — वह गहरी बात है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer वाली उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Latent c</strong></td><td>हर token, हर layer के लिए एक छोटा vector, <code>x @ W_dkv</code></td><td>gzip archive। disk पर बस यही है</td></tr>
+      <tr><td><strong>d<sub>c</sub></strong></td><td>latent में कितनी संख्याएँ। DeepSeek-V2 में 512</td><td>Compression level</td></tr>
+      <tr><td><strong>W<sub>uk</sub>, W<sub>uv</sub></strong></td><td>Up-projections: latent → keys, latent → values</td><td><code>gunzip</code>, दो अलग outputs के लिए दो बार</td></tr>
+      <tr><td><strong>Absorption</strong></td><td>load पर एक बार W<sub>uk</sub> को W<sub>q</sub> में मोड़ना</td><td>दो पास-पास वाले multiplies की constant folding</td></tr>
+      <tr><td><strong>Decoupled RoPE dims</strong></td><td>position ढोने वाला एक छोटा अतिरिक्त block, अलग से cache होता है</td><td>वह इकलौता field जिसे compress नहीं कर सकते क्योंकि वह indexed है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक formula</h2>
+
+  <p>
+    Attention वाला formula नहीं। पिछले पन्ने का cache formula, और MLA उसके साथ
+    क्या करता है:
+  </p>
+
+  <div class="formula">MHA: 2 × layers × kv<sub>heads</sub> × head<sub>dim</sub> × seq × dtype<br>MLA: &nbsp;&nbsp;&nbsp;&nbsp;layers × (d<sub>c</sub> + d<sub>rope</sub>) &nbsp;&nbsp;&nbsp;&nbsp;× seq × dtype</div>
+
+  <p>दो चीज़ें बदलीं। उन्हें अलग-अलग terms की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मान</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>2</code></td><td><strong>ग़ायब</strong></td><td>K और V को <em>साथ मिलाकर</em> compress किया जाता है। एक ही latent दोनों का काम करता है, इसलिए अलग से V रखने की ज़रूरत नहीं</td></tr>
+      <tr><td><code>kv_heads × head_dim</code></td><td><strong>ग़ायब</strong></td><td>इसकी जगह d<sub>c</sub>। latent हर head में साझा है, इसलिए heads बढ़ाने से cache नहीं बढ़ता</td></tr>
+      <tr><td><code>d<sub>c</sub></code></td><td>512</td><td>latent की चौड़ाई। यही वह dial है। फैले हुए 128 × 128 = 16384 dimensions के मुक़ाबले DeepSeek-V2 512 चलाता है</td></tr>
+      <tr><td><code>d<sub>rope</sub></code></td><td>64</td><td>decoupled position block। यह भी heads में साझा। यह सिर्फ़ इसलिए है क्योंकि RoPE इस तरकीब को तोड़ देता है — नीचे देखिए</td></tr>
+      <tr><td><code>layers</code>, <code>seq</code>, <code>dtype</code></td><td>अपरिवर्तित</td><td>वही model, वही users, वही fp16</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह table जो पूरी दलील है</h2>
+
+  <p>
+    वही गणित जो KV-cache वाले पन्ने पर था — मैं उसका
+    <code>kv_cache_bytes</code> function ज्यों का त्यों दोबारा इस्तेमाल करता हूँ
+    — और साथ में MLA की एक नई line। दो shapes: एक Llama-2-7B वाला जो आप जानते
+    हैं, और एक DeepSeek-V2 वाला।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>Llama-2-7B shape: layers=32 heads=32 head_dim=128 d_c=512 d_rope=64, fp16
+    multi-head     :    524,288 bytes/token   1.0x
+    grouped-query 8:    131,072 bytes/token   4.0x smaller
+    MLA            :     36,864 bytes/token  14.2x smaller
+    MLA vs GQA-8   :   3.6x smaller
+
+DeepSeek-V2 shape: layers=60 heads=128 head_dim=128 d_c=512 d_rope=64, fp16
+    multi-head     :  3,932,160 bytes/token   1.0x
+    grouped-query 8:    245,760 bytes/token  16.0x smaller
+    MLA            :     69,120 bytes/token <span class="ok"> 56.9x smaller ✓</span>
+    MLA vs GQA-8   :   3.6x smaller</code></pre>
+
+  <p>
+    देखिए क्या होता है जब head की संख्या 32 से 128 हो जाती है। Multi-head cache
+    7.5× बढ़कर प्रति token प्रति sequence 3.75 MiB हो जाता है — जिसे serve नहीं
+    किया जा सकता, इसीलिए कोई वैसा बनाता ही नहीं। GQA-8 सिर्फ़ दोगुना होता है, और
+    वह दोगुनापन layer की संख्या से आता है (32 से 60), heads से नहीं — उसने
+    <code>kv_heads</code> को 8 पर टाँक रखा है। MLA <em>बिलकुल भी</em> नहीं
+    हिलता: चाहे कितने भी heads पढ़ें, प्रति layer 576 floats। यही अपरिवर्तनीयता
+    इसका असली गुण है, और इसी वजह से DeepSeek पहले स्थान पर 128 heads चला पाता
+    है।
+  </p>
+
+  <div class="note">
+    <strong>MLA-vs-GQA वाला आँकड़ा दोनों shapes पर 3.6× है, और यही ईमानदार
+    तुलना है।</strong> जो 57× आँख खींचता है, वह उस multi-head baseline के
+    मुक़ाबले है जिसे 128 heads पर कोई ship करता ही नहीं। DeepSeek अपनी कमी
+    DeepSeek-V1 की असली architecture के मुक़ाबले बताते हैं, और अलग से यह कहते
+    हैं कि तुलनीय cache पर उनके ablations में MLA, GQA से बेहतर रहा। दोनों को
+    ध्यान से उद्धृत कीजिए; ये अलग-अलग दावे हैं।
+  </div>
+
+  <h2>क्या यह अब भी attention है? Full rank पर, बिलकुल</h2>
+
+  <p>
+    जो cache जवाब बदल दे वह cache नहीं है। इसलिए script एक toy model बनाती है,
+    उसमें से किताबी multi-head attention चलाती है, फिर वही inputs
+    down-projection और up-projection से गुज़ारकर फ़र्क़ निकालती है।
+  </p>
+
+  <p>
+    एक ईमानदारी की बात: rank sweep का कोई मतलब बने, इसके लिए मैं संयुक्त
+    <code>[W_k | W_v]</code> को SVD से factor करके उसकी singular values को घटते
+    हुए आकार में ढालता हूँ, क्योंकि प्रशिक्षित weight matrices का spectrum घटता
+    हुआ होता है और ताज़ा randomise किए गए का नहीं।
+  </p>
+
+<pre><code>d_model=32 n_heads=4 head_dim=8
+full-rank latent d_c = 32
+  max |standard - through the latent| = 7.772e-15   <span class="ok">&lt;- float noise ✓</span>
+  identical to 1e-10?                 True
+
+now shrink the latent and watch what you are actually trading.
+errors are relative: max abs error / max abs value.
+   d_c | K reconstruction | attention output | cache bytes/token
+    32 |           0.0000 |           0.0000 |         64 B
+    24 |           0.0130 |           0.0113 |         48 B
+    16 |           0.0429 |           0.0540 |         32 B
+    12 |           0.1549 |           0.1228 |         24 B
+     8 |           0.1952 |           0.1889 |         16 B
+     4 |           0.5808 |           0.6061 |          8 B
+     2 |           0.8738 |           <span class="hl">0.8946</span> |          4 B</code></pre>
+
+  <p>
+    Full rank पर यह approximation है ही नहीं — यह बिना नुक़सान वाली re-encoding
+    है, और 7.8 × 10<sup>−15</sup> float64 के जोड़ने के क्रम का असर है। उसके नीचे
+    आप क़ीमत देख सकते हैं। cache आधा करने पर output पर क़रीब 5% का ख़र्च; चौथाई
+    करने पर 60%। output की error, key की error के साथ-साथ चलती है — कभी कम, कभी
+    ज़्यादा — क्योंकि softmax जो मिलता है उसे दोबारा normalise कर देता है।
+  </p>
+
+  <div class="note">
+    <strong>वही curve पूरा design फ़ैसला है।</strong> d<sub>c</sub> = 512 चुनने
+    का मतलब बस यह ढूँढ़ना है कि वह कहाँ मुड़ता है — और वह भी असली सीखे हुए
+    weights पर, न कि जान-बूझकर आकार दिए गए spectrum वाले किसी toy पर। ऊपर दिखाया
+    गया sweep ठीक ऐसे ही जान-बूझकर गढ़े spectrum पर चलता है। तरकीब मामूली है;
+    असली काम calibration है।
+  </div>
+
+  <h2>Absorption: वह हिस्सा जो इसे मुफ़्त बनाता है</h2>
+
+  <p>
+    Cache को compress करना आसान और ज़ाहिर है। यह आपदा नहीं बनता, इसकी वजह वह
+    मोड़ है। प्रति head लिखें, जहाँ W<sub>q</sub>
+    (d<sub>model</sub>, head<sub>dim</sub>) पर है और W<sub>uk</sub>
+    (d<sub>c</sub>, head<sub>dim</sub>) पर:
+  </p>
+
+  <div class="formula">(x W<sub>q</sub>) · (c W<sub>uk</sub>)<sup>T</sup> &nbsp;=&nbsp; x W<sub>q</sub> W<sub>uk</sub><sup>T</sup> c<sup>T</sup> &nbsp;=&nbsp; (x (W<sub>q</sub> W<sub>uk</sub><sup>T</sup>)) · c<sup>T</sup></div>
+
+  <p>
+    इस expression में कुछ भी नया attention नहीं है — यह अब भी वही
+    <a href="../attention/">softmax(QK<sup>T</sup>/√d) V</a> lookup है, बस K
+    factor कर दिया गया है। बीच वाला term ही असल बात है:
+    <code>W_q @ W_uk.T</code> में कुछ भी data पर निर्भर नहीं, इसलिए आप उसे model
+    load होते समय एक बार निकालते हैं और फिर कभी नहीं। Query सीधे latent space
+    में project होकर cache से dot हो जाती है। Keys कभी बनते ही नहीं।
+  </p>
+
+<pre><code>cached tokens n = 64, d_c = 16, head_dim = 8
+  W_q       (32, 8)   W_uk (16, 8)
+  W_absorbed = W_q @ W_uk.T -&gt; (32, 16)  (built ONCE at load)
+  expanded scores[0][:4] = [ 1.4168  1.7375  0.3522 -5.6463]
+  absorbed scores[0][:4] = [ 1.4168  1.7375  0.3522 -5.6463]
+  max abs difference     = 8.438e-15   <span class="ok">&lt;- same thing ✓</span>
+
+operation counts, per head per decode step:
+   cached n |  expanded MACs |  absorbed MACs | saving
+         64 |          8,960 |          1,536 |  5.83x
+        512 |         69,888 |          8,704 |  8.03x
+      4,096 |        557,312 |         66,048 |  8.44x
+     32,768 |      4,456,704 |        524,800 |  8.49x</code></pre>
+
+  <p>
+    Interview में उस दूसरी table को सँभालकर इस्तेमाल कीजिए। इस toy के
+    d<sub>c</sub> और head<sub>dim</sub> के अनुपात पर absorbed रास्ता सचमुच कम
+    multiply-accumulates लेता है; DeepSeek के असली अनुपातों पर हमेशा नहीं। भरोसे
+    वाली जीत यह है कि फैलाव वाला tensor कभी बनता ही नहीं, इसलिए वह memory bus
+    पार ही नहीं करता — और decode memory-bound होता है, जिसे पिछले पन्ने ने
+    0.48 MACs प्रति byte नापा था।
+  </p>
+
+  <h2>RoPE, और व्याख्याएँ यहीं क्यों रुक जाती हैं</h2>
+
+  <p>
+    MLA पर मैंने जितनी भी blog posts पढ़ीं, सब compression बताती हैं, absorption
+    बताती हैं, और फिर चुपचाप आगे बढ़ जाती हैं। जो वे छोड़ देती हैं, वह यह है।
+  </p>
+
+  <p>
+    <a href="../rope/">RoPE</a>, q और k को उनकी <em>position</em> के समानुपाती
+    कोण से घुमाता है। तो score <code>(x W_q) · (c W_uk)</code> नहीं है, वह
+    <code>(R(m) x W_q) · (R(n) c W_uk)</code> है — और R(n) हर cached token के
+    लिए अलग matrix है। उसे बाहर खींचकर load time पर किसी स्थिर W<sub>q</sub> में
+    मोड़ने का कोई तरीक़ा नहीं। Absorption और rotation commute नहीं करते।
+    "लगभग" नहीं; बिलकुल नहीं।
+  </p>
+
+<pre><code>scores over 8 cached tokens, head 0, with RoPE applied:
+  correct (expand, then rotate) : [ 2.5354 -2.1796  0.0678 -3.9345]
+  absorbed then rotated         : [ 6.6998  2.1142  2.3629 -2.7651]
+  max abs difference            = <span class="hl">7.4962   &lt;- wrong</span>
+  ranking preserved?              <span class="hl">False</span></code></pre>
+
+  <p>
+    यह rounding का फ़र्क़ नहीं है। किन tokens पर ध्यान देना है, उनका
+    <em>क्रम</em> ही अलग है, यानी यह थोड़ा ख़राब model नहीं, यह एक अलग model है।
+    DeepSeek का इलाज है कोशिश छोड़ देना: हर head को दो में बाँट दो। ज़्यादातर
+    dimensions कोई position नहीं ढोते और absorb होने लायक़ बने रहते हैं।
+    d<sub>rope</sub> = 64 dimensions का एक छोटा अतिरिक्त block rotation ढोता है,
+    सामान्य तरीक़े से निकाला जाता है, और अलग से cache होता है —
+    <strong>एक ही copy, हर head के लिए साझा</strong>। Score दोनों हिस्सों का जोड़
+    है।
+  </p>
+
+<pre><code>DeepSeek's fix -- split the head in two:
+  content part (absorbed, no position) : [ 2.2504 -0.2611 -0.1965 -0.022 ]
+  decoupled RoPE part (d_rope=8)   : [ -3.7696   8.6941 -19.5117   6.6326]
+  score = sum                          : [ -1.5192   8.4329 -19.7082   6.6107]
+  matches the explicit two-part sum?     <span class="ok">True, max diff 0.000e+00 ✓</span>
+
+what the decoupled block costs, per token, DeepSeek-V2 shape:
+  latent only        :  61,440 bytes/token
+  + decoupled RoPE   :  69,120 bytes/token (+7,680, +12.5%)
+  still vs multi-head: 56.9x smaller</code></pre>
+
+  <div class="note">
+    <strong>बारह प्रतिशत ज़्यादा cache, और पूरी architecture बच जाती है।</strong>
+    decoupled dimensions इसी के लिए हैं। न कोई tuning knob, न कोई ablation —
+    यह उस छेद की ढाँचागत मरम्मत है जो rotary embeddings ने absorption में कर
+    दिया था। अगर कोई आपको MLA समझाए और इसका ज़िक्र न करे, तो उसने एक ऐसा model
+    समझाया है जो चलता ही नहीं।
+  </div>
+
+  <h2>बचत असल में कहाँ उतरती है</h2>
+
+  <p>
+    प्रति token cache bytes एक abstraction है। जो संख्या आपकी finance team
+    महसूस करती है वह यह है कि एक card पर कितनी concurrent sequences आती हैं।
+    सिर्फ़ cache के लिए 80 GiB का budget तय कीजिए, DeepSeek-V2 shape पर:
+  </p>
+
+<pre><code>   context | multi-head |    GQA-8 |      MLA | MLA seqs in 80 GiB
+     4,096 |     15.00G |    0.94G |    0.26G |    303
+    16,384 |     60.00G |    3.75G |    1.05G |     75
+    32,768 |    120.00G |    7.50G |    2.11G |     37
+   131,072 |    480.00G |   30.00G |    8.44G |      9
+
+  sequences that fit in 80 GiB at 32k context:
+    multi-head  :      <span class="hl">0</span> concurrent sequences
+    GQA-8       :     10 concurrent sequences
+    MLA         :     <span class="ok">37 concurrent sequences ✓</span></code></pre>
+
+  <p>
+    32k context पर यह shape 80 GiB में <em>एक भी</em> multi-head sequence serve
+    नहीं कर सकता। GQA-8 में 10 आती हैं। MLA में 37। प्रति token latency तीनों
+    में एक जैसी है — weights तो वैसे भी आ-जा रहे हैं — तो उतने ही silicon पर
+    प्रति GPU प्रति सेकंड लगभग 3.7 गुना tokens। यही दलील है, और यह दलील वही lab
+    रखेगी जो अपना model ख़ुद बड़े पैमाने पर serve करती है।
+  </p>
+
+  <h2>इसकी क़ीमत, साफ़ शब्दों में</h2>
+
+  <p>
+    MLA मुफ़्त नहीं है, और मैं चाहूँगा कि ईमानदार version आपके पास तब आए जब कोई
+    interviewer आपसे यह पूछे उससे पहले। DeepSeek-V2 के shape पर, प्रति attention
+    layer:
+  </p>
+
+<pre><code>per attention layer, d_model=5120, 128 heads x 128:
+  multi-head    params:   335,544,320
+  GQA-8         params:   178,257,920
+  MLA           params:   229,441,536  (0.68x multi-head, 1.29x GQA-8)
+
+  cache at 32,768 tokens, batch 1:
+  multi-head :  120.00 GiB
+  GQA-8      :    7.50 GiB
+  MLA        :    <span class="ok">2.11 GiB ✓</span></code></pre>
+
+  <p>
+    128-head multi-head के मुक़ाबले MLA parameters में सचमुच <em>सस्ता</em> है,
+    क्योंकि latent एक bottleneck है। GQA-8 के मुक़ाबले वह लगभग 1.29× महँगा है,
+    और साथ में गणित भी: हर token पर एक अतिरिक्त projection, और RoPE block जुड़ने
+    के बाद प्रति head चौड़ा dimension। सौदा यह है — एक बार चुकाई जाने वाली और
+    पूरे batch में बँटने वाली स्थिर लागत, बदले में प्रति sequence प्रति token की
+    लागत। serving के पैमाने पर यह अच्छा सौदा है और आपके laptop पर batch 1 पर
+    बुरा।
+  </p>
+
+  <p>
+    एक और बात साफ़ रखिए, क्योंकि यहीं आत्मविश्वास के साथ ग़लत होना सबसे आसान
+    है। DeepSeek <em>queries</em> पर भी एक low-rank compression लगाते हैं। उसका
+    KV cache से कोई लेना-देना नहीं — queries कभी cache नहीं होतीं, जैसा पिछले
+    पन्ने की break-it table ने दिखाया। वह training के दौरान activation memory
+    घटाता है। वही तकनीक, अलग समस्या, और papers इस पर साफ़ हैं, भले सारांश आमतौर
+    पर न हों।
+  </p>
+
+  <div class="note">
+    <strong>गुणवत्ता पर एक चेतावनी:</strong> MLA, GQA से बेहतर गुणवत्ता देता है
+    — यह DeepSeek का अपने paper में बताया गया दावा है; इस पन्ने पर वह नापा नहीं
+    गया। यहाँ मैंने सिर्फ़ bytes, MACs और reconstruction error नापे हैं।
+  </div>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no training — a forward pass and some byte counting,
+  which is all a linear-algebra paper needs. Runs in about a seventh of a
+  second. Every function under 20 lines.
+</p>
+<p>
+  <a href="mla_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 567 lines plus 7 runnable demos. Then:
+</p>
+<pre><code>python3 mla_from_scratch.py</code></pre>
+
+<pre><code>def kv_cache_bytes(layers, kv_heads, head_dim, seq_len, dtype_bytes=2,
+                   batch=1):
+    """Standard KV cache. Same formula as the KV-cache page, unchanged."""
+    return 2 * layers * kv_heads * head_dim * seq_len * dtype_bytes * batch
+
+
+def mla_cache_bytes(layers, d_c, d_rope, seq_len, dtype_bytes=2, batch=1):
+    """MLA cache: one latent per token per layer, plus the decoupled RoPE key.
+    Both are shared across ALL heads, which is where the saving comes from."""
+    return layers * (d_c + d_rope) * seq_len * dtype_bytes * batch
+
+
+def low_rank_factors(W, rank):
+    """W (m, n) -&gt; (W_down (m, rank), W_up (rank, n)) with W ~ W_down @ W_up."""
+    U, S, Vt = np.linalg.svd(W, full_matrices=False)
+    return U[:, :rank] * S[:rank], Vt[:rank]
+
+
+class ToyMLA:
+    def __init__(self, d_model, n_heads, head_dim, d_c, seed=0):
+        rng = np.random.default_rng(seed)
+        self.d_model, self.n_heads, self.head_dim = d_model, n_heads, head_dim
+        self.d_c = d_c
+        d_all = n_heads * head_dim
+
+        self.W_q = rng.normal(0, 0.4, (d_model, d_all))
+
+        # The joint K/V projection. I shape its singular values to DECAY,
+        # because a trained weight matrix has a decaying spectrum and a
+        # freshly randomised one does not. Without this the rank sweep below
+        # is meaningless -- every direction matters equally, so truncation is
+        # uniformly catastrophic and you learn nothing from it.
+        raw = rng.normal(0, 0.4, (d_model, 2 * d_all))
+        U, _, Vt = np.linalg.svd(raw, full_matrices=False)
+        spectrum = 6.0 * (0.82 ** np.arange(min(U.shape[1], Vt.shape[0])))
+        W_kv = (U * spectrum) @ Vt                            # (d, 2*d_all)
+        self.W_k, self.W_v = W_kv[:, :d_all], W_kv[:, d_all:]
+
+        # Compress K and V JOINTLY -- one latent serves both. That joint-ness
+        # is the paper's word and it is why there is no factor of 2 above.
+        self.W_dkv, W_ukv = low_rank_factors(W_kv, d_c)
+        self.W_uk = W_ukv[:, :d_all]      # (d_c, d_all)
+        self.W_uv = W_ukv[:, d_all:]      # (d_c, d_all)
+
+    def latent(self, X):
+        """The ONLY thing that gets cached: (n, d_c)."""
+        return X @ self.W_dkv
+
+    def attention_via_latent(self, X):
+        """MLA the naive way: compress, then re-expand K and V and carry on.
+        Correct, but it materialises the full K and V -- no saving at all
+        except in what you STORE. Demo 4 removes the expansion."""
+        C = self.latent(X)                           # (n, d_c)  &lt;- cached
+        Q = self.heads(X @ self.W_q)
+        K = self.heads(C @ self.W_uk)                # re-expanded
+        V = self.heads(C @ self.W_uv)                # re-expanded
+        w = softmax(Q @ K.transpose(0, 2, 1) / np.sqrt(self.head_dim))
+        out = w @ V
+        return out.transpose(1, 0, 2).reshape(X.shape[0], -1)
+
+
+def absorb_q_into_latent(W_q_head, W_uk_head):
+    """(d_model, head_dim) x (d_c, head_dim) -&gt; (d_model, d_c). Done ONCE."""
+    return W_q_head @ W_uk_head.T
+
+
+def scores_absorbed(x, W_absorbed, C):
+    """The MLA way: project into latent space, dot against the cache."""
+    q_c = x @ W_absorbed                 # (1, d_c)
+    return q_c @ C.T                     # (1, n)
+
+
+def decoupled_score(x_q, pos_q, C, positions, W_absorbed, W_qr, K_rope):
+    """DeepSeek's score: absorbable content part + decoupled RoPE part.
+
+    K_rope is (n, d_rope), already rotated and cached -- ONE copy for all
+    heads. That sharing is why the extra cache is cheap."""
+    content = (x_q @ W_absorbed) @ C.T                       # no position
+    q_r = apply_rope(x_q @ W_qr, np.array([pos_q]))          # (1, d_rope)
+    return content + q_r @ K_rope.T</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — and two of the rows below are bugs that raise nothing, pass
+  every shape assertion you'd think to write, and just quietly give you a worse
+  model.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Set the latent too small: <code>ToyMLA(..., d_c=2)</code> instead of full rank</td>
+      <td>Key reconstruction error climbs to 0.8738 relative, attention output to 0.8946, and the absolute output error is 3.0672. The sweep in demo 2 shows where it turns: output is still within about 5% at d_c=16, past 60% wrong at d_c=4.</td>
+    </tr>
+    <tr>
+      <td>Cache the expanded keys and values instead of the latent — swap <code>mla_cache_bytes</code> for <code>kv_cache_bytes(60, 128, 128, 1)</code></td>
+      <td>69,120 bytes per token becomes 3,932,160. That is 56.9× worse, and it is the entire point of the paper gone. You have paid for the projections and kept none of the benefit.</td>
+    </tr>
+    <tr>
+      <td>Apply RoPE with no decoupled dimensions: <code>apply_rope(x @ W_abs, pos) @ C.T</code></td>
+      <td>Scores go from <code>[-4.5353 18.2531 -10.3902]</code> to <code>[-8.3733 4.9212 2.3044]</code> — max difference 28.9771, and <code>ranking preserved? False</code>. Different attention, not noisier attention.</td>
+    </tr>
+    <tr>
+      <td>Absorb the wrong matrix: <code>W_q @ W_uv.T</code> instead of <code>W_q @ W_uk.T</code></td>
+      <td>Identical shape (32, 16). No exception. Scores off by 22.4897. Meanwhile the genuinely reversed order, <code>W_uk @ W_q.T</code>, is just the transpose and is harmless — 0.0000. Shape checks are not correctness checks.</td>
+    </tr>
+    <tr>
+      <td>Rebuild the absorbed matrix inside the decode loop instead of once at load</td>
+      <td>Still correct, and pointless: 536,870,912 extra multiply-accumulates over 32,768 steps on a four-head toy. On a real model this is the difference between absorption being free and absorption being a tax.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers — narrowly. In DeepSeek-V2, the
+  architecture section on MLA: the compression, then the decoupled RoPE
+  subsection, then the KV-cache comparison table. Read the query compression
+  paragraph too, and note where it says training. In DeepSeek-V3, just enough to
+  confirm they kept MLA unchanged and to see it alongside their MoE work. Skip
+  the MoE, the routing, the training infrastructure and every benchmark table —
+  all real, all a different paper.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  This one is genuinely just linear algebra, and less of it than the attention
+  page needed. You need three things: that a matrix product is associative, that
+  a matrix can be written as a thin product of two smaller ones, and that
+  throwing away the smallest singular values is the best approximation of a
+  given rank. The first is the whole trick. The second is what "low-rank" means.
+  The third is only how I built the toy — a real model learns its factors by
+  gradient descent and never runs an SVD.
+</p>
+<p>
+  What you do need is the byte arithmetic, and you need it fast, because the
+  interview question is not "explain MLA". It's "you have an 80 GB card and a
+  32k context — what's your maximum batch size, and which architecture gets you
+  there". That's multiplication and division on numbers you can read off a
+  config file, and demo 5 is exactly that computation.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the cache arithmetic and the absorption
+  identity, in code you can break. It says nothing about how MLA trains, nothing
+  about the MoE it ships inside, and nothing about how the kernels are written.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2405.04434">
+      <span class="paper-title">DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model</span>
+      <span class="paper-meta">DeepSeek-AI, 2024. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the MLA part of the architecture section and stop. The decoupled-RoPE
+      subsection is the one worth slowing down for — it's the part I built demo
+      4 around. Their KV-cache comparison table is the same arithmetic as demo
+      1, on their own configs.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2412.19437">
+      <span class="paper-title">DeepSeek-V3 Technical Report</span>
+      <span class="paper-meta">DeepSeek-AI, 2024. The follow-up that kept it.</span>
+    </a>
+    <p class="paper-pitch">
+      Useful mainly as evidence: a much bigger model, a rewritten MoE, MLA
+      carried over unchanged. What a technique looks like once a lab has
+      stopped arguing about it.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://planetbanatt.net/articles/mla.html">
+      <span class="paper-title">On MLA</span>
+      <span class="paper-meta">Eryk Banatt. Notation, worked slowly.</span>
+    </a>
+    <p class="paper-pitch">
+      The deep-dive on absorption I wish I'd had. Goes through the matrix
+      algebra properly, including the value-side fold I only gestured at, and is
+      careful about which arrangement actually helps on real hardware.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://magazine.sebastianraschka.com/p/the-big-llm-architecture-comparison">
+      <span class="paper-title">The Big LLM Architecture Comparison</span>
+      <span class="paper-meta">Sebastian Raschka. MLA in context, with code.</span>
+    </a>
+    <p class="paper-pitch">
+      Puts MLA next to GQA, sliding-window and everything else shipping in
+      2024–25, with the DeepSeek ablation results discussed rather than asserted.
+      The comparison this page deliberately kept to one table, done properly.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Raschka for where MLA sits among the
+  alternatives, then Banatt for the algebra, then the DeepSeek-V2 paper, which
+  reads easily once you've seen both. V3 last, and only if you care that it
+  stuck.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>
