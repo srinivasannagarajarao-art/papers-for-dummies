@@ -7,7 +7,7 @@
 <meta name="description" content="Why LLM inference is affordable: the causal mask makes keys and values immutable, so you memoise them. Runnable NumPy, printed MAC counts, cache-size arithmetic, and five ways to break it.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -36,6 +36,15 @@
       — everything below runs from it. NumPy only, random weights, under a second.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
 
   <p>
     This one isn't a paper. It's the engineering consequence of one line in
@@ -376,6 +385,738 @@ def decode_step(token, pos, cache):
     "KV cache" is a phrase you now hear in ops meetings.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    இது ஒரு paper அல்ல. <a href="../attention/">Attention Is All You Need</a>-ல்
+    இருக்கும் ஒரே ஒரு வரியின் engineering விளைவு இது — எழுதப்படாமல்
+    வாய்மொழியாகவே வாழ்கிறது: model serve செய்த எல்லாருக்கும் தெரியும், யாரும்
+    எழுதி வைப்பதில்லை. நான் ஒரு inference stack ship செய்த பிறகுதான், ஒரு
+    whiteboard-ல் நின்று <em>ஏன்</em> இந்த cache-க்கு அனுமதி இருக்கிறது என்று
+    சொல்லக் கற்றுக்கொண்டேன். இங்கே சொல்லப்படும் papers எல்லாம், பிறகு வந்து
+    இதை optimise செய்தவை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (cache, memoise, key,
+    value, query, causal mask, prefill, decode…) அப்படியே வைத்திருக்கிறேன்.
+    ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான்
+    பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>
+    மொத்தமும் ஒரே ஒரு கவனிப்புதான். <em>n</em>-வது token-ஐ உருவாக்க வேண்டுமென்றால்
+    எல்லா <em>n</em> tokens மேலும் attention ஓட வேண்டும். முழு sequence-க்கும்
+    இதை மொள்ளமாகச் செய்தால் தோராயமாக <em>n</em><sup>3</sup> செலவாகும். ஆனால்
+    causal mask ஒரு உத்தரவாதம் தருகிறது: token <em>i</em>-ன் key-யும் value-வும்
+    ஒரு முறை கணக்கிட்ட பிறகு ஒருபோதும் மாறாது. அதனால் அவற்றை cache செய்யலாம்.
+    Loop <em>n</em><sup>2</sup> ஆகிறது, ஒவ்வொரு step-ம் முழு matrix-க்குப் பதிலாக
+    ஒரே ஒரு புது row மட்டும்.
+  </p>
+
+  <h2>KV cache என்பது memoisation</h2>
+
+  <p>இதை நீங்கள் நூறு முறை எழுதியிருப்பீர்கள்:</p>
+
+<pre><code>@lru_cache
+def expensive(x):        # cache செய்யலாம், ஏனெனில் இது PURE:
+    return f(x)          # ஒரே x எப்போதும் ஒரே விடை</code></pre>
+
+  <p>
+    விதியும் உங்களுக்குத் தெரியும்: pure function-ஐ மட்டுமே memoise செய்ய முடியும்.
+    மறைவான mutable state-ஐச் சார்ந்திருக்கும் ஒன்றை cache செய்தால், மிக மோசமான
+    வகை bug கிடைக்கும் — செவ்வாய்க்கிழமை சரியான விடை, load-ல் தவறான விடை.
+  </p>
+
+  <p>
+    ஒரு decoder-ன் token-வாரியான key-யும் value-வும் அப்படிப்பட்ட pure function
+    தான். Token <em>i</em>-ன் <code>k</code> மற்றும் <code>v</code>, அந்த token-ன்
+    embedding மற்றும் position-ல் இருந்து மட்டுமே கணக்கிடப்படுகின்றன — பிறகு
+    வரும் எதுவும் அவற்றுள் நுழைவதில்லை. அதனால்:
+  </p>
+
+<pre><code>cache = {"K": [], "V": []}
+
+def decode_step(token, pos, cache):
+    q, k, v = project(embed(token) + pos_enc(pos))   # q ஒரு step-க்கு மட்டும்
+    cache["K"].append(k)                             # ஒரே ஒரு row சேர்
+    cache["V"].append(v)
+    scores  = q @ stack(cache["K"]).T                # (1, n), (n, n) அல்ல
+    return softmax(scores) @ stack(cache["V"])</code></pre>
+
+  <p>
+    அவ்வளவுதான். இதுதான் KV cache. சுவாரஸ்யம் code-ல் இல்லை — அதை எழுதுவதற்கான
+    <em>உரிமம்</em> தான் சுவாரஸ்யம். அந்த உரிமம் mask-ல் இருந்து வருகிறது.
+  </p>
+
+  <p class="thanglish">
+    KV cache-nu solradhu memoisation dhaan. Token i-oda key-um value-um oru
+    thadava kanakku pannitta apparam maaradhu, adhaan cache-kku licence.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Prefill</strong></td><td>முழு prompt-ஐயும் ஒரே முறை ஓட்டி cache-ஐ நிரப்புவது</td><td>Startup-ல் cache-ஐ சூடாக்குவது</td></tr>
+      <tr><td><strong>Decode</strong></td><td>ஒரு token உள்ளே, ஒரு token வெளியே, cache ஒரு row வளரும்</td><td>நிலையான request loop</td></tr>
+      <tr><td><strong>KV cache</strong></td><td>இதுவரையிலான ஒவ்வொரு token-க்கும், ஒவ்வொரு layer-ன் keys மற்றும் values</td><td>Memo table</td></tr>
+      <tr><td><strong>Causal mask</strong></td><td>Row i, ≤ i columns-ஐ மட்டுமே படிக்கலாம்</td><td>Function pure என்பதற்கான நிரூபணம்</td></tr>
+      <tr><td><strong>Eviction</strong></td><td>இடம் தீர்ந்தபோது cache entries-ஐ விட்டுவிடுவது</td><td>வரம்புள்ள cache-ல் LRU</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <p>
+    இது attention சூத்திரம் அல்ல — அது ஏற்கனவே உங்களிடம் இருக்கிறது. நீங்கள்
+    உண்மையில் என்ன serve செய்ய முடியும் என்பதைத் தீர்மானிக்கும் சூத்திரம் இது:
+  </p>
+
+  <div class="formula">bytes = 2 × layers × kv_heads × head_dim × seq_len × dtype_bytes × batch</div>
+
+  <p>உங்கள் கையில் இருக்கும் terms-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>வழக்கமாக</th><th>என்ன என்றால்</th></tr></thead>
+    <tbody>
+      <tr><td><code>2</code></td><td>2</td><td>K மற்றும் V. Q ஒருபோதும் இல்லை — Q ஒரு முறை பயன்படுத்தி தூக்கியெறியப்படுகிறது</td></tr>
+      <tr><td><code>layers</code></td><td>32</td><td>ஒவ்வொரு layer-ம் தன் சொந்த cache வைத்திருக்கும். பகிரப்படுவதில்லை</td></tr>
+      <tr><td><code>kv_heads</code></td><td>32 → 8 → 1</td><td>Architecture papers தாக்கும் ஒரே term. MHA → GQA → MQA</td></tr>
+      <tr><td><code>head_dim</code></td><td>128</td><td>d<sub>model</sub> / n<sub>heads</sub></td></tr>
+      <tr><td><code>seq_len</code></td><td>4k…128k</td><td>ஒவ்வொரு decode step-லும் வளர்கிறது. வலிக்க வைப்பது இதுதான்</td></tr>
+      <tr><td><code>dtype_bytes</code></td><td>2</td><td>fp16 அல்லது bf16. Cache-ஐ 8 bits-க்கு quantise செய்தால் பாதியாகும்</td></tr>
+      <tr><td><code>batch</code></td><td>1…256</td><td>ஒவ்வொரு இணையான request-ம் இதை முழுவதுமாக மீண்டும் கட்டுகிறது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>இரண்டு loops, 34× இடைவெளி</h2>
+
+  <p>
+    Script ஒரு பொம்மை decoder மேல் இரு loops-ஐயும் ஓட்டி, multiply-accumulate
+    எண்ணிக்கையைக் கணித முறையில் எண்ணுகிறது — அதனால் உங்கள் laptop-ன் வேகம்
+    எண்ணை மாற்றாது. Token-க்கு, layer-க்கு: நான்கு projections-க்கு
+    <code>4·d·d</code>, cache-ல் உள்ள <em>n</em> keys மேல் attention-க்கு
+    <code>2·d·n</code>, feed-forward-க்கு <code>2·d·ff</code>.
+  </p>
+
+  <p><strong>என் பேச்சை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>toy model: 2 layers, 4 heads, d_model=32, seq=64
+
+  naive  loop total MACs:   62,566,400
+  cached loop total MACs:    1,839,104
+  ratio                 :         34.0x
+
+  per-step cost (MACs), naive grows, cached is flat:
+    step |        naive |      cached
+       1 |       24,704 |      24,704
+       8 |      204,800 |      25,600
+      16 |      425,984 |      26,624
+      32 |      917,504 |      28,672
+      48 |    1,474,560 |      30,720
+      64 |    2,097,152 |   <span class="ok">  32,768</span> <span class="ok">✓</span>
+</code></pre>
+
+  <p>
+    இரண்டு columns-ஐயும் பாருங்கள். Naive step செலவு, step 1-ல் இருந்து step
+    64 வரை 85 மடங்காகப் பெருகுகிறது. Cached step செலவு மூன்றில் ஒரு பங்கு
+    மட்டுமே வளர்கிறது — அந்த மீதி உண்மையானது, rounding அல்ல. Attention இன்னும்
+    cache-ல் உள்ள ஒவ்வொரு key-ஐயும் scan செய்ய வேண்டும். தட்டையாகிப் போனது
+    projections-ம் feed-forward-ம், அதுதான் பெரும்பாலான வேலை.
+  </p>
+
+  <div class="note">
+    <strong>Interview-ல் big-O சொல்லும்போது கவனம்.</strong> அந்த
+    <em>n</em><sup>3</sup> → <em>n</em><sup>2</sup> கூற்று, decode loop-ன்
+    <em>attention</em> பகுதியைப் பற்றியது மட்டுமே. Token-க்கான feed-forward
+    செலவை caching கொஞ்சம் கூடக் குறைக்காது: எப்படியானாலும் உருவாக்கும் ஒவ்வொரு
+    token-க்கும் FFN ஒரு முறை ஓடும். Caching நீக்குவது prefix-ஐ மீண்டும்
+    ஓட்டுவதை மட்டும்தான்.
+  </div>
+
+  <h2>அதே tokens, float துல்லியம் வரை</h2>
+
+  <p>
+    விடையை மாற்றும் cache, cache அல்ல — அது ஒரு approximation. அதனால் script
+    அதே 12 tokens-ஐ இரு வழிகளிலும் உருவாக்கி logits-ஐ ஒப்பிடுகிறது.
+  </p>
+
+<pre><code>  naive  tokens: [3, 17, 42, 8, 16, 16, 16, 16, 44, 44, 16, 16, 16, 16, 44, 16]
+  cached tokens: [3, 17, 42, 8, 16, 16, 16, 16, 44, 44, 16, 16, 16, 16, 44, 16]
+  same token sequence? <span class="ok">True</span>
+  max |naive logits - cached logits| = <span class="ok">1.887e-15 ✓</span>
+</code></pre>
+
+  <p>
+    1.9 × 10<sup>−15</sup> என்பது கூட்டல்களை வேறு வரிசையில் செய்ததால் வரும்
+    float64 சத்தம். Weights சீரற்றவை, train செய்யப்படாதவை — அதனால் model token
+    16-ல் சந்தோஷமாக loop அடிக்கிறது. அது பரவாயில்லை; இந்தப் பக்கம் compute
+    மற்றும் memory பற்றியது, கற்றல் பற்றியது அல்ல. முக்கியமானது என்னவென்றால்,
+    இரு loops-ம் <em>ஒரே மாதிரி</em> loop அடிக்கின்றன.
+  </p>
+
+  <h2>Mask தான் நிரூபணம்</h2>
+
+  <p>
+    இதோ யாரும் எழுதி வைக்காத பகுதி. அந்த rows-ஐ வைத்துக்கொள்வது ஏன் சட்டப்படி
+    சரி? Causal mask இருக்கும்போது, ஒரு token-ஐச் சேர்ப்பது முந்தைய எந்த
+    attention row-ஐயும் மாற்ற முடியாது. Row <em>i</em>-ல், <em>i</em>-க்குப் பிறகு
+    வரும் ஒவ்வொரு column-லும் <code>−∞</code> இருக்கிறது; அதனால் புதிய column
+    அதன் softmax வகுஎண்ணுக்கு சரியாக ஒன்றுமே சேர்ப்பதில்லை.
+  </p>
+
+  <p><strong>அதே layer, அதே head — 5-வது token சேர்ப்பதற்கு முன், பின்:</strong></p>
+
+<pre><code>  WITH causal mask -- layer 0, head 0 attention weights
+    before appending a 5th token (4x4):
+      [1. 0. 0. 0.]
+      [0.671 0.329 0.    0.   ]
+      [0.53  0.235 0.235 0.   ]
+      [0.553 0.162 0.159 0.126]
+    after  appending a 5th token, first 4 rows (4x5):
+      [1. 0. 0. 0. 0.]
+      [0.671 0.329 0.    0.    0.   ]
+      [0.53  0.235 0.235 0.    0.   ]
+      [0.553 0.162 0.159 0.126 0.   ]
+    max change in the first 4 rows: <span class="ok">0.000e+00 ✓</span>
+</code></pre>
+
+  <p>
+    சரியாகப் பூஜ்ஜியம். "சிறிது" அல்ல. இப்போது mask-ஐ நீக்குங்கள் — decoder-ஐ
+    BERT பாணி இருவழி encoder ஆக்குங்கள் — அதே சோதனையை மீண்டும் ஓட்டுங்கள்:
+  </p>
+
+<pre><code>  NO mask -- layer 0, head 0 attention weights
+    before appending a 5th token (4x4):
+      [0.386 0.182 0.305 0.127]
+      [0.417 0.204 0.261 0.117]
+      [0.47  0.209 0.208 0.113]
+      [0.553 0.162 0.159 0.126]
+    after  appending a 5th token, first 4 rows (4x5):
+      [0.362 0.17  0.285 0.119 0.064]
+      [0.394 0.193 0.247 0.111 0.054]
+      [0.448 0.199 0.198 0.107 0.048]
+      [0.506 0.149 0.146 0.115 0.084]
+    max change in the first 4 rows: <span class="hl">4.631e-02</span>
+
+  now the consequence for a cache:
+    unmasked model, cached vs recomputed logits, max abs diff: <span class="hl">0.4017</span>
+    argmax token: recomputed=44  cached=<span class="hl">16</span>
+</code></pre>
+
+  <p>
+    முந்தைய ஒவ்வொரு row-ம் நகர்ந்துவிட்டது, ஏனெனில் softmax புதிய column
+    சேர்த்து மீண்டும் normalise செய்கிறது. Cache-ல் இருக்கும் rows இப்போது
+    பழையவை, logits 0.40 அளவு விலகுகின்றன, model வேறொரு token-ஐத்
+    தேர்ந்தெடுக்கிறது. அதே code, ஒரே ஒரு boolean மாற்றம்.
+  </p>
+
+  <div class="note">
+    <strong>BERT-க்கு KV cache இல்லாததற்கும், GPT-க்கு இருப்பதற்கும் இதுதான்
+    காரணம்.</strong> இது ஒருபோதும் performance பற்றிய தேர்வு அல்ல. இருவழி
+    attention-ல் K-யும் V-யும் எதிர்காலத்தைச் சார்ந்திருக்கின்றன, அதனால்
+    memoise செய்ய pure-ஆக ஒன்றுமே இல்லை. Cache கட்டப்பட்டிருக்கும் அடிப்படை
+    invariant தான் mask — அது கிடைத்தபின், decode நேரத்தில் அந்த
+    <code>−∞</code> matrix கூடத் தேவையில்லை, ஏனெனில் cache-ல் எப்போதும்
+    கடந்த காலம் மட்டுமே இருக்கும்.
+  </div>
+
+  <p class="thanglish">
+    Mask irundha, pudhu token sethaalum pazhaya rows adhe dhaan — maatram
+    sariyaa poojyam. Mask-ai eduthuttaa cache pazhasaayidum, adhaan BERT-kku
+    KV cache illa.
+  </p>
+
+  <h2>Cache, model-ஐ விடப் பெரிதாகிறது</h2>
+
+  <p>
+    இப்போது உங்கள் hardware bill-ஐத் தீர்மானிக்கும் கணக்கு. Llama-2-7B வடிவ
+    model: 32 layers, 32 heads, head_dim 128, fp16.
+  </p>
+
+<pre><code>  bytes = 2 * layers * kv_heads * head_dim * seq_len * dtype_bytes
+
+  weights (fp16, 6.74B params):  12.55 GiB
+  cache per token: 524,288 bytes = 512 KiB
+
+      seq_len |   batch 1 |  batch 32 | batch 32 vs weights
+        1,024 |   0.50 GiB |   16.0 GiB |    1.3x the weights
+        4,096 |   2.00 GiB |   64.0 GiB |    5.1x the weights
+       32,768 |  16.00 GiB |  512.0 GiB |   40.8x the weights
+      131,072 |  64.00 GiB | <span class="hl">2048.0 GiB</span> |  163.2x the weights
+</code></pre>
+
+  <p>
+    Token-க்கு அரை megabyte. 128k tokens கொண்ட ஒரே ஒரு உரையாடல் மட்டுமே 64 GiB
+    cache — weights-ஐ விட ஐந்து மடங்கு, 80 GB card-ல் model-உடன் சேர்ந்து
+    அடங்காது. சாதாரண 4k context-ல் batch 32 என்பதே checkpoint-ஐ விடப் பெரிது.
+    ஒரு model-க்கு "A100 வேண்டும்" என்று யாராவது சொன்னால், அவர்கள் பொதுவாக
+    weights-ஐத்தான் மேற்கோள் காட்டுகிறார்கள் — அதுதான் சிறிய எண்.
+  </p>
+
+  <h2>MQA மற்றும் GQA: ஒரு term-ஐச் சுருக்குங்கள்</h2>
+
+  <p>
+    சூத்திரத்தை மீண்டும் பாருங்கள். <code>layers</code>-ம்
+    <code>head_dim</code>-ம் model. <code>seq_len</code>-ம்
+    <code>batch</code>-ம் உங்கள் users. மீதி <code>kv_heads</code> மட்டும்தான் —
+    papers சரியாக அங்கேதான் போயின.
+  </p>
+
+  <p>
+    <a href="https://arxiv.org/abs/1911.02150">Multi-Query Attention</a>
+    (Shazeer, 2019): 32 query heads-ஐயும் வைத்துக்கொள்ளுங்கள், ஆனால் அவற்றுக்கு
+    <em>ஒரே ஒரு</em> பகிரப்பட்ட key/value head கொடுங்கள்.
+    <a href="https://arxiv.org/abs/2305.13245">Grouped-Query Attention</a>
+    (Ainslie et al., 2023) நடுவழி: 8 KV heads, ஒவ்வொன்றையும் நான்கு query heads
+    பகிர்ந்துகொள்கின்றன. இரண்டிலும் Q தொடப்படுவதே இல்லை — ஏனெனில் Q
+    சேமிக்கப்படுவதே இல்லை.
+  </p>
+
+<pre><code>      variant           kv_heads |  4k, b32 | 32k, b32 | reduction
+      multi-head (2017)       32 |   64.0GiB |  512.0GiB |      1x
+      GQA, 8 groups            8 |   16.0GiB |  128.0GiB |      4x
+      MQA, 1 kv head           1 |    2.0GiB |   16.0GiB |     32x
+
+  same table as bytes per token, batch 1:
+      multi-head   524,288 bytes/token
+      GQA-8        131,072 bytes/token
+      MQA           <span class="ok">16,384 bytes/token ✓</span>
+</code></pre>
+
+  <p>
+    குறைப்பு சரியாக <code>n_heads / n_kv_heads</code>. நுட்பம் ஒன்றுமில்லை. MQA
+    32 மடங்கு குறைக்கிறது, ஆனால் GQA paper-ன் ablations அது தரத்தை இழப்பதைக்
+    காட்டுகின்றன; GQA-8 நான்கு மடங்கு குறைத்து multi-head-க்கு அருகிலேயே
+    நிற்கிறது. அதனால்தான் <a href="../llama/">Llama-2 70B</a> GQA-8
+    பயன்படுத்துகிறது, அதன் பிறகு வெளியான கிட்டத்தட்ட எல்லா model-ம் அப்படியே.
+    இது memory முடிவு, தற்செயலாக architecture-ஆகிவிட்டது.
+  </p>
+
+  <h2>Prefill compute-bound, decode memory-bound</h2>
+
+  <p>
+    512 tokens கொண்ட ஒரு prompt-ஐ எடுங்கள். ஒரே batched pass-ஆக ஓட்டுங்கள்,
+    அல்லது 512 வரிசையான decode steps-ஆக ஓட்டுங்கள். மொத்த கணக்கு ஒன்றுதான் —
+    ஆனால் முற்றிலும் வேறு இயந்திரங்கள்.
+  </p>
+
+<pre><code>  Llama-2-7B-shaped, 512-token prompt (approximate, attn + FFN):
+    prefill, one batched pass : 3,332,961,730,560 MACs, weights read 1x
+    512 sequential decode steps: 3,332,961,730,560 MACs, weights read <span class="hl">512x</span>
+    one decode step           :    6,576,668,672 MACs
+
+  arithmetic intensity (MACs per byte moved off memory):
+    prefill : <span class="ok">   242.5 MACs/byte ✓</span>
+    decode  :      0.48 MACs/byte
+</code></pre>
+
+  <p>
+    நவீன accelerator-க்கு, தன் கணக்கு அலகுகளை வேலையில் வைத்திருக்க, நகர்த்தும்
+    ஒவ்வொரு byte-க்கும் ஏறத்தாழ 100–300 MACs தேவை. Prefill அதைத் தாண்டுகிறது.
+    Decode இரண்டு அளவுகோல்களுக்கும் மேலாகத் தவறவிடுகிறது: ஒவ்வொரு step-லும்
+    12.55 GiB weights முழுவதையும் memory bus வழியாக இழுத்து ஆறு பில்லியன் MACs
+    செய்கிறது — chip அதை முடித்துவிட்டு இன்னும் காத்திருக்கும்.
+  </p>
+
+  <p>
+    உங்களிடம் கேட்கப்படும் இரண்டு விளைவுகள். <strong>Batching throughput-ஐ
+    உயர்த்தும், latency-ஐ அல்ல</strong> — weights எப்படியும் பயணத்தில்
+    இருக்கின்றன, அதனால் 32 இணையான requests கிட்டத்தட்ட இலவசமாக உடன் வருகின்றன,
+    ஒவ்வொரு user-ன் token-ம் அதே நேரத்திலேயே வந்துவிடும். மேலும்
+    <strong>அதிக FLOPs வாங்குவது decode-ஐ வேகப்படுத்தாது</strong>; memory
+    bandwidth-ம் cache அளவும்தான் வேகப்படுத்தும். Serving-ல் இருக்கும்
+    ஒவ்வொரு தந்திரமும் — continuous batching, speculative decoding,
+    quantisation, GQA — அந்த ஒரே சமநிலையின்மையை நோக்கியதுதான்.
+  </p>
+
+  <p class="thanglish">
+    Prefill-la chip kanakku panni ozhaikkum, decode-la weights-ai memory-la
+    irundhu izhukkaradhula neram poyidum. Adhaan batching throughput-ai mattum
+    kootuthu, latency-ai illa.
+  </p>
+
+  <h2>PagedAttention எங்கே வருகிறது</h2>
+
+  <p>
+    சூத்திரம் மறைக்கும் இன்னொரு பிரச்சனை. பதில் எவ்வளவு நீளமாக இருக்கும் என்று
+    உங்களுக்குத் தெரியாது; அதனால் மொள்ளமான implementation ஒவ்வொரு request-க்கும்
+    அதிகபட்ச நீளத்துக்கான தொடர்ச்சியான இடத்தை முன்பதிவு செய்கிறது. அதில்
+    பெரும்பாலானது ஒருபோதும் பயன்படுவதில்லை, மீதி துண்டு துண்டாகிறது — free
+    bytes உங்களிடம் இருக்கின்றன, ஆனால் ஒரே துண்டாக இல்லை.
+  </p>
+
+  <p>
+    <a href="https://arxiv.org/abs/2309.06180">PagedAttention</a> (Kwon et al.,
+    2023, vLLM-க்குப் பின்னால் இருக்கும் paper) பெயர் வைத்தவுடன் தெளிவாகும்
+    செயலைச் செய்கிறது: cache-ஐ virtual memory போலப் பாவியுங்கள். நிலையான அளவு
+    pages, ஒவ்வொரு sequence-க்கும் ஒரு block table, தேவைப்படும்போது ஒதுக்கீடு,
+    பொதுவான prefix கொண்ட sequences-க்கு இடையே pages-ஐப் பகிர்தல். Attention-ல்
+    எதுவும் மாறவில்லை; சேமிப்பு அமைப்பு மட்டும் மாறுகிறது. அதுதான் அதிக
+    throughput serving-ஐ நடைமுறையாக்கியது, "KV cache" என்ற சொல் இப்போது ops
+    meetings-ல் கேட்பதற்கும் அதுதான் காரணம்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    यह कोई paper नहीं है। यह <a href="../attention/">Attention Is All You
+    Need</a> की एक ही लाइन का engineering नतीजा है, और यह लोककथा की तरह जीता
+    है: जिसने भी कोई model serve किया है वह इसे जानता है, लिखता कोई नहीं। मैंने
+    एक inference stack ship कर दिया था, उससे पहले मैं whiteboard पर खड़ा होकर
+    यह नहीं बता सकता था कि इस cache को रखने की <em>इजाज़त</em> क्यों है। यहाँ
+    जो papers हैं, वे बाद में आकर इसे optimise करने वाले हैं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (cache, memoise, key,
+    value, query, causal mask, prefill, decode…) मैंने वैसे ही रखे हैं। क्योंकि
+    code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    पूरी बात एक ही observation है। <em>n</em>वाँ token बनाने का मतलब है सारे
+    <em>n</em> tokens पर attention चलाना। पूरे sequence के लिए यह भोलेपन से
+    कीजिए तो क़ीमत लगभग <em>n</em><sup>3</sup> पड़ती है। लेकिन causal mask यह
+    गारंटी देता है कि token <em>i</em> की key और value एक बार बन जाने के बाद
+    कभी नहीं बदलतीं। इसलिए उन्हें cache कर लीजिए। Loop
+    <em>n</em><sup>2</sup> हो जाता है, और हर step पूरी matrix की जगह सिर्फ़ एक
+    नई row है।
+  </p>
+
+  <h2>KV cache असल में memoisation है</h2>
+
+  <p>यह आपने सौ बार लिखा है:</p>
+
+<pre><code>@lru_cache
+def expensive(x):        # cache करना सुरक्षित है, क्योंकि यह PURE है:
+    return f(x)          # वही x हमेशा वही जवाब देता है</code></pre>
+
+  <p>
+    और नियम भी आप जानते हैं: सिर्फ़ pure function को ही memoise किया जा सकता है।
+    जिसका जवाब किसी छुपे हुए mutable state पर टिका हो, उसे cache कीजिए और आपको
+    सबसे बुरी क़िस्म का bug मिलेगा — मंगलवार को सही जवाब, load पर ग़लत।
+  </p>
+
+  <p>
+    एक decoder की प्रति-token key और value ठीक वैसा ही pure function हैं। Token
+    <em>i</em> की <code>k</code> और <code>v</code> उसी token के embedding और
+    position से बनती हैं, और बाद में आने वाली किसी चीज़ से नहीं। तो:
+  </p>
+
+<pre><code>cache = {"K": [], "V": []}
+
+def decode_step(token, pos, cache):
+    q, k, v = project(embed(token) + pos_enc(pos))   # q हर step का, फेंक देना है
+    cache["K"].append(k)                             # सिर्फ़ एक row जोड़ो
+    cache["V"].append(v)
+    scores  = q @ stack(cache["K"]).T                # (1, n), न कि (n, n)
+    return softmax(scores) @ stack(cache["V"])</code></pre>
+
+  <p>
+    बस इतना ही। यही KV cache है। दिलचस्प हिस्सा code नहीं है, दिलचस्प है इसे
+    लिखने का <em>लाइसेंस</em> — और वह लाइसेंस mask से आता है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Prefill</strong></td><td>पूरे prompt को एक बार चलाकर cache भर देना</td><td>Startup पर cache गरम करना</td></tr>
+      <tr><td><strong>Decode</strong></td><td>एक token अंदर, एक token बाहर, cache एक row बढ़ता है</td><td>स्थिर अवस्था का request loop</td></tr>
+      <tr><td><strong>KV cache</strong></td><td>अब तक के हर token के लिए, हर layer की keys और values</td><td>Memo table</td></tr>
+      <tr><td><strong>Causal mask</strong></td><td>Row i सिर्फ़ ≤ i columns पढ़ सकती है</td><td>इस बात का सबूत कि function pure है</td></tr>
+      <tr><td><strong>Eviction</strong></td><td>जगह ख़त्म होने पर cache entries हटाना</td><td>सीमित cache पर LRU</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <p>
+    यह attention का सूत्र नहीं है — वह आपके पास पहले से है। यह वह सूत्र है जो
+    तय करता है कि आप असल में serve क्या कर सकते हैं:
+  </p>
+
+  <div class="formula">bytes = 2 × layers × kv_heads × head_dim × seq_len × dtype_bytes × batch</div>
+
+  <p>इसे उन terms की तरह पढ़िए जो आपके हाथ में हैं:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>आम तौर पर</th><th>यह है क्या</th></tr></thead>
+    <tbody>
+      <tr><td><code>2</code></td><td>2</td><td>K और V। Q कभी नहीं — Q एक बार इस्तेमाल होकर फेंक दिया जाता है</td></tr>
+      <tr><td><code>layers</code></td><td>32</td><td>हर layer अपना अलग cache रखती है। ये साझा नहीं होते</td></tr>
+      <tr><td><code>kv_heads</code></td><td>32 → 8 → 1</td><td>architecture papers सिर्फ़ इसी term पर हमला करते हैं। MHA → GQA → MQA</td></tr>
+      <tr><td><code>head_dim</code></td><td>128</td><td>d<sub>model</sub> / n<sub>heads</sub></td></tr>
+      <tr><td><code>seq_len</code></td><td>4k…128k</td><td>हर decode step पर बढ़ता है। दर्द यही देता है</td></tr>
+      <tr><td><code>dtype_bytes</code></td><td>2</td><td>fp16 या bf16। Cache को 8 bits में quantise करने पर आधा</td></tr>
+      <tr><td><code>batch</code></td><td>1…256</td><td>हर समानांतर request पूरी क़ीमत दोबारा चुकाती है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>दो loops, और 34× का फ़ासला</h2>
+
+  <p>
+    Script एक खिलौना decoder पर दोनों loops चलाती है और multiply-accumulates
+    गणितीय ढंग से गिनती है, ताकि यह संख्या आपके laptop की रफ़्तार पर न टिके।
+    प्रति token, प्रति layer: चार projections के लिए <code>4·d·d</code>,
+    cache में रखी <em>n</em> keys पर attention के लिए <code>2·d·n</code>, और
+    feed-forward के लिए <code>2·d·ff</code>।
+  </p>
+
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। यह रहा असली output:</strong></p>
+
+<pre><code>toy model: 2 layers, 4 heads, d_model=32, seq=64
+
+  naive  loop total MACs:   62,566,400
+  cached loop total MACs:    1,839,104
+  ratio                 :         34.0x
+
+  per-step cost (MACs), naive grows, cached is flat:
+    step |        naive |      cached
+       1 |       24,704 |      24,704
+       8 |      204,800 |      25,600
+      16 |      425,984 |      26,624
+      32 |      917,504 |      28,672
+      48 |    1,474,560 |      30,720
+      64 |    2,097,152 |   <span class="ok">  32,768</span> <span class="ok">✓</span>
+</code></pre>
+
+  <p>
+    दोनों columns देखिए। Naive step की लागत step 1 से step 64 के बीच 85 गुना हो
+    जाती है। Cached step की लागत एक तिहाई बढ़ती है — और वह बची हुई बढ़त असली है,
+    rounding नहीं। Attention को अब भी cache की हर key scan करनी पड़ती है। जो
+    सपाट हुआ वह projections और feed-forward है, यानी अधिकांश काम।
+  </p>
+
+  <div class="note">
+    <strong>Interview में big-O सँभालकर बोलिए।</strong> वह
+    <em>n</em><sup>3</sup> → <em>n</em><sup>2</sup> वाला दावा decode loop के
+    सिर्फ़ <em>attention</em> हिस्से के बारे में है। प्रति token feed-forward की
+    लागत caching बिल्कुल कम नहीं करती: हर बनाए गए token पर FFN एक बार तो चलेगा
+    ही। Caching जो हटाता है वह है prefix को दोबारा चलाना।
+  </div>
+
+  <h2>वही tokens, float की सटीकता तक</h2>
+
+  <p>
+    जो cache जवाब बदल दे वह cache नहीं, approximation है। इसलिए script वही 12
+    tokens दोनों तरीक़ों से बनाती है और logits का अंतर निकालती है।
+  </p>
+
+<pre><code>  naive  tokens: [3, 17, 42, 8, 16, 16, 16, 16, 44, 44, 16, 16, 16, 16, 44, 16]
+  cached tokens: [3, 17, 42, 8, 16, 16, 16, 16, 44, 44, 16, 16, 16, 16, 44, 16]
+  same token sequence? <span class="ok">True</span>
+  max |naive logits - cached logits| = <span class="ok">1.887e-15 ✓</span>
+</code></pre>
+
+  <p>
+    1.9 × 10<sup>−15</sup> सिर्फ़ float64 का शोर है, जो जोड़ों का क्रम बदलने से
+    आता है। Weights यादृच्छिक और अप्रशिक्षित हैं, इसलिए model मज़े से token 16
+    पर loop मारता है — कोई बात नहीं, यह पन्ना compute और memory के बारे में है,
+    सीखने के बारे में नहीं। अहम यह है कि दोनों loops <em>एक जैसे</em> ही चलते
+    हैं।
+  </p>
+
+  <h2>Mask ही सबूत है</h2>
+
+  <p>
+    यह रहा वह हिस्सा जो कोई लिखता नहीं। उन rows को रख लेना जायज़ क्यों है?
+    क्योंकि causal mask के साथ, एक token जोड़ने से पहले की कोई भी attention row
+    बदल नहीं सकती। Row <em>i</em> में <em>i</em> के बाद के हर column में
+    <code>−∞</code> है, इसलिए नया column उसके softmax हर में बिल्कुल कुछ नहीं
+    जोड़ता।
+  </p>
+
+  <p><strong>वही layer, वही head — 5वाँ token जोड़ने से पहले और बाद:</strong></p>
+
+<pre><code>  WITH causal mask -- layer 0, head 0 attention weights
+    before appending a 5th token (4x4):
+      [1. 0. 0. 0.]
+      [0.671 0.329 0.    0.   ]
+      [0.53  0.235 0.235 0.   ]
+      [0.553 0.162 0.159 0.126]
+    after  appending a 5th token, first 4 rows (4x5):
+      [1. 0. 0. 0. 0.]
+      [0.671 0.329 0.    0.    0.   ]
+      [0.53  0.235 0.235 0.    0.   ]
+      [0.553 0.162 0.159 0.126 0.   ]
+    max change in the first 4 rows: <span class="ok">0.000e+00 ✓</span>
+</code></pre>
+
+  <p>
+    बिल्कुल शून्य। "थोड़ा सा" नहीं। अब mask हटा दीजिए — decoder को BERT जैसा
+    द्विदिश encoder बना दीजिए — और वही प्रयोग दोबारा चलाइए:
+  </p>
+
+<pre><code>  NO mask -- layer 0, head 0 attention weights
+    before appending a 5th token (4x4):
+      [0.386 0.182 0.305 0.127]
+      [0.417 0.204 0.261 0.117]
+      [0.47  0.209 0.208 0.113]
+      [0.553 0.162 0.159 0.126]
+    after  appending a 5th token, first 4 rows (4x5):
+      [0.362 0.17  0.285 0.119 0.064]
+      [0.394 0.193 0.247 0.111 0.054]
+      [0.448 0.199 0.198 0.107 0.048]
+      [0.506 0.149 0.146 0.115 0.084]
+    max change in the first 4 rows: <span class="hl">4.631e-02</span>
+
+  now the consequence for a cache:
+    unmasked model, cached vs recomputed logits, max abs diff: <span class="hl">0.4017</span>
+    argmax token: recomputed=44  cached=<span class="hl">16</span>
+</code></pre>
+
+  <p>
+    पहले की हर row हिल गई, क्योंकि softmax नए column को मिलाकर दोबारा normalise
+    करता है। Cache में रखी rows अब बासी हैं, logits 0.40 भटक गए, और model दूसरा
+    token चुन लेता है। वही code, बस एक boolean पलटा।
+  </p>
+
+  <div class="note">
+    <strong>इसीलिए BERT में KV cache नहीं है और GPT में है।</strong> यह कभी
+    performance का फ़ैसला था ही नहीं। द्विदिश attention में K और V भविष्य पर
+    निर्भर हो जाते हैं, इसलिए memoise करने लायक़ कुछ pure बचता ही नहीं। Mask वह
+    invariant है जिस पर cache खड़ा है — और एक बार वह मिल जाए तो decode के समय
+    <code>−∞</code> वाली matrix की ज़रूरत भी नहीं रहती, क्योंकि cache में हमेशा
+    सिर्फ़ अतीत होता है।
+  </div>
+
+  <h2>Cache, model से बड़ा हो जाता है</h2>
+
+  <p>
+    अब वह हिसाब जो आपका hardware bill तय करता है। Llama-2-7B जैसा model: 32
+    layers, 32 heads, head_dim 128, fp16।
+  </p>
+
+<pre><code>  bytes = 2 * layers * kv_heads * head_dim * seq_len * dtype_bytes
+
+  weights (fp16, 6.74B params):  12.55 GiB
+  cache per token: 524,288 bytes = 512 KiB
+
+      seq_len |   batch 1 |  batch 32 | batch 32 vs weights
+        1,024 |   0.50 GiB |   16.0 GiB |    1.3x the weights
+        4,096 |   2.00 GiB |   64.0 GiB |    5.1x the weights
+       32,768 |  16.00 GiB |  512.0 GiB |   40.8x the weights
+      131,072 |  64.00 GiB | <span class="hl">2048.0 GiB</span> |  163.2x the weights
+</code></pre>
+
+  <p>
+    आधा megabyte प्रति token। 128k tokens की एक ही बातचीत अकेले 64 GiB cache है
+    — weights से पाँच गुना, और वह 80 GB के card पर model के साथ अँटती नहीं।
+    मामूली 4k context पर batch 32 पहले ही checkpoint से भारी है। जब कोई कहता है
+    कि किसी model को "A100 चाहिए", तो वह आम तौर पर weights का आँकड़ा बोल रहा
+    होता है — और वही छोटी संख्या है।
+  </p>
+
+  <h2>MQA और GQA: एक term घटाइए</h2>
+
+  <p>
+    सूत्र फिर देखिए। <code>layers</code> और <code>head_dim</code> model हैं।
+    <code>seq_len</code> और <code>batch</code> आपके users हैं। बचा
+    <code>kv_heads</code> — और papers ठीक वहीं गए।
+  </p>
+
+  <p>
+    <a href="https://arxiv.org/abs/1911.02150">Multi-Query Attention</a>
+    (Shazeer, 2019): सारे 32 query heads रखिए, पर उन्हें <em>एक</em> साझा
+    key/value head दीजिए। <a href="https://arxiv.org/abs/2305.13245">Grouped-Query
+    Attention</a> (Ainslie et al., 2023) बीच का रास्ता है: 8 KV heads, हर एक को
+    चार query heads साझा करते हैं। दोनों में Q को हाथ तक नहीं लगाया जाता —
+    क्योंकि Q कभी stored ही नहीं होता।
+  </p>
+
+<pre><code>      variant           kv_heads |  4k, b32 | 32k, b32 | reduction
+      multi-head (2017)       32 |   64.0GiB |  512.0GiB |      1x
+      GQA, 8 groups            8 |   16.0GiB |  128.0GiB |      4x
+      MQA, 1 kv head           1 |    2.0GiB |   16.0GiB |     32x
+
+  same table as bytes per token, batch 1:
+      multi-head   524,288 bytes/token
+      GQA-8        131,072 bytes/token
+      MQA           <span class="ok">16,384 bytes/token ✓</span>
+</code></pre>
+
+  <p>
+    कटौती ठीक <code>n_heads / n_kv_heads</code> है। कोई बारीक़ी नहीं। MQA 32
+    गुना घटाता है और GQA paper के ablations दिखाते हैं कि उसमें गुणवत्ता गिरती
+    है; GQA-8 चार गुना घटाता है और multi-head के क़रीब ही रहता है। इसीलिए
+    <a href="../llama/">Llama-2 70B</a> GQA-8 इस्तेमाल करता है, और इसीलिए उसके
+    बाद रिलीज़ हुआ लगभग हर model भी। यह memory का फ़ैसला है जो संयोग से
+    architecture बन गया।
+  </p>
+
+  <h2>Prefill compute-bound है, decode memory-bound</h2>
+
+  <p>
+    512 tokens का एक prompt लीजिए। उसे एक batched pass में चलाइए, या 512
+    क्रमिक decode steps की तरह। कुल गणित वही — और मशीनें बिल्कुल अलग।
+  </p>
+
+<pre><code>  Llama-2-7B-shaped, 512-token prompt (approximate, attn + FFN):
+    prefill, one batched pass : 3,332,961,730,560 MACs, weights read 1x
+    512 sequential decode steps: 3,332,961,730,560 MACs, weights read <span class="hl">512x</span>
+    one decode step           :    6,576,668,672 MACs
+
+  arithmetic intensity (MACs per byte moved off memory):
+    prefill : <span class="ok">   242.5 MACs/byte ✓</span>
+    decode  :      0.48 MACs/byte
+</code></pre>
+
+  <p>
+    आधुनिक accelerator को अपनी गणित इकाइयाँ व्यस्त रखने के लिए memory से हिलाए
+    गए हर byte पर लगभग 100–300 MACs चाहिए। Prefill यह पार कर लेता है। Decode
+    इससे दो से ज़्यादा order of magnitude पीछे रह जाता है: हर step पूरे 12.55
+    GiB weights को memory bus पर घसीटता है ताकि छह अरब MACs कर सके, जिन्हें
+    chip इंतज़ार करते-करते ही निपटा देता है।
+  </p>
+
+  <p>
+    दो नतीजे, जो आपसे पूछे जाएँगे। <strong>Batching throughput बढ़ाता है,
+    latency नहीं</strong> — weights तो वैसे भी रास्ते में हैं, इसलिए 32
+    समानांतर requests लगभग मुफ़्त में साथ चली आती हैं, और हर user का token उसी
+    समय पर पहुँचता है। और <strong>ज़्यादा FLOPs ख़रीदने से decode तेज़ नहीं
+    होता</strong>; memory bandwidth और cache का आकार तेज़ करते हैं। Serving की
+    हर तरकीब — continuous batching, speculative decoding, quantisation, GQA —
+    उसी एक असंतुलन पर निशाना है।
+  </p>
+
+  <h2>PagedAttention कहाँ आता है</h2>
+
+  <p>
+    एक और समस्या, जिसे सूत्र छिपा लेता है। आपको पता नहीं होता कि जवाब कितना
+    लंबा होगा, इसलिए भोली implementation हर request के लिए अधिकतम लंबाई जितनी
+    लगातार जगह पहले से रोक लेती है। उसका ज़्यादातर हिस्सा कभी काम नहीं आता, और
+    जो बचता है वह टुकड़ों में बँट जाता है — खाली bytes आपके पास हैं, बस एक साथ
+    नहीं।
+  </p>
+
+  <p>
+    <a href="https://arxiv.org/abs/2309.06180">PagedAttention</a> (Kwon et al.,
+    2023, वह paper जिस पर vLLM खड़ा है) वही करता है जो नाम रखते ही ज़ाहिर हो
+    जाता है: cache को virtual memory की तरह बरतिए। तय आकार के pages, हर sequence
+    के लिए एक block table, ज़रूरत पर allocation, और साझा prefix वाले sequences
+    के बीच pages साझा। Attention में कुछ नहीं बदलता; storage का ढाँचा बदलता है।
+    यही वह चीज़ है जिसने high-throughput serving को व्यवहारिक बनाया, और यही
+    वजह है कि "KV cache" अब ops meetings में सुनाई देने वाला वाक्यांश है।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -608,6 +1349,37 @@ def kv_cache_bytes(layers, kv_heads, head_dim, seq_len, dtype_bytes=2,
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>
