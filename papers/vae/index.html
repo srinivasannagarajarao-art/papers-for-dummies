@@ -7,7 +7,7 @@
 <meta name="description" content="The VAE paper explained as code. An autoencoder whose bottleneck is a bell curve, the reparameterisation trick as 'move the dice outside the function', and a KL tax you can watch. Runnable NumPy plus a tiny CPU PyTorch model, five deliberate breaks.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -37,6 +37,14 @@
       PyTorch model for the training step.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
 
   <p>
     I'm an AI Engineer. I've shipped a VAE without noticing — Stable Diffusion's
@@ -278,6 +286,542 @@ beta=50, huge KL      0.9084   0.036   0.981   0.14     <span class="hl">0.033</
     μ → 0, and every reconstruction is nearly the same point.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. ஒரு VAE-ஐ கவனிக்காமலேயே ship செய்திருக்கிறேன் —
+    Stable Diffusion-ன் pixels ஒரு VAE decoder-லிருந்துதான் வருகின்றன — இருந்தும்
+    இந்தக் கட்டுரையைப் படிக்க முடியவில்லை. பக்கம் பக்கமாக Bayesian notation,
+    ஆனால் முக்கியமான இரண்டு கருத்துகளும் தலா மூன்று வரிக் கணக்கு. மீதி எல்லாம்
+    அந்த மூன்று வரிகள் <em>அனுமதிக்கப்பட்டவை</em> என்பதற்கான ஒரு நிரூபணம் என்று
+    யாரும் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (encoder, decoder, latent,
+    reparameterisation trick, KL, ELBO, posterior collapse, prior…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>VAE என்பது codes பற்றி ஒரு விதியுடன் கூடிய lossy compression</h2>
+
+  <p>இதை நீங்கள் எழுதியிருக்கிறீர்கள்:</p>
+
+<pre><code>code  = compress(x)          # input-ஐ சில எண்களாகச் சுருக்கு
+x_hat = decompress(code)     # மீண்டும் கட்டியெழுப்பு
+loss  = how_far_off(x, x_hat)</code></pre>
+
+  <p>
+    இதுதான் ஒரு autoencoder. சுருக்குவது நன்றாகவே செய்யும். ஆனால் இதனால்
+    <strong>generate</strong> செய்ய முடியாது: decompressor-க்கு ஒரு random code
+    கொடுத்தால் குப்பைதான் வரும், ஏனெனில் codes எங்கே இருக்கின்றன என்பதை
+    compressor-ன் விருப்பம்தான் தீர்மானிக்கிறது — யாரும் எழுதி வைக்காத ஒரு வடிவம்,
+    யாரும் மீண்டும் கண்டுபிடிக்க முடியாத ஒரு பகுதி.
+  </p>
+
+  <p>VAE இரண்டு மாற்றங்களைச் செய்கிறது:</p>
+
+<pre><code>mu, log_var = encoder(x)                   # code அல்ல: codes-ன் ஒரு மணி வளைவு
+z     = mu + exp(0.5 * log_var) * randn()  # அந்த வளைவிலிருந்து ஒரு code எடு
+x_hat = decoder(z)
+loss  = how_far_off(x, x_hat) + kl(mu, log_var)  # + "codes N(0,1) போல் இருக்கணும்"</code></pre>
+
+  <p>
+    Compressor ஒரு distribution-ஐத் திருப்பித் தருகிறது; அந்த distribution
+    standard normal noise போல் இல்லாதபோதெல்லாம் ஒரு வரி விழுகிறது. Training
+    முழுக்க அந்த வரியைக் கட்டுங்கள் — பிறகு நீங்கள் எடுக்கும் <em>எந்த</em>
+    standard normal noise-ம் ஒரு செல்லுபடியான code: அதை decode செய்தால் புதிய,
+    நம்பத்தகுந்த ஒரு input கிடைக்கும். இதுதான் generative தந்திரம்.
+  </p>
+
+  <p class="thanglish">
+    Autoencoder compress pannum, aana generate panna mudiyaadhu — codes engeyo
+    kidakkum. VAE oru bell curve-ai return pannudhu, plus "codes N(0,1) maadhiri
+    irukkanum"-nu oru tax. Adhanaala random noise-um valid code aagidum.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-ன் உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Encoder</strong> q(z|x)</td><td>x-ஐ எடுத்து (μ, log σ²) தருகிறது: ஒரு மணி வளைவின் மையமும் அகலமும்</td><td>ஒரு மதிப்பை அல்ல, ஒரு வரம்பைத் திருப்பித் தரும் compressor</td></tr>
+      <tr><td><strong>Decoder</strong> p(x|z)</td><td>ஒரு code z-ஐ எடுத்து x-ஐ மீண்டும் கட்டுகிறது</td><td>Decompressor. ஒரு சாதாரண MLP</td></tr>
+      <tr><td><strong>Latent</strong> z</td><td>மணி வளைவிலிருந்து sample செய்யப்பட்ட ஒரு code</td><td>சுருக்கப்பட்ட bytes</td></tr>
+      <tr><td><strong>Prior</strong> p(z) = N(0, I)</td><td>Codes எப்படி இருக்க வேண்டும் என்பது</td><td>Codes validate ஆக வேண்டிய schema</td></tr>
+      <tr><td><strong>KL term</strong></td><td>Encoder-ன் மணி வளைவு N(0, I)-லிருந்து எவ்வளவு தூரம்</td><td>Code schema-வை மீறினால் build-ஐ தோற்கடிக்கும் linter</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">log p(x) ≥ E<sub>z ~ q(z|x)</sub>[ log p(x|z) ] − KL( q(z|x) ‖ N(0, I) )</div>
+
+  <p>
+    வலது பக்கம்தான் ELBO — கட்டுரையின் section 2.2-ல் உள்ள bound. Training அதை
+    அதிகரிக்கிறது, எனவே loss என்பது அதன் எதிர்மறை: reconstruction கூட்டல் வரி.
+    இதைக் கணக்கிடக்கூடியதாக்க இரண்டு உதவியாளர்கள்:
+  </p>
+
+  <div class="formula">z = μ + σ ⊙ ε,   ε ~ N(0, I)        KL = −½ Σ (1 + log σ² − μ² − σ²)</div>
+
+  <p>இதை pipeline நிலைகளாகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>நிலை</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>encoder(x)</code></td><td>(n, d<sub>z</sub>) இரு முறை</td><td>ஒரே MLP-க்கு இரண்டு heads: μ மற்றும் log σ². ஒவ்வொரு input-க்கும் ஒரு மணி வளைவு</td></tr>
+      <tr><td><code>ε ~ N(0, I)</code></td><td>(n, d<sub>z</sub>)</td><td><strong>பகடை.</strong> Model-க்கு வெளியே உருட்டப்படுகிறது. Parameters இல்லை, gradient இல்லை</td></tr>
+      <tr><td><code>z = μ + exp(½ log σ²) ε</code></td><td>(n, d<sub>z</sub>)</td><td><strong>அந்தத் தந்திரம்.</strong> கூட்டல், பெருக்கல். Backprop இதன் வழியாக நடந்து செல்கிறது</td></tr>
+      <tr><td><code>decoder(z)</code></td><td>(n, d<sub>x</sub>)</td><td>Code-லிருந்து input-ஐ மீண்டும் கட்டு</td></tr>
+      <tr><td><code>‖x − x̂‖² / 2σ<sub>x</sub>²</code></td><td>(n,)</td><td><strong>Reconstruction.</strong> Gaussian decoder-க்கு −log p(x|z) — MSE என்பது மாறுவேடத்தில் ஒரு likelihood</td></tr>
+      <tr><td><code>−½ Σ(1 + log σ² − μ² − σ²)</code></td><td>(n,)</td><td><strong>வரி.</strong> N(0, I)-க்கான KL, closed form, கட்டுரையின் Appendix B</td></tr>
+      <tr><td><code>mean(recon + KL)</code></td><td>scalar</td><td>−ELBO. பிறகு <code>loss.backward()</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Table மறைக்கும் ஒரு விஷயம். நிலையான std σ<sub>x</sub> கொண்ட ஒரு Gaussian-ன்
+    சராசரியை output ஆகத் தரும் decoder-க்கு −log p(x|z) = வர்க்கப் பிழை /
+    2σ<sub>x</sub>² கூட்டல் ஒரு மாறிலி. எனவே "MSE" என்பதுதான் கட்டுரையின்
+    likelihood term, மேலும் σ<sub>x</sub> என்பது reconstruction-க்கும் வரிக்கும்
+    இடையிலான மாற்று விகிதம். நான் அதை 0.1-ல் நிலைநிறுத்தினேன்; அதை மாற்றினால்
+    KL-ஐத் தொடாமலேயே KL weight-ஐ மாற்றிவிட்டீர்கள்.
+  </p>
+
+  <h2>தந்திரம்: பகடையை function-க்கு வெளியே நகர்த்து</h2>
+  <p>
+    z-ஐ N(μ, σ²)-லிருந்து எடுக்க வேண்டும், மேலும் <code>loss.backward()</code>
+    μ மற்றும் σ வரை போக வேண்டும். ஆனால் <code>rng.normal(mu, sigma)</code> ஒரு
+    கருப்புப் பெட்டி: randomness அதற்கு <em>உள்ளேயே</em> நடக்கிறது, எனவே
+    differentiate செய்ய μ-வின் function எதுவும் இல்லை. μ-ஐ சிறிது நகர்த்தினால்
+    z ஒரு தற்செயலான அளவு நகரும், derivative-ன்படி அல்ல.
+  </p>
+  <p>
+    தீர்வு: முதலில் randomness-ஐ parameters இல்லாத ஒரு distribution-லிருந்து
+    எடுங்கள், பிறகு அதைக் கணக்கால் z ஆக மாற்றுங்கள்: <code>eps = randn()</code>,
+    பிறகு <code>z = mu + sigma * eps</code>. z-க்கு அதே distribution. ஆனால் இப்போது
+    dz/dμ = 1, dz/dσ = ε, மேலும் backprop நேராக நடந்து செல்கிறது. இதுதான் section
+    2.4, இதற்காகத்தான் இந்தக் கட்டுரையே இருக்கிறது: பழைய score-function estimator
+    "exhibits very high variance" என்று கட்டுரையே சொல்கிறது, இது அதற்குப் பதிலாக
+    சாதாரண backprop-ஐ வைக்கிறது. Introduction பட்டியலிடும் மற்றொரு பங்களிப்பு
+    encoder-ஏதான் — ஒவ்வொரு datapoint-க்கும் ஒரு optimisation loop ஓட்டுவதற்குப்
+    பதிலாக, ஒரே forward pass-ல் inference-க்குப் பதில் சொல்லும் ஒரு
+    <em>recognition model</em>. விலையுயர்ந்த per-item கணக்கீட்டுக்கு ஒரு cache.
+  </p>
+
+  <p class="thanglish">
+    Random number generator-oda ulla backprop panna mudiyaadhu. So dice-ai
+    veliya urutti, z = mu + sigma*eps-nu arithmetic-la maathunga. dz/dmu = 1,
+    dz/dsigma = eps. Idhu dhaan reparameterisation trick.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>want N( 1.50, 0.40)   100000 draws of mu + sigma*eps:  mean  1.500  std 0.401
+want N(-2.00, 3.00)   100000 draws of mu + sigma*eps:  mean -1.998  std 3.003
+
+now the gradient. dz/dmu by finite difference, (z(mu+h) - z(mu)) / h
+  'direct' = two separate rng.normal(mu, sigma) calls, fresh dice each
+  h=0.1    reparam:  <span class="ok">1.000</span>   direct once:    -2.786   direct rms/1000:     5.9
+  h=0.01   reparam:  1.000   direct once:     4.828   direct rms/1000:    57.0
+  h=0.001  reparam:  1.000   direct once:  <span class="hl">-247.014</span>   direct rms/1000:   554.6
+  dz/dsigma, reparameterised: -1.224   and eps was -1.224</code></pre>
+
+  <p>
+    h-ஐச் சுருக்கினால் direct பதிப்பு <em>மோசமாகிறது</em>, நன்றாக ஆவதில்லை —
+    அது σ அளவுள்ள noise-ஐ h-ஆல் வகுத்தது; அங்கே கண்டுபிடிக்க derivative எதுவும்
+    இல்லை. Reparameterise செய்தால் அது சரியாக 1, மேலும் dz/dσ என்பது உருட்டப்பட்ட
+    அதே ε. ஒவ்வொரு implementation-ம் <code>exp(0.5 * log_var)</code> என்று
+    சொல்வதற்குக் காரணம்: network-ன் raw output எதிர்மறையாக இருக்கலாம், standard
+    deviation எதிர்மறையாக இருக்க முடியாது; எனவே encoder log σ²-ஐத் தருகிறது,
+    exp அதை அமைப்பாலேயே நேர்மறையாக்குகிறது.
+  </p>
+
+  <div class="note">
+    <strong>PyTorch-ல் இதுதான் <code>Normal(mu, sigma).sample()</code>-க்கும்
+    <code>.rsample()</code>-க்கும் உள்ள வேறுபாடு.</strong>
+    <code>sample()</code> என்பது <code>grad_fn</code> இல்லாத ஒரு tensor-ஐத்
+    தருகிறது; <code>rsample()</code> என்பது <code>AddBackward0</code>-உடன்
+    <code>mu + sigma * eps</code>-ஐத் தருகிறது. அந்த <em>r</em> இந்தக் கட்டுரைதான்.
+  </div>
+
+  <h2>வரி: standard normal-க்கான KL, ஒரே வரியில்</h2>
+  <p>
+    KL(q ‖ p) என்பது "q-ன் samples-ஐப் பார்த்து p எவ்வளவு ஆச்சரியப்படும்",
+    nats-ல். q = N(μ, σ²)-ஐ p = N(0, 1)-க்கு எதிராக வைத்தால் அது மேலே உள்ள
+    ஒரு-வரி சூத்திரம்: μ = 0, σ = 1-ல் பூஜ்யம், நகர நகர பெரிதாகும், latent
+    dimensions முழுக்கக் கூட்டப்படுகிறது.
+  </p>
+
+  <p><strong>Closed form, 200,000-sample மதிப்பீட்டுக்கு எதிராகச் சரிபார்க்கப்பட்டது:</strong></p>
+
+<pre><code>   mu  sigma   closed form   monte carlo
+  0.0    1.0        <span class="ok">0.0000</span>        0.0000
+  1.0    1.0        0.5000        0.5001
+  0.0    2.0        0.8069        0.8105
+  0.0    0.5        0.3181        0.3172
+  2.0    0.5        2.3181        2.3174
+  0.0    0.1        <span class="hl">1.8076</span>        1.8064
+  3.0    1.0        4.5000        4.5004</code></pre>
+
+  <p>
+    உற்றுப் பார்க்க வேண்டிய வரிசை (0.0, 0.1). ஒரு <em>குறுகிய</em> மணி வளைவுக்கும்
+    வரி உண்டு — σ-ஐ 0.1 ஆகச் சுருக்கியதற்கு 1.8 nats. VAE அமைதியாகத் தன்னை
+    σ = 0 கொண்ட சாதாரண autoencoder ஆக மாற்றிக்கொள்வதை இதுதான் தடுக்கிறது.
+    துல்லியத்துக்கு அது விலை கொடுக்க வேண்டும், மேலும் துல்லியம் reconstruction-ஐ
+    வாங்கித் தரும் இடத்தில் மட்டுமே அது கொடுக்கும்.
+  </p>
+
+  <h2>Training: இரு terms சண்டையிடுவதைப் பாருங்கள்</h2>
+  <p>
+    Toy data என்பது ஒரு unit ring-ல் சிறிது radial noise-உடன் உள்ள 512 புள்ளிகள் —
+    2-D-ல் வாழும் ஒரு-பரிமாண அமைப்பு. இரண்டு-layer MLP-கள், 2-D latent, Adam,
+    full batch, CPU-ல் 1500 steps. ஒவ்வொரு datapoint-க்கும் ஒவ்வொரு step-க்கும்
+    ஒரு ε — batch பெரியதாக இருக்கும்போது அது போதும் என்று கட்டுரையின் section 2.3
+    சொல்கிறது.
+  </p>
+
+<pre><code>step     0  loss   53.213  recon   53.199  kl  0.014  mse <span class="hl">1.0640</span>
+step   250  loss    4.206  recon    0.922  kl  3.284  mse 0.0184
+step   500  loss    4.069  recon    0.917  kl  3.152  mse 0.0183
+step  1000  loss    4.077  recon    0.886  kl  3.191  mse 0.0177
+step  1500  loss    3.982  recon    0.750  kl  3.232  mse 0.0150
+
+reconstruction mse, z = mu (no noise):      <span class="ok">0.0033</span>
+reconstruction mse, z sampled from q(z|x): 0.0165
+encoder's mean sigma 0.231, mean |mu| 0.878, KL per point 3.232 nats</code></pre>
+
+  <p>
+    Step 0-ஐப் பார்ப்பது மதிப்புள்ளது. புதிய encoder ஏற்கனவே ஏறக்குறைய N(0, 1)-ஐத்
+    தருகிறது, எனவே வரி கிட்டத்தட்ட பூஜ்யம் (0.014), மேலும் decoder எல்லாவற்றுக்கும்
+    origin-ஐக் கணிக்கிறது: mse 1.064, அதாவது data-வின் சொந்த பரவல் அளவு. பிறகு
+    encoder தகவலை <em>விலைக்கு வாங்குகிறது</em> — KL சுமார் 3.2 nats வரை ஏறி அங்கேயே
+    நிற்கிறது, reconstruction 300× மேல் குறைந்து 0.0033 ஆகிறது. வரி ஒருபோதும்
+    பூஜ்யத்தை அடைவதில்லை; அடுத்த nat துல்லியம் தன் விலைக்கு ஈடாகாத இடத்தில் அது
+    நிலைபெறுகிறது.
+  </p>
+
+  <h2>Generative உரிமைகோரல்: noise உள்ளே, ring வெளியே</h2>
+  <p>
+    சாதாரண autoencoder தோற்கும் சோதனை இதுதான். N(0, I)-லிருந்து 2000 z-களை
+    எடுங்கள் — data-வையே பார்த்திராத எண்கள் — அவற்றை decode செய்து, வெளிவருவதன்
+    ஆரத்தை அளவிடுங்கள். "on ring" என்பது ஆரம் 1-லிருந்து 0.1-க்குள் இருக்கும் பங்கு.
+  </p>
+
+<pre><code>                       radius mean radius std  on ring
+the data                     0.996      0.047    0.969
+raw noise, no decoder        1.260      0.666    <span class="hl">0.126</span>
+decoded prior noise          0.947      0.122    <span class="ok">0.856</span></code></pre>
+
+  <p>
+    Raw 2-D noise தற்செயலாக 12.6% நேரம் ring-ல் விழுகிறது. அதே noise-ஐ decoder
+    வழியாக அனுப்பினால் 85.6% விழுகிறது. Decoder இதுவரை உண்மையான புள்ளிகளிலிருந்து
+    வந்த codes-ஐ மட்டுமே பார்த்திருக்கிறது; புதிய noise-ல் அது வேலை செய்கிறது,
+    ஏனெனில் அந்த codes புதிய noise போலவே இருக்க வேண்டும் என்று வரி
+    கட்டாயப்படுத்தியது.
+  </p>
+
+  <div class="note">
+    <strong>0.856, 0.969 அல்ல.</strong> Samples-ன் ஆரம் 0.122 அளவு பரவுகிறது,
+    data-வின் 0.047-க்கு எதிராக. இதுதான் VAE blur, 2-D-ல்: likelihood objective
+    ஒரு code-உடன் ஒத்துப்போகும் எல்லாவற்றின் <em>சராசரியால்</em> குறைக்கப்படுகிறது,
+    எனவே நிச்சயமின்மை ஒரு மங்கலாக வெளிவருகிறது. GAN-கள் சராசரி எடுப்பதில்லை,
+    அதனால்தான் அவற்றின் samples கூர்மையாகத் தெரிகின்றன.
+  </div>
+
+  <h2>β: compression-க்கும் fidelity-க்கும் இடையிலான dial</h2>
+  <p>
+    கட்டுரையில் β இல்லை; KL weight 1, ஏனெனில் bound அப்படித்தான் சொல்கிறது.
+    β-VAE (Higgins et al., 2017) அதை ஒரு dial ஆக்கியது, அதைத் திருப்புவதுதான் வரி
+    எதற்கு என்பதை உணர மிக விரைவான வழி. அதே model, data, steps. "mse" என்பது
+    z = μ வைத்த reconstruction; "recon std" என்பது reconstructions எவ்வளவு
+    பரவியுள்ளன என்பது.
+  </p>
+
+<pre><code>                         mse      kl   sigma   |mu| recon std  on ring
+beta=1 (the paper)    0.0033   3.232   0.231   0.88     0.703    0.856
+beta=0, no KL         0.0002  11.069   0.005   1.07     0.704    <span class="hl">0.189</span>
+beta=4 (beta-VAE)     0.0047   2.319   0.334   0.86     0.690    0.826
+beta=50, huge KL      0.9084   0.036   0.981   0.14     <span class="hl">0.033</span>    0.000
+(data itself)                                           0.704    0.969
+(raw noise, undecoded)                                             0.126</code></pre>
+
+  <p>
+    <strong>β = 0</strong> என்பது சாதாரண autoencoder: சிறந்த reconstruction, ஆனால்
+    prior noise 18.9% நேரம் மட்டுமே ring-ல் விழுகிறது — decoder-ஏ இல்லாத 12.6%-ஐ
+    விடச் சற்றே அதிகம். <strong>β = 4</strong> என்பது β-VAE நிலை: samples இன்னும்
+    விழுகின்றன, ஆனால் 40% மங்கலான reconstruction விலையில்; இந்த toy-ல் β = 8-ஐத்
+    தாண்டித் தள்ளினால் samples-ம் போய்விடும். <strong>β = 50</strong> என்பது
+    posterior collapse: σ → 1, μ → 0, மேலும் ஒவ்வொரு reconstruction-ம் கிட்டத்தட்ட
+    ஒரே புள்ளிதான்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने बिना जाने ही एक VAE ship कर दिया था —
+    Stable Diffusion के pixels एक VAE decoder से ही निकलते हैं — फिर भी यह paper
+    मुझसे पढ़ा नहीं जाता था। पन्नों भर Bayesian notation, और जो दो विचार असल में
+    मायने रखते हैं वे तीन-तीन लाइन का गणित हैं। किसी ने नहीं बताया कि बाक़ी सब
+    इस बात का प्रमाण है कि वे तीन लाइनें <em>जायज़</em> हैं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (encoder, decoder, latent,
+    reparameterisation trick, KL, ELBO, posterior collapse, prior…) मैंने वैसे ही
+    रखे हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>VAE यानी lossy compression, codes पर एक नियम के साथ</h2>
+
+  <p>यह आपने बनाया है:</p>
+
+<pre><code>code  = compress(x)          # input को कुछ संख्याओं में निचोड़ो
+x_hat = decompress(code)     # उसे फिर से बनाओ
+loss  = how_far_off(x, x_hat)</code></pre>
+
+  <p>
+    यह एक autoencoder है। compress ठीक करता है। जो यह नहीं कर सकता वह है
+    <strong>generate</strong>: decompressor को कोई random code दीजिए और कचरा
+    मिलेगा, क्योंकि codes वहीं पड़े हैं जहाँ compressor का मन हुआ — एक ऐसा आकार
+    जो किसी ने लिखा नहीं, एक ऐसे इलाक़े में जिसे कोई दोबारा ढूँढ नहीं सकता।
+  </p>
+
+  <p>VAE दो बदलाव करता है:</p>
+
+<pre><code>mu, log_var = encoder(x)                   # code नहीं: codes का एक घंटी-वक्र
+z     = mu + exp(0.5 * log_var) * randn()  # उस वक्र से एक code चुनो
+x_hat = decoder(z)
+loss  = how_far_off(x, x_hat) + kl(mu, log_var)  # + "codes N(0,1) जैसे दिखें"</code></pre>
+
+  <p>
+    compressor एक distribution लौटाता है, और जब भी वह distribution standard
+    normal noise जैसा नहीं दिखता, एक टैक्स लगता है। पूरी training में वह टैक्स
+    चुकाइए, और उसके बाद आप जो <em>भी</em> standard normal noise निकालें वह एक
+    वैध code है: उसे decode कीजिए और एक नया, विश्वसनीय input मिलेगा। यही
+    generative चाल है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Encoder</strong> q(z|x)</td><td>x लेता है, (μ, log σ²) लौटाता है: घंटी-वक्र का केंद्र और चौड़ाई</td><td>ऐसा compressor जो एक मान नहीं, एक रेंज लौटाए</td></tr>
+      <tr><td><strong>Decoder</strong> p(x|z)</td><td>एक code z लेकर x को फिर से बनाता है</td><td>decompressor। एक साधारण MLP</td></tr>
+      <tr><td><strong>Latent</strong> z</td><td>घंटी-वक्र से sample किया गया एक code</td><td>compress हुए bytes</td></tr>
+      <tr><td><strong>Prior</strong> p(z) = N(0, I)</td><td>codes को कैसा दिखना चाहिए</td><td>वह schema जिस पर codes को खरा उतरना है</td></tr>
+      <tr><td><strong>KL term</strong></td><td>encoder का घंटी-वक्र N(0, I) से कितनी दूर है</td><td>वह linter जो schema टूटने पर build fail कर देता है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">log p(x) ≥ E<sub>z ~ q(z|x)</sub>[ log p(x|z) ] − KL( q(z|x) ‖ N(0, I) )</div>
+
+  <p>
+    दाईं ओर वाला हिस्सा ELBO है, paper के section 2.2 वाला bound. Training उसे
+    अधिकतम करती है, इसलिए loss उसका ऋणात्मक है: reconstruction जमा टैक्स। इसे
+    गणनीय बनाने के लिए दो सहायक:
+  </p>
+
+  <div class="formula">z = μ + σ ⊙ ε,   ε ~ N(0, I)        KL = −½ Σ (1 + log σ² − μ² − σ²)</div>
+
+  <p>इसे pipeline के चरणों की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>encoder(x)</code></td><td>(n, d<sub>z</sub>) दो बार</td><td>एक ही MLP पर दो heads: μ और log σ². हर input के लिए एक घंटी-वक्र</td></tr>
+      <tr><td><code>ε ~ N(0, I)</code></td><td>(n, d<sub>z</sub>)</td><td><strong>पासा।</strong> model के बाहर फेंका गया। कोई parameter नहीं, कोई gradient नहीं</td></tr>
+      <tr><td><code>z = μ + exp(½ log σ²) ε</code></td><td>(n, d<sub>z</sub>)</td><td><strong>वह चाल।</strong> जोड़ और गुणा। Backprop इसमें से होकर चलता है</td></tr>
+      <tr><td><code>decoder(z)</code></td><td>(n, d<sub>x</sub>)</td><td>code से input को फिर से बनाओ</td></tr>
+      <tr><td><code>‖x − x̂‖² / 2σ<sub>x</sub>²</code></td><td>(n,)</td><td><strong>Reconstruction.</strong> Gaussian decoder के लिए −log p(x|z) — MSE भेस बदले हुए likelihood है</td></tr>
+      <tr><td><code>−½ Σ(1 + log σ² − μ² − σ²)</code></td><td>(n,)</td><td><strong>टैक्स।</strong> N(0, I) तक KL, closed form, paper का Appendix B</td></tr>
+      <tr><td><code>mean(recon + KL)</code></td><td>scalar</td><td>−ELBO। फिर <code>loss.backward()</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    एक बात यह table छिपा जाती है। जिस decoder का output किसी Gaussian का माध्य है
+    और जिसका std σ<sub>x</sub> स्थिर है, उसके लिए −log p(x|z) = वर्ग त्रुटि /
+    2σ<sub>x</sub>² जमा एक स्थिरांक। यानी "MSE" ही paper का likelihood term है,
+    और σ<sub>x</sub> reconstruction तथा टैक्स के बीच की विनिमय दर है। मैंने उसे
+    0.1 पर स्थिर रखा; उसे बदलिए और आपने KL को छुए बिना KL weight बदल दिया।
+  </p>
+
+  <h2>वह चाल: पासे को function के बाहर ले जाओ</h2>
+  <p>
+    आप चाहते हैं कि z, N(μ, σ²) से निकले, और <code>loss.backward()</code> μ तथा σ
+    तक पहुँचे। लेकिन <code>rng.normal(mu, sigma)</code> एक black box है:
+    randomness उसके <em>अंदर</em> होती है, इसलिए differentiate करने के लिए μ का
+    कोई function ही नहीं। μ को हिलाइए और z किसी यादृच्छिक मात्रा से हिलता है,
+    किसी derivative से नहीं।
+  </p>
+  <p>
+    हल यह है कि randomness पहले निकालो, ऐसे distribution से जिसमें कोई parameter
+    न हो, फिर उसे अंकगणित से z बनाओ: <code>eps = randn()</code>, फिर
+    <code>z = mu + sigma * eps</code>। z का distribution वही रहता है। पर अब
+    dz/dμ = 1 और dz/dσ = ε, और backprop सीधे इसमें से गुज़र जाता है। यही section
+    2.4 है, और यही वजह है कि यह paper मौजूद है: पुराना score-function estimator
+    "exhibits very high variance" — paper के अपने शब्दों में — और यह उसकी जगह
+    सादा backprop रख देता है। introduction में गिनाया गया दूसरा योगदान खुद
+    encoder है — एक <em>recognition model</em> जो हर datapoint पर एक optimisation
+    loop चलाने के बजाय एक ही forward pass में inference का जवाब दे देता है।
+    महँगी per-item गणना के लिए एक cache।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>want N( 1.50, 0.40)   100000 draws of mu + sigma*eps:  mean  1.500  std 0.401
+want N(-2.00, 3.00)   100000 draws of mu + sigma*eps:  mean -1.998  std 3.003
+
+now the gradient. dz/dmu by finite difference, (z(mu+h) - z(mu)) / h
+  'direct' = two separate rng.normal(mu, sigma) calls, fresh dice each
+  h=0.1    reparam:  <span class="ok">1.000</span>   direct once:    -2.786   direct rms/1000:     5.9
+  h=0.01   reparam:  1.000   direct once:     4.828   direct rms/1000:    57.0
+  h=0.001  reparam:  1.000   direct once:  <span class="hl">-247.014</span>   direct rms/1000:   554.6
+  dz/dsigma, reparameterised: -1.224   and eps was -1.224</code></pre>
+
+  <p>
+    h को छोटा कीजिए और direct वाला संस्करण <em>और बिगड़ता</em> है, सुधरता नहीं —
+    वह σ आकार का noise है जिसे h से भाग दिया गया है; वहाँ खोजने को कोई derivative
+    है ही नहीं। reparameterised रूप में वह ठीक 1 है, और dz/dσ ठीक वही ε है जो
+    फेंका गया था। और हर implementation <code>exp(0.5 * log_var)</code> इसलिए
+    लिखता है: network का कच्चा output ऋणात्मक हो सकता है, standard deviation नहीं;
+    इसलिए encoder log σ² देता है और exp उसे रचना से ही धनात्मक बना देता है।
+  </p>
+
+  <div class="note">
+    <strong>PyTorch में यही <code>Normal(mu, sigma).sample()</code> और
+    <code>.rsample()</code> का अंतर है।</strong>
+    <code>sample()</code> ऐसा tensor लौटाता है जिसमें <code>grad_fn</code> नहीं
+    होता; <code>rsample()</code> <code>AddBackward0</code> के साथ
+    <code>mu + sigma * eps</code> लौटाता है। वह <em>r</em> यही paper है।
+  </div>
+
+  <h2>टैक्स: standard normal तक KL, एक लाइन में</h2>
+  <p>
+    KL(q ‖ p) यानी "q के samples देखकर p कितना चौंकेगा", nats में। q = N(μ, σ²)
+    बनाम p = N(0, 1) के लिए यह ऊपर वाला एक-लाइन सूत्र है: μ = 0, σ = 1 पर शून्य,
+    जितना दूर जाइए उतना बड़ा, और latent dimensions पर जोड़ा हुआ।
+  </p>
+
+  <p><strong>closed form, 200,000-sample अनुमान से मिलाकर देखा गया:</strong></p>
+
+<pre><code>   mu  sigma   closed form   monte carlo
+  0.0    1.0        <span class="ok">0.0000</span>        0.0000
+  1.0    1.0        0.5000        0.5001
+  0.0    2.0        0.8069        0.8105
+  0.0    0.5        0.3181        0.3172
+  2.0    0.5        2.3181        2.3174
+  0.0    0.1        <span class="hl">1.8076</span>        1.8064
+  3.0    1.0        4.5000        4.5004</code></pre>
+
+  <p>
+    घूरकर देखने लायक पंक्ति है (0.0, 0.1)। एक <em>सँकरे</em> घंटी-वक्र पर भी
+    टैक्स लगता है — σ को 0.1 तक सिकोड़ने के 1.8 nats। यही VAE को चुपचाप σ = 0
+    वाला सादा autoencoder बन जाने से रोकता है। उसे परिशुद्धता की क़ीमत चुकानी
+    पड़ती है, और वह सिर्फ़ वहीं चुकाएगा जहाँ परिशुद्धता से reconstruction मिले।
+  </p>
+
+  <h2>Training: दोनों terms को लड़ते देखिए</h2>
+  <p>
+    Toy data है एक unit ring पर 512 बिंदु, थोड़े radial noise के साथ — 2-D में
+    रहती एक-आयामी संरचना। दो-layer MLPs, 2-D latent, Adam, full batch, CPU पर
+    1500 steps। हर datapoint के लिए हर step पर एक ε — paper का section 2.3 कहता
+    है कि batch बड़ा हो तो इतना काफ़ी है।
+  </p>
+
+<pre><code>step     0  loss   53.213  recon   53.199  kl  0.014  mse <span class="hl">1.0640</span>
+step   250  loss    4.206  recon    0.922  kl  3.284  mse 0.0184
+step   500  loss    4.069  recon    0.917  kl  3.152  mse 0.0183
+step  1000  loss    4.077  recon    0.886  kl  3.191  mse 0.0177
+step  1500  loss    3.982  recon    0.750  kl  3.232  mse 0.0150
+
+reconstruction mse, z = mu (no noise):      <span class="ok">0.0033</span>
+reconstruction mse, z sampled from q(z|x): 0.0165
+encoder's mean sigma 0.231, mean |mu| 0.878, KL per point 3.232 nats</code></pre>
+
+  <p>
+    Step 0 देखने लायक है। नया-नवेला encoder पहले से ही लगभग N(0, 1) देता है,
+    इसलिए टैक्स लगभग शून्य है (0.014) और decoder हर चीज़ के लिए origin बताता है:
+    mse 1.064, यानी क़रीब-क़रीब data का अपना फैलाव। फिर encoder जानकारी
+    <em>ख़रीदता</em> है — KL चढ़कर लगभग 3.2 nats पर टिक जाता है, और reconstruction
+    300× से ज़्यादा गिरकर 0.0033 हो जाता है। टैक्स कभी शून्य नहीं होता; वह वहाँ
+    ठहरता है जहाँ परिशुद्धता का अगला nat अपनी क़ीमत नहीं निकाल पाता।
+  </p>
+
+  <h2>Generative दावा: noise अंदर, ring बाहर</h2>
+  <p>
+    यही वह परीक्षा है जिसमें सादा autoencoder फेल होता है। N(0, I) से 2000 z
+    निकालिए — ऐसी संख्याएँ जिन्होंने data कभी देखा ही नहीं — उन्हें decode
+    कीजिए, और जो निकले उसकी त्रिज्या नापिए। "on ring" यानी वह अंश जो त्रिज्या 1
+    के 0.1 के भीतर है।
+  </p>
+
+<pre><code>                       radius mean radius std  on ring
+the data                     0.996      0.047    0.969
+raw noise, no decoder        1.260      0.666    <span class="hl">0.126</span>
+decoded prior noise          0.947      0.122    <span class="ok">0.856</span></code></pre>
+
+  <p>
+    कच्चा 2-D noise संयोग से 12.6% बार ring पर गिरता है। वही noise decoder से
+    गुज़ारिए तो 85.6% गिरता है। decoder ने आज तक सिर्फ़ ऐसे codes देखे हैं जो
+    असली बिंदुओं से आए थे; वह ताज़े noise पर इसलिए काम करता है क्योंकि टैक्स ने
+    उन codes को ताज़े noise जैसा दिखने पर मजबूर किया।
+  </p>
+
+  <div class="note">
+    <strong>0.856, 0.969 नहीं।</strong> samples की त्रिज्या 0.122 तक फैलती है,
+    जबकि data की 0.047। यही 2-D में दिखता VAE blur है: likelihood objective किसी
+    code के अनुरूप हर चीज़ के <em>औसत</em> से न्यूनतम होता है, इसलिए अनिश्चितता
+    एक धब्बे के रूप में बाहर आती है। GANs औसत नहीं लेते, इसीलिए उनके samples
+    ज़्यादा साफ़ दिखते हैं।
+  </div>
+
+  <h2>β: compression और fidelity के बीच का dial</h2>
+  <p>
+    paper में β है ही नहीं; KL का weight 1 है क्योंकि bound यही कहता है। β-VAE
+    (Higgins et al., 2017) ने उसे एक dial बना दिया, और उसे घुमाना ही यह महसूस
+    करने का सबसे तेज़ तरीक़ा है कि टैक्स किस लिए है। वही model, data और steps।
+    "mse" यानी z = μ के साथ reconstruction; "recon std" यानी reconstructions
+    कितनी फैली हुई हैं।
+  </p>
+
+<pre><code>                         mse      kl   sigma   |mu| recon std  on ring
+beta=1 (the paper)    0.0033   3.232   0.231   0.88     0.703    0.856
+beta=0, no KL         0.0002  11.069   0.005   1.07     0.704    <span class="hl">0.189</span>
+beta=4 (beta-VAE)     0.0047   2.319   0.334   0.86     0.690    0.826
+beta=50, huge KL      0.9084   0.036   0.981   0.14     <span class="hl">0.033</span>    0.000
+(data itself)                                           0.704    0.969
+(raw noise, undecoded)                                             0.126</code></pre>
+
+  <p>
+    <strong>β = 0</strong> सादा autoencoder है: सबसे अच्छा reconstruction, और
+    prior noise 18.9% बार ring पर गिरता है — बिना किसी decoder वाले 12.6% से
+    बस थोड़ा ऊपर। <strong>β = 4</strong> β-VAE वाला इलाक़ा है: samples अब भी
+    गिरते हैं, क़ीमत यह कि reconstruction 40% ज़्यादा धुँधला; इस toy पर β = 8 से
+    आगे धकेलिए तो samples भी चले जाते हैं। <strong>β = 50</strong> posterior
+    collapse है: σ → 1, μ → 0, और हर reconstruction लगभग एक ही बिंदु।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -445,6 +989,37 @@ def elbo_loss(x, x_hat, mu, log_var, beta=1.0):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

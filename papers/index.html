@@ -66,7 +66,11 @@
         Rotate q and k instead of adding a position vector, and the dot product
         only sees distance. Every claim is a printed number.
       </p>
-      <p class="paper-langs"><a href="rope/">English</a></p>
+      <p class="paper-langs">
+        <a href="rope/?lang=en">English</a>
+        <a href="rope/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="rope/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -78,7 +82,11 @@
         Decoder-only, next token, then scale. The generation loop is a while
         loop. A character-level GPT trained in your terminal.
       </p>
-      <p class="paper-langs"><a href="gpt/">English</a></p>
+      <p class="paper-langs">
+        <a href="gpt/?lang=en">English</a>
+        <a href="gpt/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="gpt/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -90,7 +98,11 @@
         Remove the causal mask, hide 15% of the tokens, guess them. Then bolt a
         head on per task. A tiny masked model, trained live.
       </p>
-      <p class="paper-langs"><a href="bert/">English</a></p>
+      <p class="paper-langs">
+        <a href="bert/?lang=en">English</a>
+        <a href="bert/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="bert/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -102,7 +114,11 @@
         Not a new idea, a recipe: four deltas on the 2017 transformer and far
         more tokens than the scaling laws said. Parameter arithmetic included.
       </p>
-      <p class="paper-langs"><a href="llama/">English</a></p>
+      <p class="paper-langs">
+        <a href="llama/?lang=en">English</a>
+        <a href="llama/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="llama/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -114,7 +130,11 @@
         A load balancer in front of eight small networks. Eight times the
         parameters, twice the compute. Hot shards and dropped tokens, as in production.
       </p>
-      <p class="paper-langs"><a href="moe/">English</a></p>
+      <p class="paper-langs">
+        <a href="moe/?lang=en">English</a>
+        <a href="moe/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="moe/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -126,16 +146,24 @@
         The whole paper is a reshape: cut the image into patches and it's a
         sentence. Shapes printed at every step.
       </p>
-      <p class="paper-langs"><a href="vit/">English</a></p>
+      <p class="paper-langs">
+        <a href="vit/?lang=en">English</a>
+        <a href="vit/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="vit/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
-    <li class="paper soon">
-      <span class="paper-title">KV caching and the generation loop</span>
-      <span class="paper-meta">Not written yet</span>
+    <li class="paper">
+      <a class="paper-link" href="kv-cache/">
+        <span class="paper-title">KV caching and the generation loop</span>
+        <span class="paper-meta">Folklore, and the papers that fixed it</span>
+      </a>
       <p class="paper-pitch">
-        Why inference is affordable. A direct consequence of the causal mask
-        that nobody explains properly.
+        Why inference is affordable. The causal mask makes keys and values
+        immutable, so you memoise them. Includes the cache-size arithmetic
+        that decides what you can serve.
       </p>
+      <p class="paper-langs"><a href="kv-cache/">English</a></p>
     </li>
 
   </ul>
@@ -152,7 +180,11 @@
         A fine-tune is a diff on the weights, and the diff is low-rank. Store
         the patch, not the repo. Merge it for free at inference.
       </p>
-      <p class="paper-langs"><a href="lora/">English</a></p>
+      <p class="paper-langs">
+        <a href="lora/?lang=en">English</a>
+        <a href="lora/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="lora/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -164,7 +196,11 @@
         One question five ways: where do you insert the small trainable thing?
         Adapters, prefixes, prompts, (IA)³ and LoRA, with parameter counts.
       </p>
-      <p class="paper-langs"><a href="peft/">English</a></p>
+      <p class="paper-langs">
+        <a href="peft/?lang=en">English</a>
+        <a href="peft/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="peft/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
   </ul>
@@ -181,7 +217,11 @@
         You can't write the loss for "helpful", but you can ask which of two
         answers is better. Reward hacking, reproduced on purpose.
       </p>
-      <p class="paper-langs"><a href="rlhf/">English</a></p>
+      <p class="paper-langs">
+        <a href="rlhf/?lang=en">English</a>
+        <a href="rlhf/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="rlhf/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -193,7 +233,11 @@
         The three-stage recipe that turned a completion engine into an
         assistant. Each stage's gain in one table. This is ChatGPT's recipe.
       </p>
-      <p class="paper-langs"><a href="instructgpt/">English</a></p>
+      <p class="paper-langs">
+        <a href="instructgpt/?lang=en">English</a>
+        <a href="instructgpt/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="instructgpt/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
   </ul>
@@ -210,7 +254,11 @@
         An autoencoder whose bottleneck is a distribution. The reparameterisation
         trick is moving the random number outside the function.
       </p>
-      <p class="paper-langs"><a href="vae/">English</a></p>
+      <p class="paper-langs">
+        <a href="vae/?lang=en">English</a>
+        <a href="vae/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="vae/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -222,7 +270,11 @@
         A forger and a detective train each other. Mode collapse and vanishing
         gradients, triggered deliberately on a toy problem.
       </p>
-      <p class="paper-langs"><a href="gan/">English</a></p>
+      <p class="paper-langs">
+        <a href="gan/?lang=en">English</a>
+        <a href="gan/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="gan/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
     <li class="paper">
@@ -234,7 +286,11 @@
         Learn to undo a noise-adding for-loop one step at a time. The forward
         process is a formula; the model is a one-step undo.
       </p>
-      <p class="paper-langs"><a href="diffusion/">English</a></p>
+      <p class="paper-langs">
+        <a href="diffusion/?lang=en">English</a>
+        <a href="diffusion/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="diffusion/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
   </ul>
@@ -251,7 +307,11 @@
         An open-book exam. The retriever is the index, the prompt is the page
         you slide across. The failures are retrieval bugs, not model bugs.
       </p>
-      <p class="paper-langs"><a href="rag/">English</a></p>
+      <p class="paper-langs">
+        <a href="rag/?lang=en">English</a>
+        <a href="rag/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="rag/?lang=hi" lang="hi">हिंदी</a>
+      </p>
     </li>
 
   </ul>

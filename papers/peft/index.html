@@ -7,7 +7,7 @@
 <meta name="description" content="Adapters, prefix tuning, prompt tuning, (IA)³ and LoRA explained as one question: where do you hook a small trainable thing into a frozen network? Runnable NumPy, six demos, real parameter counts.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -36,6 +36,14 @@
       — everything below runs from it. NumPy only.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
 
   <p>
     I'm an AI Engineer. I've run <code>get_peft_model()</code> in production,
@@ -274,6 +282,540 @@ LoRA, merged                   0             0            no
     <em>every</em> matmul in <em>every</em> layer. Nothing is free; pick where.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. Production-ல் <code>get_peft_model()</code>
+    ஓட்டியிருக்கிறேன், tutorial சொன்னதால் <code>r=8</code> வைத்திருக்கிறேன் —
+    இருந்தும் ஒரு adapter ஏன் latency சேர்க்கிறது, LoRA ஏன் சேர்க்கவில்லை
+    என்று சொல்ல முடியவில்லை. ஐந்து papers, ஐந்து acronyms; இவை ஒரே கேள்வியை
+    ஐந்து விதமாகக் கேட்கின்றன என்று யாரும் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (adapter, prefix tuning,
+    prompt tuning, (IA)³, LoRA, bottleneck, frozen, merge, middleware…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>PEFT என்பது middleware</h2>
+
+  <p>இது உங்களுக்குத் தெரியும். Framework request-ஐக் கையாளும். நீங்கள் அதை fork செய்வதில்லை:</p>
+
+<pre><code>def handle(request):              # framework. Frozen. உங்களுடையது இல்லை.
+    return framework.handle(request)
+
+app.use(my_middleware)            # சிறியது, உங்களுடையது, request path-ல்</code></pre>
+
+  <p>
+    Full fine-tuning என்பது framework-ஐ fork செய்வது: ஒவ்வொரு file-ம் இப்போது
+    உங்களுடையது, ஒரு task-க்கு ஒரு நகல். PEFT என்பது middleware register
+    செய்வது. Base-ஐ freeze செய்யுங்கள், path-ல் ஒரு சிறிய trainable
+    பொருளை வையுங்கள், அதை மட்டும் train செய்யுங்கள்:
+  </p>
+
+<pre><code>for p in model.parameters():
+    p.requires_grad = False        # முழு method-ம் இந்த வரிதான்
+
+def adapter(h):                    # Houlsby 2019. h தொடாமல் பாய்கிறது
+    return h + W_up @ relu(W_down @ h)   # கூட ஒரு சிறிய, கற்ற diff</code></pre>
+
+  <p>இந்தப் பக்கத்தின் ஒவ்வொரு method-ம் இதுதான் — hook வேறு இடத்தில் இருக்கும், அவ்வளவே.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Frozen base</strong></td><td>Pretrained weights. ஒருபோதும் update ஆகாது</td><td>நீங்கள் <code>pip install</code> செய்யும் framework</td></tr>
+      <tr><td><strong>Hook</strong></td><td>உண்மையில் train ஆகும் சில parameters</td><td>உங்கள் middleware</td></tr>
+      <tr><td><strong>Residual</strong> <code>h + f(h)</code></td><td>Hook ஒரு diff-ஐ முன்வைக்கிறது, மாற்றீட்டை அல்ல</td><td>ஒரு skip link. <code>next()</code> இன்னும் ஓடும்</td></tr>
+      <tr><td><strong>Bottleneck</strong></td><td>d → m → d என அழுத்துதல், m ≪ d</td><td>ஒரு மெல்லிய interface, இரண்டாவது framework அல்ல</td></tr>
+      <tr><td><strong>Merge</strong></td><td>Hook-ஐ frozen weights-க்குள் மடக்குதல்</td><td>Inlining. Runtime-ல் பூஜ்ஜியச் செலவு</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Full fine-tuning-ஐ இது வென்றதா? Accuracy-ல் இல்லை — மற்ற எல்லாவற்றிலும்.
+    BERT-large-ஐ full fine-tune செய்தால் 340M parameters நகரும், ஒரு task-க்கு
+    ஒரு 340M checkpoint சேமிக்க வேண்டும். Houlsby-யின் adapters சுமார் 3.6%
+    parameters-ஐ மட்டும் train செய்து, GLUE-ல் full fine-tuning-க்கு 0.4
+    புள்ளிகளுக்குள் வருகின்றன. எனவே interview கேள்வி ஒருபோதும் "எது அதிக
+    accurate" அல்ல. "எது எங்கே செல்கிறது, train செய்ய என்ன செலவு, serve செய்ய
+    என்ன செலவு" — அதுதான்.
+  </p>
+
+  <p class="thanglish">
+    PEFT = middleware. Base-ai freeze pannitu, request path-la oru chinna
+    trainable hook mattum vachu train pannuratu. Accuracy vidha, cost dhaan
+    kelvi.
+  </p>
+
+  <h2>ஒரே formula</h2>
+  <div class="formula">Adapter(h) = h + W<sub>up</sub> · ReLU(W<sub>down</sub> · h + b<sub>down</sub>) + b<sub>up</sub></div>
+
+  <p>உள்ளிருந்து வெளியே, pipeline stages-ஆகப் படியுங்கள்:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>h</code></td><td>(n, d)</td><td>Sublayer-ன் output. n tokens, d அகலம். Frozen code உருவாக்கியது</td></tr>
+      <tr><td><code>W<sub>down</sub></code></td><td>(d, m)</td><td><strong>அழுத்து.</strong> d=64 இலிருந்து m=8. சேமிப்பு இங்குதான் இருக்கிறது</td></tr>
+      <tr><td><code>ReLU</code></td><td>(n, m)</td><td>ஒரு nonlinearity, இல்லையேல் இரு matrices ஒன்றாகச் சுருங்கிவிடும்</td></tr>
+      <tr><td><code>W<sub>up</sub></code></td><td>(m, d)</td><td><strong>விரி.</strong> மீண்டும் d-க்கு. பூஜ்ஜியமாக initialise</td></tr>
+      <tr><td><code>h +</code></td><td>(n, d)</td><td>Skip link. Shape மாறவில்லை, எனவே எந்த block-லும் பொருந்தும்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Paper-ல் ஒரு block-க்கு இரண்டு: attention-க்குப் பிறகு ஒன்று,
+    feed-forward-க்குப் பிறகு ஒன்று, ஒவ்வொரு add-and-norm-க்கு முன்பாக.
+    Houlsby layer norms-ஐயும் unfreeze செய்கிறார்; எண்ணிக்கை சுத்தமாக இருக்க
+    நான் அவற்றை frozen-ஆகவே விடுகிறேன்.
+  </p>
+
+  <h2>ஐந்து hooks, ஒரே frozen block</h2>
+  <p>
+    Script ஒரு block-ஐ — d=64, ஒரு head, FFN 4d — arrays-ன் dict-ஆகக்
+    கட்டுகிறது. அதில் எதுவும் train ஆகாது. ஒவ்வொரு method-ம் தன் trainable
+    பொருளை மட்டும் திருப்பித் தரும் function; <code>n_params()</code> அதை
+    எண்ணும்.
+  </p>
+
+<pre><code>  attention (W_q, W_k, W_v, W_o):   16,384
+  feed-forward (W_1, b_1, W_2, b_2):  33,088
+  two layer norms:                      256
+  TOTAL frozen params:               49,728
+
+method                   per block  % block  x12 blocks
+full fine-tuning            49,728  100.00%      49,728
+adapters, m=8 (x2)           2,192    4.41%      26,304
+prefix tuning, p=8           1,024    2.06%      12,288
+prompt tuning, p=8             512    1.03%  <span class="ok">       512</span>
+(IA)^3                         384    0.77%       4,608
+LoRA r=8 on W_q, W_v         2,048    4.12%      24,576</code></pre>
+
+  <p>
+    Prompt tuning தவிர ஒவ்வொரு method-ம் layer-க்கு layer கட்டணம் செலுத்துகிறது;
+    prompt tuning ஒரே ஒரு முறை, input-ல், model எவ்வளவு ஆழமானாலும். இந்தச்
+    சதவீதங்கள் அதிகமாக இருப்பதற்குக் காரணம் இந்த toy மிகச் சிறியது — hook d-உடன்
+    வளரும், block d²-உடன் வளரும் — அதனால்தான் உண்மையான அகலங்களில் இவை
+    Houlsby-யின் 3.6%, (IA)³-ன் 0.01% ஆகின்றன. உங்களிடம் கேட்கப்படும் table இது:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Method</th><th>Hook எங்கே செல்கிறது</th><th>Trainable (toy)</th><th>Inference செலவு</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Adapter</strong> <span class="muted">Houlsby 2019</span></td><td>ஒவ்வொரு sublayer-க்குப் பின், residual-க்குள்</td><td>2,192 (4.41%)</td><td>கூடுதல் தொடர் matmuls. Latency</td></tr>
+      <tr><td><strong>Prefix tuning</strong> <span class="muted">Li &amp; Liang 2021</span></td><td>ஒவ்வொரு layer-லும் p கூடுதல் K, V வரிசைகள்</td><td>1,024 (2.06%)</td><td>ஒவ்வொரு layer-ன் KV cache-ல் +p entries</td></tr>
+      <tr><td><strong>Prompt tuning</strong> <span class="muted">Lester 2021</span></td><td>p கூடுதல் input வரிசைகள், ஒரே முறை</td><td>512 (1.03%)</td><td>முழு stack-ஊடாகவும் +p tokens</td></tr>
+      <tr><td><strong>(IA)³</strong> <span class="muted">Liu 2022</span></td><td>K, V மற்றும் FFN hidden-ல் scaling vectors</td><td>384 (0.77%)</td><td>Merge செய்தபின் பூஜ்ஜியம்</td></tr>
+      <tr><td><strong>LoRA</strong> <span class="muted">Hu 2021</span></td><td>W<sub>q</sub>, W<sub>v</sub>-ல் low-rank diff</td><td>2,048 (4.12%)</td><td>Merge செய்தபின் பூஜ்ஜியம்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Step 0 ஒரு no-op ஆக இருக்க வேண்டும்</h2>
+  <p>
+    Train செய்வதற்கு முன்பே output-ஐ மாற்றும் hook, முதல் forward pass-லேயே
+    pretrained model-ஐத் தூக்கி எறிந்துவிட்டது. Houlsby-யின் தீர்வு:
+    up-projection-ஐப் பூஜ்ஜியமாக்குங்கள். ஐந்தில் எவை சுத்தமாகத் தொடங்குகின்றன?
+  </p>
+
+<pre><code>max |block_with_hook(X) - block(X)| before any training:
+  adapters, W_up = 0:           <span class="ok">0.000000</span>
+  adapters, W_up random:        <span class="hl">0.376937</span>  ← no-op இல்லை
+  (IA)^3, vectors = 1:          0.000000
+  prefix, K and V = 0:          0.277744  ← no-op இல்லை
+  prompt, 8 sampled tokens:     0.491051  ← no-op இல்லை</code></pre>
+
+  <p>
+    Adapter மற்றும் (IA)³: byte-identical. Prefix அப்படி இல்லை, பூஜ்ஜியமாக்கினாலும்
+    — பூஜ்ஜியமான key-க்கும் softmax-ல் exp(0) = 1 மதிப்பு கிடைக்கும், எனவே எதுவும்
+    கற்கப்படுவதற்கு முன்பே அது உண்மையான tokens-ல் இருந்து attention mass-ஐ
+    எடுத்துக்கொள்கிறது. Prompt tokens-ம் அப்படியே: அவை பார்க்கப்படுகின்றன.
+    Adapter-ன் அதே காரணத்திற்காக LoRA சுத்தமாகத் தொடங்குகிறது: B = 0.
+  </p>
+
+  <div class="note">
+    <strong>கடைசி matrix-ஐப் பூஜ்ஜியமாக்குங்கள், முதலாவதை அல்ல.</strong> மாறாக
+    W<sub>down</sub>-ஐப் பூஜ்ஜியமாக்கினால் W<sub>up</sub>-க்குள் வரும் gradient-ம்
+    பூஜ்ஜியம்; training ஒருபோதும் தொடக்கப் புள்ளியை விட்டு நகராது. LoRA-லும்
+    இதே தந்திரம்.
+  </div>
+
+  <h2>Prefix tuning: keys முகவரி, values சரக்கு</h2>
+  <p>
+    Li மற்றும் Liang hook-ஐ attention-க்குள் நகர்த்தினார்கள். ஒவ்வொரு layer-லும்
+    keys-ன் முன் p கற்ற vectors, values-ன் முன் p vectors சேருங்கள்; அப்போது
+    உண்மையான tokens-ன் queries-க்குப் பார்க்க p கூடுதல் இடங்கள் கிடைக்கும்.
+    எதுவும் W<sub>k</sub> அல்லது W<sub>v</sub> வழியாகப் போவதில்லை: prefix
+    <em>தானே</em> keys மற்றும் values. GPT-2, BART-ல் இப்படிச் சுமார் 0.1%
+    parameters-ஐ paper train செய்கிறது (நிலைத்தன்மைக்காக ஒரு சிறிய MLP வழியாக,
+    பிறகு தூக்கி எறியப்படும்; நான் அதைத் தவிர்க்கிறேன்). இப்போது values-ஐ
+    மட்டும் கற்றுப் பாருங்கள்:
+  </p>
+
+<pre><code>attention weights shape with p=4 prefix rows: (16, 20)  (n, p+n)
+weight each query puts on the 4 prefix slots (first 3 queries):
+[[0.043 0.027 0.05  0.047]
+ [0.071 0.061 0.017 0.067]
+ [0.083 0.04  0.023 0.007]]
+
+BREAK IT: train V only, leave the prefix keys at zero
+[[0.035 0.035 0.035 0.035]
+ [0.027 0.027 0.027 0.027]
+ [0.032 0.032 0.032 0.032]]
+change every value row, max |weights diff|: <span class="hl">0.0</span></code></pre>
+
+  <p>
+    கற்ற keys இருக்கும்போது ஒவ்வொரு query-ம் அந்த நான்கு இடங்களையும் வெவ்வேறாகப்
+    படிக்கிறது. Keys பூஜ்ஜியமாக இருந்தால் columns ஒரே மாதிரி ஆகிவிடுகின்றன;
+    ஒவ்வொரு value vector-ஐயும் மீண்டும் வரைந்தாலும் weights சரியாக 0 அளவே
+    நகர்கின்றன: prefix எல்லாருக்கும் சேர்க்கப்படும் ஒரே நிலையான vector-ஆகச்
+    சுருங்கிவிட்டது. Keys முகவரி, values சரக்கு. இரண்டும் வேண்டும்.
+  </p>
+
+  <p class="thanglish">
+    Prefix-la keys dhaan address, values dhaan payload. Keys zero-va irundha
+    ella query-um oreye maari padikkum, value maathinaalum weights nagara
+    maatta.
+  </p>
+
+  <h2>Prompt tuning: hook input-ல் இருக்கிறது</h2>
+  <p>
+    Lester et al. இந்தக் கேள்வியின் மிகச் சிறிய வடிவத்தைக் கேட்டார்கள்: train
+    ஆகும் ஒரே பொருள் p token embeddings மட்டும், input-ல் ஒரே முறை முன்னால்
+    சேர்க்கப்பட்டால் என்ன? எந்த block-லும் hook இல்லை; அவை சாதாரண positions,
+    ஒவ்வொரு layer-ம் அவற்றைப் பார்க்கிறது.
+  </p>
+
+<pre><code>input: 8 prompt rows + 16 real rows = (24, 64)
+attention mass real tokens put on the prompt:
+  mean 0.340   min 0.196   max 0.546   (uniform would be 0.333)
+
+BREAK IT: read the output at row 0
+  out.shape = (24, 64)   ← இதில் 8 வரிசைகள் prompt
+  out[0]  belongs to prompt[0]      out[8] belongs to real token 0
+  the answer is out[8:], shape <span class="ok">(16, 64)</span></code></pre>
+
+  <p>
+    Attention mass-ல் மூன்றில் ஒரு பங்கு, இதுவரை யாரும் train செய்யாத tokens-ன்
+    மீது (உண்மையான token vectors-ல் இருந்து sample செய்யப்பட்டவை, paper பரிந்துரைக்கும்
+    init). Training அவற்றை நகர்த்தி, உண்மையான tokens அங்கே படிப்பதைப் பயனுள்ளதாக
+    ஆக்குகிறது. மேலும் output-ல் 24 வரிசைகள்: <code>out[0]</code> என்பது ஒரு
+    prompt token-ன் output. Prompt-ஐ வெட்டி நீக்குங்கள்.
+  </p>
+
+  <div class="note">
+    <strong>நேர்மையான எச்சரிக்கை.</strong> Lester-ன் தலைப்புச் செய்தி என்னவென்றால்,
+    model சுமார் 10B parameters-ஐத் தாண்டியபின்தான் prompt tuning full
+    fine-tuning-க்கு இணையாகிறது. அதற்குக் கீழே பின்தங்குகிறது. Training இல்லாமல்
+    அதை என்னால் காட்ட முடியாது, எனவே சொல்லிவிடுகிறேன்: உங்கள் model
+    BERT-அளவு என்றால், இது தவறான hook.
+  </div>
+
+  <h2>(IA)³ மற்றும் LoRA: மடங்கி மறையும் hooks</h2>
+  <p>
+    Liu et al. இன்னும் சிறியதாகப் போனார்கள். (IA)³ ஒரு block-க்கு மூன்று
+    vectors-ஐக் கற்கிறது — ஒன்று keys-ஐ scale செய்யும், ஒன்று values-ஐ, ஒன்று
+    FFN hidden-ஐ — வேறு எதுவும் இல்லை. இங்கே 384 எண்கள், உண்மையான model-ல்
+    சுமார் 0.01%. Scale என்பது ஒரு பெருக்கல், எனவே பிறகு அதை frozen matrix-க்குள்
+    மடக்கிவிடலாம் (W<sub>k</sub>, W<sub>v</sub>-ன் columns, W<sub>2</sub>-ன்
+    rows) — hook மறைந்துவிடும். இந்தக் குடும்பம் உண்மையில் வரிசைப்படுத்தப்படுவது
+    இந்த column-ஆல்தான்:
+  </p>
+
+<pre><code>base block FLOPs: 1,638,400
+
+method               extra FLOPs  extra tokens  adds a step?
+adapters, m=8             65,536             0           <span class="hl">yes</span>
+prefix, p=8               32,768             8            no
+prompt, p=8              868,352             8            no
+(IA)^3, unmerged           6,144             0            no
+(IA)^3, merged                 0             0            no
+LoRA, merged                   0             0            no
+
+(IA)^3 merge check, max |hooked - merged|: 1.33e-15   identical? <span class="ok">True</span></code></pre>
+
+  <p>
+    Adapter-ன் கூடுதல் 65,536 FLOPs என்பது block-ன் 4%. சிறியது. ஆனால் அவை
+    residual path-க்கு <em>உள்ளே</em> அமர்ந்திருக்கின்றன: adapter முடியும் வரை
+    block முடியாது — ஒவ்வொரு layer-லும், ஒவ்வொரு token-க்கும் செலுத்தப்படும்
+    தொடர் தாமதம். அதுதான் Houlsby-யின் செலவு; அந்த இடைவெளியை
+    <a href="../lora/">LoRA</a> மூடியது: diff-ஐ weight matrix-ன் மீதே வையுங்கள்,
+    W + BA, training-க்குப் பின் merge செய்யுங்கள். அதே கருத்து, serving செலவு
+    பூஜ்ஜியம். அதற்குத் தனிப் பக்கம் உண்டு; இங்கே மீண்டும் விளக்கவில்லை.
+  </p>
+  <p>
+    Prefix-ம் prompt tuning-ம் ஒரு step சேர்ப்பதில்லை, ஒன்றை அகலமாக்குகின்றன.
+    ஆனால் prompt வரிசை 868,352 கூடுதல் FLOPs — மீண்டும் அரை block: <em>ஒவ்வொரு</em>
+    layer-ன் <em>ஒவ்வொரு</em> matmul-ஊடாகவும் 8 கூடுதல் tokens. எதுவும் இலவசம்
+    இல்லை; எங்கே செலவழிப்பது என்பதைத் தேர்ந்தெடுங்கள்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने production में <code>get_peft_model()</code>
+    चलाया है, <code>r=8</code> इसलिए चुना क्योंकि tutorial में वही था — फिर भी
+    मैं बता नहीं सकता था कि adapter latency क्यों जोड़ता है और LoRA क्यों नहीं।
+    पाँच papers, पाँच acronyms, और किसी ने नहीं बताया कि ये एक ही paper हैं जो
+    पाँच तरह से पूछा गया है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (adapter, prefix tuning,
+    prompt tuning, (IA)³, LoRA, bottleneck, frozen, merge, middleware…) मैंने वैसे
+    ही रखे हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>PEFT एक middleware है</h2>
+
+  <p>यह आप जानते हैं। Framework request सँभालता है। आप उसे fork नहीं करते:</p>
+
+<pre><code>def handle(request):              # framework. Frozen. आपका नहीं।
+    return framework.handle(request)
+
+app.use(my_middleware)            # छोटा, आपका, request path में बैठा</code></pre>
+
+  <p>
+    Full fine-tuning यानी framework को fork करना: अब हर file आपकी है, हर task
+    के लिए एक copy। PEFT यानी middleware register करना। Base को freeze करो,
+    path में एक छोटी trainable चीज़ रखो, और सिर्फ़ उसी को train करो:
+  </p>
+
+<pre><code>for p in model.parameters():
+    p.requires_grad = False        # पूरा method यही एक लाइन है
+
+def adapter(h):                    # Houlsby 2019. h बिना छुए बहता है
+    return h + W_up @ relu(W_down @ h)   # साथ में एक छोटा सीखा हुआ diff</code></pre>
+
+  <p>इस पेज का हर method यही है — बस hook किसी और जगह पर।</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Frozen base</strong></td><td>Pretrained weights. कभी update नहीं होते</td><td>वह framework जो आप <code>pip install</code> करते हैं</td></tr>
+      <tr><td><strong>Hook</strong></td><td>वे थोड़े parameters जो सचमुच train होते हैं</td><td>आपका middleware</td></tr>
+      <tr><td><strong>Residual</strong> <code>h + f(h)</code></td><td>Hook एक diff सुझाता है, replacement नहीं</td><td>एक skip link. <code>next()</code> फिर भी चलता है</td></tr>
+      <tr><td><strong>Bottleneck</strong></td><td>d → m → d, जहाँ m ≪ d</td><td>एक पतला interface, दूसरा framework नहीं</td></tr>
+      <tr><td><strong>Merge</strong></td><td>Hook को frozen weights में वापस मोड़ देना</td><td>Inlining. Runtime पर शून्य लागत</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    क्या इसने full fine-tuning को हराया? Accuracy में नहीं — बाक़ी हर चीज़ में।
+    BERT-large का full fine-tuning 340M parameters हिलाता है और हर task के लिए
+    340M का checkpoint रखता है। Houlsby के adapters लगभग 3.6% parameters train
+    करते हैं और GLUE पर full fine-tuning से 0.4 अंक के भीतर रहते हैं। इसलिए
+    interview का सवाल कभी "कौन ज़्यादा accurate है" नहीं होता। होता है "कौन कहाँ
+    लगता है, train करने की लागत क्या, serve करने की लागत क्या"।
+  </p>
+
+  <h2>एक ही formula</h2>
+  <div class="formula">Adapter(h) = h + W<sub>up</sub> · ReLU(W<sub>down</sub> · h + b<sub>down</sub>) + b<sub>up</sub></div>
+
+  <p>इसे अंदर से बाहर, pipeline stages की तरह पढ़िए:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>h</code></td><td>(n, d)</td><td>Sublayer का output. n tokens, d चौड़ाई। इसे frozen code ने बनाया</td></tr>
+      <tr><td><code>W<sub>down</sub></code></td><td>(d, m)</td><td><strong>दबाओ।</strong> d=64 से m=8 तक। बचत यहीं है</td></tr>
+      <tr><td><code>ReLU</code></td><td>(n, m)</td><td>एक nonlinearity, वरना दोनों matrices एक में सिमट जातीं</td></tr>
+      <tr><td><code>W<sub>up</sub></code></td><td>(m, d)</td><td><strong>वापस फैलाओ।</strong> फिर से d तक। शून्य से initialise</td></tr>
+      <tr><td><code>h +</code></td><td>(n, d)</td><td>Skip link. Shape वही, इसलिए किसी भी block में फिट हो जाता है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Paper में हर block पर दो: attention के बाद और feed-forward के बाद, हर
+    add-and-norm से पहले। Houlsby layer norms भी unfreeze करते हैं; गिनती साफ़
+    रखने के लिए मैं उन्हें frozen ही छोड़ता हूँ।
+  </p>
+
+  <h2>पाँच hooks, एक frozen block</h2>
+  <p>
+    Script एक block बनाता है — d=64, एक head, FFN 4d — arrays की एक dict के रूप
+    में। उसमें कुछ भी train नहीं होता। हर method एक function है जो सिर्फ़ अपनी
+    trainable चीज़ लौटाता है, और <code>n_params()</code> उसे गिनता है।
+  </p>
+
+<pre><code>  attention (W_q, W_k, W_v, W_o):   16,384
+  feed-forward (W_1, b_1, W_2, b_2):  33,088
+  two layer norms:                      256
+  TOTAL frozen params:               49,728
+
+method                   per block  % block  x12 blocks
+full fine-tuning            49,728  100.00%      49,728
+adapters, m=8 (x2)           2,192    4.41%      26,304
+prefix tuning, p=8           1,024    2.06%      12,288
+prompt tuning, p=8             512    1.03%  <span class="ok">       512</span>
+(IA)^3                         384    0.77%       4,608
+LoRA r=8 on W_q, W_v         2,048    4.12%      24,576</code></pre>
+
+  <p>
+    Prompt tuning को छोड़कर हर method हर layer पर क़ीमत चुकाता है; prompt tuning
+    एक ही बार चुकाता है, input पर, चाहे model कितना भी गहरा हो। प्रतिशत सिर्फ़
+    इसलिए बड़े दिख रहे हैं क्योंकि यह toy बहुत छोटा है — hook d के साथ बढ़ता है,
+    block d² के साथ — और इसी वजह से असली चौड़ाइयों पर ये Houlsby के 3.6% और
+    (IA)³ के 0.01% बन जाते हैं। और यही वह table है जो आपसे माँगा जाएगा:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Method</th><th>Hook कहाँ लगता है</th><th>Trainable (toy)</th><th>Inference लागत</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Adapter</strong> <span class="muted">Houlsby 2019</span></td><td>हर sublayer के बाद, residual के अंदर</td><td>2,192 (4.41%)</td><td>अतिरिक्त क्रमिक matmuls. Latency</td></tr>
+      <tr><td><strong>Prefix tuning</strong> <span class="muted">Li &amp; Liang 2021</span></td><td>हर layer में p अतिरिक्त K और V rows</td><td>1,024 (2.06%)</td><td>हर layer के KV cache में +p entries</td></tr>
+      <tr><td><strong>Prompt tuning</strong> <span class="muted">Lester 2021</span></td><td>p अतिरिक्त input rows, सिर्फ़ एक बार</td><td>512 (1.03%)</td><td>पूरे stack से गुज़रते +p tokens</td></tr>
+      <tr><td><strong>(IA)³</strong> <span class="muted">Liu 2022</span></td><td>K, V और FFN hidden पर scaling vectors</td><td>384 (0.77%)</td><td>Merge के बाद शून्य</td></tr>
+      <tr><td><strong>LoRA</strong> <span class="muted">Hu 2021</span></td><td>W<sub>q</sub>, W<sub>v</sub> पर low-rank diff</td><td>2,048 (4.12%)</td><td>Merge के बाद शून्य</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Step 0 का no-op होना ज़रूरी है</h2>
+  <p>
+    जो hook training से पहले ही output बदल देता है, उसने पहले ही forward pass
+    में pretrained model को फेंक दिया। Houlsby का हल: up-projection को शून्य कर
+    दो। पाँच में से कौन साफ़ शुरुआत करते हैं?
+  </p>
+
+<pre><code>max |block_with_hook(X) - block(X)| before any training:
+  adapters, W_up = 0:           <span class="ok">0.000000</span>
+  adapters, W_up random:        <span class="hl">0.376937</span>  ← no-op नहीं
+  (IA)^3, vectors = 1:          0.000000
+  prefix, K and V = 0:          0.277744  ← no-op नहीं
+  prompt, 8 sampled tokens:     0.491051  ← no-op नहीं</code></pre>
+
+  <p>
+    Adapter और (IA)³: byte-identical. Prefix नहीं, शून्य करने पर भी — शून्य key
+    को भी softmax में exp(0) = 1 मिलता है, इसलिए कुछ सीखे जाने से पहले ही वह असली
+    tokens से attention mass छीन लेता है। Prompt tokens का भी यही हाल: वे दिखते
+    हैं। LoRA उसी वजह से साफ़ शुरू होता है जिस वजह से adapter: B = 0.
+  </p>
+
+  <div class="note">
+    <strong>आख़िरी matrix को शून्य करो, पहली को नहीं।</strong> अगर इसके बजाय
+    W<sub>down</sub> को शून्य किया, तो W<sub>up</sub> में आने वाला gradient भी
+    शून्य हो जाएगा; training कभी शुरुआती बिंदु से हिलेगी ही नहीं। LoRA में भी
+    यही तरकीब है।
+  </div>
+
+  <h2>Prefix tuning: keys पता देती हैं, values सामान</h2>
+  <p>
+    Li और Liang ने hook को attention के अंदर सरका दिया। हर layer में keys के आगे
+    p सीखे हुए vectors और values के आगे p vectors जोड़ो, ताकि असली tokens की
+    queries को देखने के लिए p अतिरिक्त slots मिलें। कुछ भी W<sub>k</sub> या
+    W<sub>v</sub> से होकर नहीं जाता: prefix <em>ही</em> keys और values है। Paper
+    इस तरह GPT-2 और BART पर लगभग 0.1% parameters train करता है (स्थिरता के लिए एक
+    छोटे MLP के ज़रिए, जिसे बाद में फेंक दिया जाता है; मैं उसे छोड़ रहा हूँ)। अब
+    सिर्फ़ values सीखिए:
+  </p>
+
+<pre><code>attention weights shape with p=4 prefix rows: (16, 20)  (n, p+n)
+weight each query puts on the 4 prefix slots (first 3 queries):
+[[0.043 0.027 0.05  0.047]
+ [0.071 0.061 0.017 0.067]
+ [0.083 0.04  0.023 0.007]]
+
+BREAK IT: train V only, leave the prefix keys at zero
+[[0.035 0.035 0.035 0.035]
+ [0.027 0.027 0.027 0.027]
+ [0.032 0.032 0.032 0.032]]
+change every value row, max |weights diff|: <span class="hl">0.0</span></code></pre>
+
+  <p>
+    सीखी हुई keys के साथ हर query उन चार slots को अलग-अलग पढ़ती है। शून्य keys के
+    साथ columns एक जैसे हो जाते हैं और हर value vector दोबारा खींचने पर भी weights
+    ठीक 0 हिलते हैं: prefix सिमटकर एक तय vector बन गया है जो सबमें जुड़ जाता है।
+    Keys पता हैं, values सामान। दोनों चाहिए।
+  </p>
+
+  <h2>Prompt tuning: hook input में है</h2>
+  <p>
+    Lester et al. ने इस सवाल का सबसे छोटा रूप पूछा: अगर सिर्फ़ p token embeddings
+    ही trainable हों, जो input पर एक बार आगे जोड़ दिए जाएँ, तो? किसी block में
+    कोई hook नहीं; वे साधारण positions हैं और हर layer उन्हें देखती है।
+  </p>
+
+<pre><code>input: 8 prompt rows + 16 real rows = (24, 64)
+attention mass real tokens put on the prompt:
+  mean 0.340   min 0.196   max 0.546   (uniform would be 0.333)
+
+BREAK IT: read the output at row 0
+  out.shape = (24, 64)   ← इनमें 8 rows prompt की हैं
+  out[0]  belongs to prompt[0]      out[8] belongs to real token 0
+  the answer is out[8:], shape <span class="ok">(16, 64)</span></code></pre>
+
+  <p>
+    एक तिहाई attention mass, उन tokens पर जिन्हें अभी किसी ने train ही नहीं किया
+    (असली token vectors में से sample किए गए — paper का सुझाया init)। Training
+    उन्हें ऐसा हिलाती है कि असली tokens वहाँ जो पढ़ें वह काम का हो। और output में
+    24 rows हैं: <code>out[0]</code> एक prompt token का output है। Prompt को काट
+    दीजिए।
+  </p>
+
+  <div class="note">
+    <strong>ईमानदार चेतावनी।</strong> Lester का मुख्य निष्कर्ष यह है कि prompt
+    tuning तभी full fine-tuning की बराबरी करता है जब model लगभग 10B parameters
+    पार कर ले। उससे नीचे यह पिछड़ता है। बिना training के मैं यह दिखा नहीं सकता,
+    इसलिए बता रहा हूँ: अगर आपका model BERT जितना है, तो यह ग़लत hook है।
+  </div>
+
+  <h2>(IA)³ और LoRA: वे hooks जो मुड़कर ग़ायब हो जाते हैं</h2>
+  <p>
+    Liu et al. और भी छोटे गए। (IA)³ हर block पर तीन vectors सीखता है — एक keys
+    को scale करता है, एक values को, एक FFN hidden को — और बस। यहाँ 384 संख्याएँ,
+    असली model में लगभग 0.01%। Scale एक गुणा है, इसलिए बाद में आप उसे frozen
+    matrix में मोड़ देते हैं (W<sub>k</sub> और W<sub>v</sub> के columns,
+    W<sub>2</sub> की rows) और hook ग़ायब हो जाता है। यही वह column है जिससे यह
+    परिवार असल में छँटता है:
+  </p>
+
+<pre><code>base block FLOPs: 1,638,400
+
+method               extra FLOPs  extra tokens  adds a step?
+adapters, m=8             65,536             0           <span class="hl">yes</span>
+prefix, p=8               32,768             8            no
+prompt, p=8              868,352             8            no
+(IA)^3, unmerged           6,144             0            no
+(IA)^3, merged                 0             0            no
+LoRA, merged                   0             0            no
+
+(IA)^3 merge check, max |hooked - merged|: 1.33e-15   identical? <span class="ok">True</span></code></pre>
+
+  <p>
+    Adapter के 65,536 अतिरिक्त FLOPs block का 4% हैं। छोटा है। लेकिन वे residual
+    path के <em>अंदर</em> बैठते हैं: जब तक adapter पूरा न हो, block पूरा नहीं
+    होता — हर layer, हर token पर चुकाई जाने वाली क्रमिक देरी। यही Houlsby की लागत
+    थी, और यही खाई <a href="../lora/">LoRA</a> ने पाटी: diff को सीधे weight
+    matrix पर रखो, W + BA, और training के बाद merge कर दो। वही विचार, serving
+    लागत शून्य। उसका अपना पेज है; यहाँ दोबारा नहीं समझाऊँगा।
+  </p>
+  <p>
+    Prefix और prompt tuning कोई step नहीं जोड़ते, वे एक step को चौड़ा करते हैं।
+    लेकिन prompt वाली row 868,352 अतिरिक्त FLOPs है, यानी फिर से आधा block:
+    <em>हर</em> layer के <em>हर</em> matmul से गुज़रते 8 अतिरिक्त tokens। कुछ भी
+    मुफ़्त नहीं; चुनिए कहाँ।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -445,6 +987,37 @@ def make_ia3(d=D, d_ff=D_FF):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

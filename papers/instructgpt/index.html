@@ -7,7 +7,7 @@
 <meta name="description" content="The InstructGPT paper explained as code. GPT-3 completes text; three training stages turn it into an assistant. A runnable toy pipeline in NumPy and PyTorch, six demos, each stage broken on purpose.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -37,6 +37,15 @@
       PyTorch for the three training loops. About two seconds.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
 
   <p>
     I'd used GPT-3 through the API, and I'd used ChatGPT, and I could not have told you
@@ -305,6 +314,637 @@ policy = argmax(reward(policy) - beta * KL(policy, sft))   # 3. RL, on a leash</
     script because the toy has no pretraining corpus to mix in; it's one extra loss
     term, added, and the interesting part is why it's there.
   </p>
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    GPT-3-ஐ API வழியாகப் பயன்படுத்தியிருக்கிறேன், ChatGPT-யையும்
+    பயன்படுத்தியிருக்கிறேன் — ஆனால் அந்த இரண்டுக்கும் இடையில் என்ன நடந்தது
+    என்று என்னால் சொல்ல முடியவில்லை. இந்தக் கட்டுரைதான் அந்த இடைவெளி. கடினமான
+    பகுதி RL-ஆக இருக்கும் என்று நினைத்தேன். இல்லை — RL ஒரே ஒரு வரிதான். கடினமான
+    பகுதி, இங்கே <em>மூன்று தனித்தனி</em> பிரச்சனைகள் இருக்கின்றன, ஒவ்வொரு
+    stage-ம் ஒன்றை மட்டும் சரிசெய்கிறது என்பதைப் பார்ப்பதுதான்.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (SFT, reward model, PPO,
+    KL, alignment tax, labeler, demonstration, comparison…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>புதிய ஊழியரை வேலைக்குச் சேர்த்தல்</h2>
+
+  <p>
+    ஒரு புதிய engineer குழுவில் சேர்கிறார். கெட்டிக்காரர், எல்லாம் படித்தவர்,
+    ஆனாலும் முதல் நாள் <em>நீங்கள்</em> எப்படி வேலை செய்கிறீர்கள் என்று
+    அவருக்குத் தெரியாது. அதனால் சில செய்முறை உதாரணங்களைக் காட்டுகிறீர்கள்.
+    பிறகு அவர் வேலையை review செய்கிறீர்கள் — "இது சரி, அது இல்லை" — உங்கள்
+    ரசனை அவருக்குப் புரியும் வரை. பிறகு அவர் நிஜ tickets-இல் பயிற்சி
+    செய்கிறார், ஒரு mentor அருகில் இருந்து "வழி மாறுகிறாய், திரும்பி வா" என்று
+    சொல்ல — ஒரு typo-வைச் சரிசெய்ய codebase முழுவதையும் refactor செய்யத்
+    தொடங்கும் அந்த நொடியில். இந்தக் கட்டுரை அதுதான். இதற்கு முன், GPT-3-க்கு
+    ஒரே ஒரு வேலைதான் இருந்தது:
+  </p>
+
+<pre><code>prompt = "Explain what a mutex is."
+gpt3(prompt)   # "இந்த வரி உள்ள ஒரு document-இல் அடுத்து என்ன வரும்?"
+               # -&gt; "Explain what a semaphore is. Explain what a deadlock is."</code></pre>
+
+  <p>
+    முட்டாள்தனம் இல்லை, பிடிவாதமும் இல்லை. "Explain what a mutex is." என்ற வரி
+    உள்ள document பொதுவாக ஒரு தேர்வுத்தாள்தான், தேர்வுத்தாளின் அடுத்த வரி
+    அடுத்த கேள்விதான். GPT-3-ஐ நடக்க வைக்கும் ஒவ்வொரு தந்திரமும் — few-shot
+    உதாரணங்கள், "Q: … A:" scaffolding — விடை அடுத்ததாக வரும்படியான ஒரு
+    document-ஐப் போலியாக உருவாக்கும் வழிதான். InstructGPT என்பது அதன் மேல்
+    மூன்று stages:
+  </p>
+
+<pre><code>policy = base                                    # text முடிக்கும், பதில் சொல்லாது
+policy = fit(policy, demonstrations)             # 1. SFT: உதாரணங்களை நகலெடு
+reward = fit(comparisons(policy.samples()))      # 2. RM: அவர்கள் ரசனையைக் கற்று
+policy = argmax(reward(policy) - beta * KL(policy, sft))   # 3. RL, சங்கிலியுடன்</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>புதிய ஊழியர் உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Demonstration</strong></td><td>வேண்டிய பதிலை ஒரு மனிதர் எழுதினார்</td><td>முதல் நாள் காட்டிய செய்முறை உதாரணம்</td></tr>
+      <tr><td><strong>Comparison</strong></td><td>இரண்டு model outputs-இல் சிறந்ததை ஒரு மனிதர் தேர்ந்தெடுத்தார்</td><td>Code review: "இது சரி, அது இல்லை"</td></tr>
+      <tr><td><strong>Reward model</strong></td><td>எந்த output-ஐ மனிதர் விரும்புவார் என்று கணிக்கப் பயிற்றுவிக்கப்பட்ட network</td><td>Reviewer-இன் ரசனை, compile செய்யப்பட்டது</td></tr>
+      <tr><td><strong>KL penalty</strong></td><td>SFT model-இலிருந்து விலகிச் செல்வதற்கான விலை</td><td>"திரும்பி வா" என்று சொல்லும் mentor</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    முக்கியச் செய்தி: மக்கள் API-க்கு அனுப்பிய நிஜ prompts-இல், 175B GPT-3-ஐ
+    விட 1.3B InstructGPT-யை labelers விரும்பினார்கள் — நூறு மடங்கு பெரிய
+    model-ஐ விட. 175B InstructGPT, 175B GPT-3-ஐ 85% நேரமும், கவனமாக எழுதப்பட்ட
+    few-shot prompt உள்ள GPT-3-ஐ 71% நேரமும் வென்றது. "Scaling ஏன் இதைச்
+    சரிசெய்யாது?" என்ற interview கேள்விக்கு இதுதான் பதில்: தவறான objective-ஐ
+    விட்டு scaling மூலம் வெளியேற முடியாது.
+  </p>
+
+  <p class="thanglish">
+    Moonu stage: SFT format-ai katrudhu, reward model rasanai-ai pidikkudhu,
+    RL adha vachu payirchi pannudhu. Thavaraana objective-ai scaling
+    sari panna mudiyaadhu — adhaan 1.3B model 175B-ai jeikkiradhu.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">objective(φ) = E<sub>(x,y)∼π<sub>φ</sub></sub>[ r<sub>θ</sub>(x, y) − β log(π<sub>φ</sub>(y|x) / π<sup>SFT</sup>(y|x)) ] + γ E<sub>x∼D<sub>pretrain</sub></sub>[ log π<sub>φ</sub>(x) ]</div>
+
+  <p>அதுதான் method பகுதியில் உள்ள stage-3 objective. மூன்று விஷயங்கள் சமன்செய்யப்படுகின்றன:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>y ∼ π<sub>φ</sub></code></td><td>samples</td><td>Policy தன் சொந்த prompts-க்குப் பதில் சொல்கிறது. PPO expectation-ஐ sampling மூலம் மதிப்பிடுகிறது; என் toy-இல் prompt ஒன்றுக்கு ஆறு candidates, அதனால் நான் அதைச் சரியாகக் கணக்கிடுகிறேன்</td></tr>
+      <tr><td><code>r<sub>θ</sub>(x, y)</code></td><td>scalar</td><td><strong>Reward model-இன் score.</strong> "ஒரு labeler என்ன நினைப்பார்", ஒரு network-ஆக compile செய்யப்பட்டது</td></tr>
+      <tr><td><code>β log(π<sub>φ</sub> / π<sup>SFT</sup>)</code></td><td>scalar, token ஒன்றுக்கு</td><td><strong>சங்கிலி.</strong> Samples மேல் சராசரி எடுத்தால் இது KL(π<sub>φ</sub> ‖ π<sup>SFT</sup>): stage 1-இலிருந்து policy எவ்வளவு விலகியது. கட்டுரையில் β = 0.02</td></tr>
+      <tr><td><code>γ E[log π<sub>φ</sub>(x)]</code></td><td>pretraining loss</td><td><strong>PPO-ptx.</strong> பயிற்சி செய்யும்போதே pretraining data-வில் பழைய வேலையையும் தொடர்ந்து செய். கட்டுரையில் γ = 27.8; γ = 0 என்றால் சாதா PPO</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    γ term-ஐ நீக்கிவிட்டால் objective-க்கு ஒரு துல்லியமான விடை உண்டு:
+    π<sup>*</sup>(y|x) ∝ π<sup>SFT</sup>(y|x) · e<sup>r(x,y)/β</sup> — SFT
+    distribution, reward-ஆல் மறு-எடையிடப்பட்டது. β → ∞ என்பது SFT; β → 0
+    என்பது reward model-இன் argmax. பயிற்சி பெற்ற policy அங்குதான் வந்து
+    நிற்கிறதா என்பதை script சரிபார்க்கிறது (அதிகபட்ச வேறுபாடு 0.0005).
+  </p>
+
+  <h2>Stage 0: GPT-3 முடிக்கிறது; பதில் சொல்லவில்லை</h2>
+
+  <p>
+    Toy உலகம்: நான்கு prompts, ஒவ்வொன்றுக்கும் ஆறு candidate responses, மற்றும்
+    training-இல் யாரும் படிக்காத ஒரு மறைவான helpfulness score (0 முதல் 10) —
+    அது pipeline-ஐ பின்னால் மதிப்பிட மட்டுமே. ஒரு policy என்பது 4×6 logits
+    அட்டவணை; பதில் சொல்வது என்றால் அந்த வரிசைக்கு softmax போட்டு sample எடுப்பது.
+    Prompt ஒன்றுக்கு: மூன்று continuations, ஒரு சுருக்கமான பதில், ஒரு நல்ல பதில்,
+    ஒரு "Great question!" என்று நீட்டிய கட்டுரை. Base logits ஒரு continuation-ஐ
+    ஒரு-வார்த்தைப் பதிலை விட e<sup>2</sup> ≈ 7× இயல்பானதாக்குகின்றன, மேலும் பதில்
+    நீளும் தோறும் அரிதாகிறது:
+  </p>
+
+<pre><code>  prompt:    "Explain what a mutex is."
+  base says: "Explain what a semaphore is. Explain what a deadlock is."
+
+  base             mass on answers: <span class="hl">0.053</span>   true helpfulness: 0.79
+  base policy on prompt 0: continuations 0.965, terse 0.030,
+                           good 0.0044, padded 0.0005</code></pre>
+
+  <h2>Stage 1: SFT format-ஐக் கற்பிக்கிறது</h2>
+
+  <p>
+    Labelers தாங்கள் பார்க்க விரும்பும் பதிலை எழுதுகிறார்கள் — சுமார் 13k
+    prompts அளவுக்கு. பிறகு சாதாரண supervised fine-tuning: அந்தப் பதில்களின்
+    மேல் cross-entropy, pretraining-இல் இருந்த அதே loss, 16 epochs. Loss-இல்
+    புதிதாக ஒன்றுமில்லை; புதிது data-தான். இங்கே எட்டு demonstrations: prompt
+    ஒன்றுக்கு labeler சுருக்கமான பதிலை ஒரு முறையும் நல்ல பதிலை ஒரு முறையும்
+    எழுதினார்.
+  </p>
+
+<pre><code>  base             mass on answers: 0.053   true helpfulness: 0.79
+  SFT              mass on answers: <span class="ok">0.876</span>   true helpfulness: 5.69
+
+  SFT policy on prompt 0, per response: [0.043 0.043 0.043 0.442 0.428 0.001]
+  (terse answer <span class="hl">0.44</span>, good answer 0.43, padded answer 0.0006)   ← a coin flip</code></pre>
+
+  <p>
+    எட்டு உதாரணங்கள் 5% பதிலிலிருந்து 88%-க்குக் கொண்டு வந்துவிட்டன. SFT-இன்
+    வேலை அதுதான்: format. ஆனால் பிரிவைப் பாருங்கள். SFT தனக்குக் காட்டியதை
+    நகலெடுக்கிறது, சுருக்கமான பதிலும் நல்ல பதிலும் சமமான அளவு காட்டப்பட்டன,
+    அதனால் எது சிறந்தது என்பதில் அதற்கு எந்த அபிப்ராயமும் இல்லை. அதற்கு
+    ஒன்றைக் கொடுக்க வேண்டுமானால் "சிறந்தது" என்றால் என்ன என்பதை எழுத
+    வேண்டும். உங்களால் முடியாது.
+  </p>
+
+  <p class="thanglish">
+    SFT format-ai kathukkudhu — 5% irundhu 88% answer-ku. Aana terse-um
+    good-um samamaa kaatapattadhaala, edhu nalladhu-nu adhukku theriyaadhu.
+    "Nalladhu" enna-nu ezhudha mudiyaadhu — adhaan stage 2-oda kaaranam.
+  </p>
+
+  <h2>Stage 2: எழுத முடியாததை reward model பிடிக்கிறது</h2>
+
+  <p>
+    Labelers எழுதுவதை நிறுத்துகிறார்கள். ஒரு prompt-க்கு model-இன் சொந்த
+    outputs பலவற்றைப் பார்த்து அவற்றை வரிசைப்படுத்துகிறார்கள் — கட்டுரையில்
+    ஒரு முறைக்கு 4 முதல் 9, ஒரு ranking-இல் உள்ள ஒவ்வொரு ஜோடியும் ஒரே
+    batch-ஆகப் பயிற்றுவிக்கப்படுகிறது, சுமார் 33k prompts. நல்ல பதில் என்றால்
+    என்ன என்பதை என்னால் வரையறுக்க முடியாது, ஆனால் இரண்டில் எது சிறந்தது என்று
+    சொல்ல முடியும். "a, b-ஐ வென்றது" என்பதை ஒரு scalar-ஆக மாற்றுவது
+    Bradley-Terry: P(a beats b) = sigmoid(r(a) − r(b)), அதன் −log-ஐக்
+    குறைக்கவும். <a href="../rlhf/">RLHF page</a> அதை வருவிக்கிறது; இங்கே அது
+    மூன்று வரிகள். கட்டுரையின் reward model ஒரு 6B transformer, scalar head
+    உடன். என்னுடையது response ஒன்றுக்கு மூன்று எண்களின் மேல் ஒரு linear layer:
+    இது பதில் சொல்கிறதா, எவ்வளவு நீளம், அந்த நீளத்தின் வர்க்கம். அதே loss,
+    அதே பாடம். Labelers simulated, குறையுள்ளவர்கள்; கட்டுரையின் நிஜ labelers
+    ஒத்துப்போன அளவுக்கே இருவர் ஒத்துப்போகும் வரை அவர்கள் noise-ஐ சரிசெய்தேன்,
+    72.6%.
+  </p>
+
+<pre><code>  comparisons collected on SFT outputs: 240
+  simulated inter-labeler agreement:    0.737   (paper: about 0.73)
+  padded answers that reached a labeler: 0 of 4
+
+  reward model vs hidden score, on responses labelers saw: corr = <span class="ok">0.979</span>
+  reward model vs hidden score, on ALL 24 responses:       corr = 0.708
+
+  prompt 0, learned reward vs hidden score:
+    reward  1.96   hidden 0.5   'Explain what a semaphore is. E'
+    reward  4.60   hidden 5.0   'A lock one thread holds at a t'
+    reward  6.12   hidden 8.0   'A lock one thread holds while '
+    reward  <span class="hl">7.86</span>   hidden 3.5   'Great question! A mutex, or mu'   &lt;- never seen</code></pre>
+
+  <p>
+    Labelers உண்மையில் பார்த்தவற்றில் reward model கிட்டத்தட்ட சரியானது:
+    0.979. அவர்கள் பார்க்காதவை பற்றி அது ஊகிக்கிறது. நீட்டிய கட்டுரைக்கு
+    SFT-இன் கீழ் 0.06% probability மட்டுமே, அதனால் எந்த labeler-க்கும் அது
+    காட்டப்படவே இல்லை. RM "நீளமானது சிறந்தது" என்பதை terse-vs-good-இலிருந்து
+    கற்றது — அந்த data-வில் அது <em>உண்மை</em> — பிறகு நல்ல பதிலைத் தாண்டி
+    நேராக அந்தக் கட்டுரை வரை நீட்டி ஊகித்தது. இதை மனதில் வையுங்கள்.
+  </p>
+
+  <div class="note">
+    <strong>ஒரு reward model, அது கற்ற மனிதர்களை விட நிலையானதாக இருக்க
+    முடியாது.</strong> 54% மட்டுமே ஒத்துப்போகும் labelers வைத்து script இதை
+    மீண்டும் ஓட்டுகிறது: ranking தப்பிப் பிழைக்கிறது (corr 0.973) ஆனால்
+    good-minus-terse reward இடைவெளி 1.52-இலிருந்து 0.09-ஆகக் குறைகிறது,
+    சங்கிலிக்கு எதிராக stage 3 பேரம் பேசுவது அந்த margins-ஐத்தான்.
+    கட்டுரையின் 73% என்பது முழு pipeline-க்கும் ஒரு உச்ச வரம்பு — அதனால்தான்
+    §3.4 labelers யார் என்பதில் இவ்வளவு நேரம் செலவிடுகிறது.
+  </div>
+
+  <h2>Stage 3: reward model-க்கு எதிராகப் பயிற்சி, சங்கிலியுடன்</h2>
+
+  <p>
+    இப்போது policy prompts-க்குப் பதில் சொல்கிறது (சுமார் 31k), reward model
+    அந்தப் பதில்களுக்கு score போடுகிறது, அதிக score பெறும்படி policy
+    புதுப்பிக்கப்படுகிறது — SFT model-க்கு எதிராக token ஒன்றுக்கு ஒரு KL
+    penalty உடன், அதனால் அது வழி தவற முடியாது. கட்டுரை PPO-ஐப் பயன்படுத்துகிறது;
+    <a href="../rlhf/">RLHF page</a> sampling மற்றும் clipping வழியாக நடந்து
+    செல்கிறது, நான் அதை மீண்டும் வருவிக்கவில்லை. Prompt ஒன்றுக்கு ஆறு
+    candidates இருப்பதால் expectation-ஐ நான் துல்லியமாகக் கணக்கிட்டு மீதியை
+    autograd-இடம் விடுகிறேன்.
+  </p>
+
+<pre><code>  prompt:    "Explain what a mutex is."
+  RLHF says: "A lock one thread holds while the rest wait; guards shared state."
+
+  stage          mass on answers   true helpfulness   KL to SFT
+  base                     0.053               0.79       1.795
+  sft                      0.876               5.69       0.000
+  rlhf                     0.999               <span class="ok">7.68</span>       0.539
+
+  ceiling (always the good answer): 8.12
+  RLHF policy on prompt 0: terse 0.10, good 0.88, padded 0.015
+  closed form pi_SFT * exp(r/beta): max |diff| from trained policy = 0.0005</code></pre>
+
+  <p>
+    SFT-ஆல் செய்ய முடியாத ஒரு காரியத்தை RL செய்தது: அந்த coin flip-ஐ
+    0.10 / 0.88-ஆக நகர்த்தியது, ஏனெனில் reward model அந்த இரண்டையும்
+    வரிசைப்படுத்துகிறது. Helpfulness 0.79 → 5.69 → 7.68, உச்ச வரம்பு 8.12.
+    மேலும் நீட்டிய கட்டுரை 1.5%-ஆக ஏறியது — RM அதை அதிகமாக மதிப்பிடுகிறது,
+    policy அந்தப் பக்கம் சாய்ந்தது, அது நின்றதற்குக் காரணம் சங்கிலி மட்டுமே.
+    சங்கிலி எதற்கு என்பதை இரண்டு சோதனைகள் காட்டுகின்றன.
+  </p>
+
+  <h3>சங்கிலியைத் தவறான model-இல் கட்டுங்கள்</h3>
+
+  <p>
+    SFT-ஐத் தவிருங்கள் — base model-இலிருந்து RL தொடங்கி, base model-உடனேயே
+    சங்கிலி கட்டுங்கள், ஏனெனில் உங்களிடம் இருப்பது அது மட்டுமே. அல்லது SFT
+    செய்துவிட்டு, KL-ஐ base model-இல் சுட்டுங்கள்.
+  </p>
+
+<pre><code>  steps until true helpfulness &gt;= 7.0, then the final numbers:
+
+  run                     steps   mass on answers   helpfulness
+  SFT -&gt; RL, KL to SFT       <span class="ok">7</span>             0.999          7.68
+  base -&gt; RL, KL to base never             0.892          <span class="hl">4.75</span>
+  SFT -&gt; RL, KL to base  never             0.892          4.75
+
+  helpfulness at step 10:  with SFT 7.41   without SFT 1.50</code></pre>
+
+  <p>
+    Base model-இலிருந்து பார்த்தால் நல்ல பதில் ஒரு rounding error அளவுதான்,
+    அதனால் RL-க்குத் தள்ள ஏதும் இல்லாமல் ஊர்ந்து செல்கிறது: பத்து steps-க்குப்
+    பிறகு 7.41-க்குப் பதிலாக 1.50. மேலும் சங்கிலி முழு வழியிலும்
+    continuations பக்கம் இழுக்கிறது, அதனால் அது 4.75-இல் நின்றுவிடுகிறது,
+    ஒருபோதும் வந்து சேர்வதில்லை. மோசமான இரண்டு வரிசைகளும் <em>ஒரே</em>
+    இடத்தில் முடிகின்றன: எங்கே சேருவது என்பதை reference model முடிவு
+    செய்கிறது, தொடக்கம் வேகத்தை மட்டுமே முடிவு செய்கிறது. (நிஜ sampling-இல்,
+    ஒரு நல்ல பதிலை நீங்கள் எப்போதாவது பார்ப்பீர்களா என்பதையும் தொடக்கம்
+    முடிவு செய்யும்.)
+  </p>
+
+  <h3>சங்கிலியைக் கழற்றுங்கள்</h3>
+
+<pre><code>  beta = 0 says: "Great question! A mutex, or mutual exclusion... [4 paragraphs]"
+  probability on the padded answer, prompt 0: 0.999
+  beta = 0.7       mass on answers: 0.999   true helpfulness: 7.68
+  beta = 0         mass on answers: 1.000   true helpfulness: <span class="hl">3.50</span>
+
+  + 240 comparisons on the drifted policy's own outputs, RM retrained:
+    corr with hidden score on ALL 24 responses: 0.979   (was 0.708)
+    RM on prompt 0: good 6.28  padded 4.04   (was good 6.12, padded 7.86)
+  retrained RM     mass on answers: 0.998   true helpfulness: <span class="ok">7.63</span></code></pre>
+
+  <p>
+    β = 0 என்றால் reward model எதை அதிகமாக மதிப்பிடுகிறதோ அதை நோக்கி policy
+    நேராக ஓடுகிறது: அந்தக் கட்டுரை, 99.9% நேரம், true helpfulness 7.68-இலிருந்து
+    3.50-ஆகக் குறைகிறது. அதுதான் reward hacking, மேலும் RM தன் சொந்த data-வில்
+    ஒருபோதும் தவறு செய்யவில்லை — அது பார்த்திராத ஒன்றைப் பற்றி அதனிடம்
+    கேட்கப்பட்டது. கட்டுரையில் இரண்டு காவல்கள்: KL penalty, மற்றும் SFT
+    model-இலிருந்து மட்டுமல்லாமல் பயிற்சி பெறும் models-இன் outputs-இலும்
+    comparisons சேகரித்து, எல்லாவற்றின் மேலும் RM-ஐ மறுபடி பயிற்றுவிப்பது —
+    அதனால் policy உண்மையில் வாழும் இடத்தில் அது பயிற்சி பெறுகிறது. Block-இன்
+    கீழ் பாதி அந்தத் திருத்தம்தான்: விலகிய policy-இன் outputs-இல் 240 புதிய
+    comparisons, நல்ல பதிலை விடக் கட்டுரை மோசமானது என்று RM கற்கிறது
+    (6.28-க்கு எதிராக 4.04), policy திரும்பி வருகிறது.
+  </p>
+
+  <p class="thanglish">
+    Beta = 0 vachaa policy reward model over-rate panra padded essay-kku
+    99.9% odum — adhu dhaan reward hacking. Rendu kaaval: KL leash, appuram
+    drift aana policy-oda sonta outputs-la fresh comparisons vaangi RM-ai
+    marubadi train panradhu.
+  </p>
+
+  <div class="note">
+    <strong>ChatGPT இந்த recipe-தான்.</strong> அதே மூன்று stages, ஆனால்
+    demonstrations மற்றும் comparisons ஒற்றை turns-ஆக இல்லாமல் உரையாடல்களாக
+    எழுதப்படுகின்றன. இந்த stages-ஐயும் ஒவ்வொன்றும் என்ன தருகிறது என்பதையும்
+    விளக்க முடிந்தால், ChatGPT-ஐ விளக்க முடியும்.
+  </div>
+
+  <h2>Alignment tax, மற்றும் PPO-ptx</h2>
+
+  <p>
+    Labelers விரும்பியதில் model-ஐ Stage 3 சிறப்பாக்கியது, யாரும் சரிபார்க்காத
+    விஷயங்களில் மோசமாக்கியது: RLHF-க்குப் பிறகு SQuAD, DROP, HellaSwag மற்றும்
+    ஒரு French→English translation task போன்ற பொது benchmarks-இல் scores
+    குறைந்தன. கட்டுரை இதை alignment tax என்று அழைக்கிறது. இது மீண்டும்
+    distribution shift-தான் — 31k API-பாணி prompts-இல் பயிற்சி செய்தால்,
+    சங்கிலியில் இருந்தாலும் pretraining corpus கற்பித்ததிலிருந்து நீங்கள்
+    விலகுகிறீர்கள். தீர்வு γ term: PPO ஓடும்போதே, pretraining data batches-இல்
+    சாதாரண next-token gradient steps-ஐத் தொடர்ந்து எடுங்கள். அதை அவர்கள்
+    PPO-ptx என்று அழைக்கிறார்கள், labeler preference-இல் மிகக் குறைந்த விலையில்
+    இழந்த benchmark performance-இல் பெரும்பாலானதைத் திரும்பப் பெறுகிறது.
+    Programmer வடிவம்: refactor செய்யும்போது பழைய regression suite-ஐயும்
+    ஓடவிடுங்கள். Toy-இல் கலக்க pretraining corpus இல்லை என்பதால் இது
+    script-இல் இல்லை; இது கூட்டப்படும் ஒரு loss term மட்டுமே, சுவாரஸ்யமான
+    பகுதி அது ஏன் அங்கே இருக்கிறது என்பதுதான்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने GPT-3 को API से इस्तेमाल किया था, और ChatGPT भी इस्तेमाल किया था —
+    पर बीच में क्या हुआ, यह मैं आपको नहीं बता सकता था। यह paper वही बीच का
+    हिस्सा है। मुझे लगा था मुश्किल हिस्सा RL होगा। नहीं है — RL तो एक ही
+    लाइन है। मुश्किल हिस्सा यह देखना था कि यहाँ <em>तीन अलग-अलग</em> समस्याएँ
+    हैं, और हर stage उनमें से एक को ठीक करता है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (SFT, reward model,
+    PPO, KL, alignment tax, labeler, demonstration, comparison…) मैंने वैसे ही
+    रखे हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>नए बंदे को onboard करना</h2>
+
+  <p>
+    एक नया engineer टीम में आता है। होशियार है, सब कुछ पढ़ चुका है, फिर भी
+    पहले दिन उसे यह नहीं पता कि <em>आप</em> काम कैसे करते हैं। तो आप उसे कुछ
+    हल किए हुए उदाहरण दिखाते हैं। फिर उसका काम review करते हैं — "यह वाला,
+    वह वाला नहीं" — जब तक उसे आपकी पसंद समझ न आ जाए। फिर वह असली tickets पर
+    अभ्यास करता है, और पास में एक mentor बैठा रहता है जो कहे "तुम भटक रहे हो,
+    वापस आओ" — ठीक उसी पल जब वह एक typo ठीक करने के लिए पूरा codebase
+    refactor करने लगे। यही paper है। इससे पहले GPT-3 का बस एक ही काम था:
+  </p>
+
+<pre><code>prompt = "Explain what a mutex is."
+gpt3(prompt)   # "इस लाइन वाले document में आगे क्या आएगा?"
+               # -&gt; "Explain what a semaphore is. Explain what a deadlock is."</code></pre>
+
+  <p>
+    न बेवक़ूफ़ी, न ज़िद। "Explain what a mutex is." वाला document आम तौर पर एक
+    exam paper होता है, और exam paper की अगली लाइन अगला सवाल होती है। GPT-3 से
+    काम निकलवाने की हर तरकीब — few-shot उदाहरण, "Q: … A:" scaffolding — असल
+    में ऐसा document गढ़ने का तरीका थी जिसमें जवाब ही अगली चीज़ बने।
+    InstructGPT उसके ऊपर तीन stages हैं:
+  </p>
+
+<pre><code>policy = base                                    # text पूरा करता है, जवाब नहीं
+policy = fit(policy, demonstrations)             # 1. SFT: उदाहरणों की नक़ल करो
+reward = fit(comparisons(policy.samples()))      # 2. RM: उनकी पसंद सीखो
+policy = argmax(reward(policy) - beta * KL(policy, sft))   # 3. RL, पट्टे पर</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>नए बंदे वाली उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Demonstration</strong></td><td>इंसान ने वही जवाब ख़ुद लिखा जो वह चाहता था</td><td>पहले दिन दिखाया गया हल किया हुआ उदाहरण</td></tr>
+      <tr><td><strong>Comparison</strong></td><td>इंसान ने दो model outputs में से बेहतर चुना</td><td>Code review: "यह वाला, वह वाला नहीं"</td></tr>
+      <tr><td><strong>Reward model</strong></td><td>वह network जो अनुमान लगाना सीखता है कि इंसान कौन-सा output पसंद करेगा</td><td>Reviewer की पसंद, compile की हुई</td></tr>
+      <tr><td><strong>KL penalty</strong></td><td>SFT model से दूर भटकने की क़ीमत</td><td>Mentor का कहना "वापस आओ"</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    मुख्य नतीजा: लोगों ने API पर जो असली prompts भेजे थे, उन पर labelers ने
+    175B GPT-3 के मुक़ाबले 1.3B InstructGPT को पसंद किया — यानी सौ गुना बड़े
+    model से बेहतर। 175B InstructGPT ने 175B GPT-3 को 85% बार हराया, और
+    ध्यान से लिखे few-shot prompt वाले GPT-3 को 71% बार। "Scaling इसे ठीक
+    क्यों नहीं करती?" — interview का जवाब यही है: ग़लत objective से scaling
+    करके बाहर नहीं निकला जा सकता।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">objective(φ) = E<sub>(x,y)∼π<sub>φ</sub></sub>[ r<sub>θ</sub>(x, y) − β log(π<sub>φ</sub>(y|x) / π<sup>SFT</sup>(y|x)) ] + γ E<sub>x∼D<sub>pretrain</sub></sub>[ log π<sub>φ</sub>(x) ]</div>
+
+  <p>यह method section वाला stage-3 objective है। तीन चीज़ों के बीच सौदा हो रहा है:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>y ∼ π<sub>φ</sub></code></td><td>samples</td><td>Policy अपने ही prompts का जवाब देती है। PPO expectation को sampling से आँकता है; मेरे toy में हर prompt पर छह candidates हैं, इसलिए मैं उसे ठीक-ठीक निकाल लेता हूँ</td></tr>
+      <tr><td><code>r<sub>θ</sub>(x, y)</code></td><td>scalar</td><td><strong>Reward model का score.</strong> "एक labeler क्या सोचेगा", एक network में compile किया हुआ</td></tr>
+      <tr><td><code>β log(π<sub>φ</sub> / π<sup>SFT</sup>)</code></td><td>scalar, प्रति token</td><td><strong>पट्टा।</strong> Samples पर औसत लो तो यही KL(π<sub>φ</sub> ‖ π<sup>SFT</sup>) है: policy stage 1 से कितनी भटकी। Paper में β = 0.02</td></tr>
+      <tr><td><code>γ E[log π<sub>φ</sub>(x)]</code></td><td>pretraining loss</td><td><strong>PPO-ptx.</strong> अभ्यास करते हुए भी pretraining data पर पुराना काम करते रहो। Paper में γ = 27.8; γ = 0 यानी सादा PPO</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    γ वाला term हटा दें तो objective का एक सटीक जवाब है:
+    π<sup>*</sup>(y|x) ∝ π<sup>SFT</sup>(y|x) · e<sup>r(x,y)/β</sup> — यानी SFT
+    distribution, reward से दोबारा भारित। β → ∞ यानी SFT; β → 0 यानी reward
+    model का argmax. Script जाँचता है कि trained policy वहीं पहुँचती है
+    (अधिकतम अंतर 0.0005)।
+  </p>
+
+  <h2>Stage 0: GPT-3 पूरा करता है; जवाब नहीं देता</h2>
+
+  <p>
+    Toy दुनिया: चार prompts, हर एक पर छह candidate responses, और एक छिपा हुआ
+    helpfulness score (0 से 10) जिसे training में कोई नहीं पढ़ता — वह सिर्फ़
+    बाद में pipeline को परखता है। Policy यानी logits की 4×6 table; जवाब देना
+    यानी उस row पर softmax लगाकर sample लेना। हर prompt पर: तीन continuations,
+    एक छोटा जवाब, एक अच्छा जवाब, और एक फूला हुआ "Great question!" निबंध। Base
+    logits एक continuation को एक-शब्द वाले जवाब से e<sup>2</sup> ≈ 7× ज़्यादा
+    स्वाभाविक बनाते हैं, और जवाब जितना लंबा, उतना दुर्लभ:
+  </p>
+
+<pre><code>  prompt:    "Explain what a mutex is."
+  base says: "Explain what a semaphore is. Explain what a deadlock is."
+
+  base             mass on answers: <span class="hl">0.053</span>   true helpfulness: 0.79
+  base policy on prompt 0: continuations 0.965, terse 0.030,
+                           good 0.0044, padded 0.0005</code></pre>
+
+  <h2>Stage 1: SFT format सिखाता है</h2>
+
+  <p>
+    Labelers वही जवाब लिखते हैं जो वे देखना चाहते हैं — क़रीब 13k prompts
+    जितना। फिर सादा supervised fine-tuning: उन जवाबों पर cross-entropy, वही
+    loss जो pretraining में था, 16 epochs. Loss में नया कुछ नहीं; नया है data.
+    यहाँ आठ demonstrations हैं: हर prompt पर labeler ने छोटा जवाब एक बार और
+    अच्छा जवाब एक बार लिखा।
+  </p>
+
+<pre><code>  base             mass on answers: 0.053   true helpfulness: 0.79
+  SFT              mass on answers: <span class="ok">0.876</span>   true helpfulness: 5.69
+
+  SFT policy on prompt 0, per response: [0.043 0.043 0.043 0.442 0.428 0.001]
+  (terse answer <span class="hl">0.44</span>, good answer 0.43, padded answer 0.0006)   ← a coin flip</code></pre>
+
+  <p>
+    आठ उदाहरणों ने इसे 5% जवाब देने से 88% तक पहुँचा दिया। SFT इसी के लिए है:
+    format. पर बँटवारे को देखिए। SFT वही नक़ल करता है जो उसे दिखाया गया, और
+    उसे छोटा जवाब और अच्छा जवाब बराबर बार दिखाए गए, इसलिए कौन-सा बेहतर है इस
+    पर उसकी कोई राय नहीं है। राय देने के लिए आपको लिखना पड़ेगा कि "बेहतर" का
+    मतलब क्या है। आप लिख नहीं सकते।
+  </p>
+
+  <h2>Stage 2: जो लिखा नहीं जा सकता, reward model उसे पकड़ता है</h2>
+
+  <p>
+    Labelers लिखना बंद कर देते हैं। वे एक prompt पर model के अपने ही कई
+    outputs देखते हैं और उन्हें क्रम में लगाते हैं — paper में एक बार में 4 से
+    9, एक ranking के हर जोड़े को एक ही batch की तरह train किया जाता है, क़रीब
+    33k prompts. मैं अच्छा जवाब परिभाषित नहीं कर सकता, पर दो में से कौन बेहतर
+    है यह बता सकता हूँ। "a ने b को हराया" को scalar में बदलना Bradley-Terry है:
+    P(a beats b) = sigmoid(r(a) − r(b)), उसका −log घटाइए।
+    <a href="../rlhf/">RLHF page</a> इसे निकालकर दिखाता है; यहाँ यह तीन लाइनें
+    हैं। Paper का reward model scalar head वाला 6B transformer है। मेरा हर
+    response पर तीन संख्याओं के ऊपर एक linear layer है: यह जवाब देता है या
+    नहीं, कितना लंबा है, और उस लंबाई का वर्ग। वही loss, वही सबक़। Labelers
+    simulated और ख़ामियों वाले हैं; मैंने उनका noise तब तक tune किया जब तक दो
+    labelers उतनी ही बार सहमत न हों जितनी बार paper के असली labelers होते थे,
+    72.6%.
+  </p>
+
+<pre><code>  comparisons collected on SFT outputs: 240
+  simulated inter-labeler agreement:    0.737   (paper: about 0.73)
+  padded answers that reached a labeler: 0 of 4
+
+  reward model vs hidden score, on responses labelers saw: corr = <span class="ok">0.979</span>
+  reward model vs hidden score, on ALL 24 responses:       corr = 0.708
+
+  prompt 0, learned reward vs hidden score:
+    reward  1.96   hidden 0.5   'Explain what a semaphore is. E'
+    reward  4.60   hidden 5.0   'A lock one thread holds at a t'
+    reward  6.12   hidden 8.0   'A lock one thread holds while '
+    reward  <span class="hl">7.86</span>   hidden 3.5   'Great question! A mutex, or mu'   &lt;- never seen</code></pre>
+
+  <p>
+    Labelers ने जो सचमुच देखा, उस पर reward model लगभग सटीक है: 0.979. और जो
+    उन्होंने कभी नहीं देखा, उसके बारे में वह अंदाज़ा लगा रहा है। फूले हुए निबंध
+    की SFT के तहत probability 0.06% है, इसलिए किसी labeler को वह कभी दिखाया ही
+    नहीं गया। RM ने terse-बनाम-good से "लंबा यानी बेहतर" सीखा — उस data पर यह
+    <em>सच</em> था — और अच्छे जवाब के आगे बढ़कर सीधे निबंध तक extrapolate कर
+    गया। यह बात याद रखिए।
+  </p>
+
+  <div class="note">
+    <strong>Reward model उन लोगों से ज़्यादा एकरूप नहीं हो सकता जिनसे उसने
+    सीखा है।</strong> Script इसे ऐसे labelers के साथ दोबारा चलाता है जो सिर्फ़
+    54% बार सहमत होते हैं: ranking बच जाती है (corr 0.973) पर good-minus-terse
+    reward का अंतर 1.52 से गिरकर 0.09 रह जाता है, और stage 3 पट्टे के ख़िलाफ़
+    इन्हीं margins का सौदा करता है। Paper का 73% पूरी pipeline की छत है —
+    इसीलिए §3.4 इस पर इतना समय देता है कि labelers कौन थे।
+  </div>
+
+  <h2>Stage 3: reward model के ख़िलाफ़ अभ्यास, पट्टे पर</h2>
+
+  <p>
+    अब policy prompts के जवाब देती है (क़रीब 31k), reward model उन जवाबों को
+    score देता है, और policy को ऊँचा score पाने के लिए update किया जाता है —
+    साथ में SFT model के ख़िलाफ़ प्रति-token KL penalty, ताकि वह भटक न जाए।
+    Paper PPO इस्तेमाल करता है; <a href="../rlhf/">RLHF page</a> sampling और
+    clipping से गुज़रता है और मैं उसे दोबारा नहीं निकाल रहा। हर prompt पर छह
+    candidates होने से मैं expectation ठीक-ठीक निकाल लेता हूँ और बाक़ी autograd
+    पर छोड़ देता हूँ।
+  </p>
+
+<pre><code>  prompt:    "Explain what a mutex is."
+  RLHF says: "A lock one thread holds while the rest wait; guards shared state."
+
+  stage          mass on answers   true helpfulness   KL to SFT
+  base                     0.053               0.79       1.795
+  sft                      0.876               5.69       0.000
+  rlhf                     0.999               <span class="ok">7.68</span>       0.539
+
+  ceiling (always the good answer): 8.12
+  RLHF policy on prompt 0: terse 0.10, good 0.88, padded 0.015
+  closed form pi_SFT * exp(r/beta): max |diff| from trained policy = 0.0005</code></pre>
+
+  <p>
+    RL ने वह किया जो SFT नहीं कर सका: उसने उस सिक्के वाली बराबरी को 0.10 / 0.88
+    कर दिया, क्योंकि reward model दोनों को क्रम में लगाता है। Helpfulness
+    0.79 → 5.69 → 7.68, जबकि छत 8.12 है। और फूला हुआ निबंध चढ़कर 1.5% पर आ गया
+    — RM उसे ज़्यादा आँकता है, policy उधर झुकी, और वह रुकी सिर्फ़ पट्टे की वजह
+    से। पट्टा किसलिए है, यह दो प्रयोग दिखाते हैं।
+  </p>
+
+  <h3>पट्टे को ग़लत model से बाँधिए</h3>
+
+  <p>
+    SFT छोड़ दीजिए — RL base model से शुरू कीजिए और पट्टा भी base model से
+    बाँधिए, क्योंकि आपके पास वही एक model है। या SFT कीजिए, फिर KL को base
+    model की तरफ़ मोड़ दीजिए।
+  </p>
+
+<pre><code>  steps until true helpfulness &gt;= 7.0, then the final numbers:
+
+  run                     steps   mass on answers   helpfulness
+  SFT -&gt; RL, KL to SFT       <span class="ok">7</span>             0.999          7.68
+  base -&gt; RL, KL to base never             0.892          <span class="hl">4.75</span>
+  SFT -&gt; RL, KL to base  never             0.892          4.75
+
+  helpfulness at step 10:  with SFT 7.41   without SFT 1.50</code></pre>
+
+  <p>
+    Base model से देखें तो अच्छा जवाब एक rounding error भर है, इसलिए RL के पास
+    धकेलने को कुछ ख़ास नहीं होता और वह रेंगता है: दस steps के बाद 7.41 की जगह
+    1.50. और पट्टा पूरे रास्ते continuations की तरफ़ खींचता रहता है, इसलिए वह
+    4.75 पर ठहर जाता है और कभी पहुँचता ही नहीं। दोनों ख़राब rows <em>एक ही</em>
+    जगह ख़त्म होती हैं: मंज़िल reference model तय करता है, शुरुआत सिर्फ़ रफ़्तार
+    तय करती है। (असली sampling में शुरुआत यह भी तय करती है कि आपको कभी अच्छा
+    जवाब दिखेगा भी या नहीं।)
+  </p>
+
+  <h3>पट्टा हटा दीजिए</h3>
+
+<pre><code>  beta = 0 says: "Great question! A mutex, or mutual exclusion... [4 paragraphs]"
+  probability on the padded answer, prompt 0: 0.999
+  beta = 0.7       mass on answers: 0.999   true helpfulness: 7.68
+  beta = 0         mass on answers: 1.000   true helpfulness: <span class="hl">3.50</span>
+
+  + 240 comparisons on the drifted policy's own outputs, RM retrained:
+    corr with hidden score on ALL 24 responses: 0.979   (was 0.708)
+    RM on prompt 0: good 6.28  padded 4.04   (was good 6.12, padded 7.86)
+  retrained RM     mass on answers: 0.998   true helpfulness: <span class="ok">7.63</span></code></pre>
+
+  <p>
+    β = 0 पर policy सीधे उसी तरफ़ भागती है जिसे reward model ज़्यादा आँकता है:
+    वह निबंध, 99.9% बार, और true helpfulness 7.68 से गिरकर 3.50 हो जाती है।
+    यही reward hacking है, और RM अपने ही data पर कभी ग़लत नहीं था — उससे ऐसी
+    चीज़ के बारे में पूछा गया जो उसने कभी देखी ही नहीं थी। Paper में दो पहरे
+    हैं: KL penalty, और comparisons सिर्फ़ SFT model के नहीं बल्कि train हो रहे
+    models के outputs पर भी इकट्ठा करना, फिर उन सब पर RM को दोबारा train करना —
+    ताकि वह वहीं train हो जहाँ policy सचमुच रहती है। Block का निचला आधा हिस्सा
+    यही सुधार है: भटकी हुई policy के outputs पर 240 नए comparisons, RM सीखता है
+    कि निबंध अच्छे जवाब से ख़राब है (6.28 के मुक़ाबले 4.04), और policy वापस आ
+    जाती है।
+  </p>
+
+  <div class="note">
+    <strong>ChatGPT यही recipe है।</strong> वही तीन stages, बस demonstrations
+    और comparisons single turns की जगह संवाद के रूप में लिखे जाते हैं। अगर आप
+    ये stages और हर एक से क्या मिलता है यह समझा सकते हैं, तो आप ChatGPT समझा
+    सकते हैं।
+  </div>
+
+  <h2>Alignment tax, और PPO-ptx</h2>
+
+  <p>
+    Stage 3 ने model को उसमें बेहतर बनाया जो labelers चाहते थे, और उसमें ख़राब
+    जिसे कोई जाँच नहीं रहा था: RLHF के बाद SQuAD, DROP, HellaSwag और एक
+    French→English translation task जैसे सार्वजनिक benchmarks पर scores गिर
+    गए। Paper इसे alignment tax कहता है। यह फिर से distribution shift है — 31k
+    API-जैसे prompts पर अभ्यास कीजिए और आप उससे भटक जाते हैं जो pretraining
+    corpus ने सिखाया था, पट्टे पर रहते हुए भी। इलाज γ वाला term है: PPO चलाते
+    हुए ही pretraining data के batches पर सामान्य next-token gradient steps
+    लेते रहिए। वे इसे PPO-ptx कहते हैं, और यह labeler preference में बहुत कम
+    क़ीमत पर खोया हुआ ज़्यादातर benchmark performance वापस दिला देता है।
+    Programmer वाला अनुवाद: refactor करते समय पुराना regression suite चलता
+    रहने दीजिए। यह script में नहीं है क्योंकि toy के पास मिलाने को कोई
+    pretraining corpus ही नहीं; यह बस एक और loss term है, जोड़ा हुआ, और
+    दिलचस्प बात यह है कि वह वहाँ है क्यों।
+  </p>
+
+</section>
+
 
 <hr>
 
@@ -491,6 +1131,37 @@ def rlhf(init_logits, ref_logits, reward, beta, steps=300, lr=0.1):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

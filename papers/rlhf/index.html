@@ -7,7 +7,7 @@
 <meta name="description" content="RLHF explained as code: you can't write the loss for 'helpful', but people can pick A or B. A reward model fitted to votes, a policy on a KL leash, and Goodhart's law printed as a table. Runnable NumPy plus a tiny PyTorch reward model.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -36,6 +36,15 @@
       everything below runs from it. NumPy, plus a tiny CPU PyTorch reward model.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
 
   <p>
     I'm an AI Engineer. I've shipped models, done the MLOps, and I have fine-tuned
@@ -276,6 +285,547 @@ same reward model, beta = 0: true reward peaked at step 100
     this one.
   </div>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. Models ship செய்திருக்கிறேன், MLOps
+    செய்திருக்கிறேன், human preference data-வில் fine-tune கூட
+    செய்திருக்கிறேன் — ஆனால் அந்த library ஒவ்வொரு நகரும் பகுதியையும்
+    <code>trainer.train()</code>-க்குப் பின்னால் மறைத்து வைத்திருந்தது.
+    reward model எதன் மேல் train ஆனது, KL term ஏன் இருக்கிறது, "reward
+    hacking" என்று ஏன் எல்லோரும் ஒரு பழமொழி போலச் சொல்கிறார்கள் — எதுவும்
+    எனக்குத் தெரியாது. கணிதம் பிரச்சனை இல்லை. இது முழுக்க முழுக்க ஒரு A/B
+    test, tester-க்குப் பதிலாக tester-ஓட ஒரு model நிற்கிறது — இதை யாரும்
+    சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (reward model, policy,
+    reference, KL penalty, Bradley-Terry, reward hacking, Goodhart, PPO,
+    REINFORCE…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற
+    papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>Spec எழுத முடியாது, ஆனால் A/B test செய்ய முடியும்</h2>
+
+  <p>இந்த உணர்வு உங்களுக்குத் தெரியும், அதிலிருந்து வெளியேறும் வழியும் தெரியும்:</p>
+
+<pre><code>def loss(answer):
+    # "helpful, honest, harmless"
+    return ???                  # இந்த வரியை யாராலும் எழுத முடியாது
+
+def which_is_better(answer_a, answer_b):
+    return ask_a_person()       # ஒரு bit: "A" அல்லது "B". மனிதர்கள் இதில் கெட்டி</code></pre>
+
+  <p>
+    அந்த bits-ஐ வைத்து நீங்கள் செய்வதுதான் RLHF. வாக்கை (vote) கணிக்கும் ஒரு
+    model-ஐப் பொருத்துங்கள்: அதுதான் <strong>reward model</strong>. அந்த
+    model-ஐ மகிழ்விக்கும்படி உங்கள் language model-ன் knobs-ஐத் திருப்புங்கள்:
+    அதுதான் <strong>policy</strong>. பிறகு policy-ஐ ஒரு சங்கிலியில்
+    கட்டிவையுங்கள், reward model பார்த்தே இராத பதில்களை நோக்கி அது ஓடிவிடக்
+    கூடாது: அதுதான் <strong>KL penalty</strong>.
+  </p>
+
+<pre><code>r      = fit(votes)                          # reward model: answer -&gt; score
+policy = climb(r, start=ref, leash=beta)     # r-ஐ optimise செய், ref அருகில் இரு</code></pre>
+
+  <p>இதுதான் முழுக் கருத்து. இரண்டு வரிகள் — பிரச்சனை இரண்டாவதில் வசிக்கிறது.</p>
+
+  <p class="thanglish">
+    Reward model = vote-ai predict panra model. Policy = adha sandhosha
+    paduthura maadhiri thiruppura model. KL penalty = policy reference-ai vittu
+    romba dooram poga vidaama katti vaikkura leash.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-ஓட உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Reward model</strong> r(x, y)</td><td>Prompt x-க்கு answer y-ன் கற்றுக்கொண்ட score, votes-ஐ வைத்துப் பொருத்தப்பட்டது</td><td>A/B tester-ஓட ஒரு model</td></tr>
+      <tr><td><strong>Bradley-Terry</strong></td><td>P(A beats B) = σ(r<sub>A</sub> − r<sub>B</sub>)</td><td>Elo. இரண்டு scores, ஒரு sigmoid, ஒரு probability</td></tr>
+      <tr><td><strong>Policy</strong> π</td><td>Tune செய்யப்படும் model. Answers மேல் ஒரு distribution</td><td>நீங்கள் ship செய்யும் பொருள்</td></tr>
+      <tr><td><strong>Reference</strong> π<sub>ref</sub></td><td>நீங்கள் தொடங்கிய supervised model. Frozen</td><td><code>main</code> branch</td></tr>
+      <tr><td><strong>KL penalty</strong>, β</td><td>π எவ்வளவு தூரம் π<sub>ref</sub>-ஐ விட்டு விலகிவிட்டது, reward-லிருந்து கழிக்கப்படுகிறது; β அதன் coefficient</td><td>உங்களுக்கு அனுமதிக்கப்பட்ட diff-ன் அளவு. β = leash-ன் நீளம், கையால் tune செய்வது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Scores இல்லாமல் votes ஏன்? Surveys-க்குப் பதிலாக A/B tests ஏன் ஓட்டுகிறீர்களோ
+    அதே காரணம்தான்: absolute scores-ல் ("இது 7-ஆ?") மனிதர்கள் நிலையற்றவர்கள்,
+    relative-ல் ("இதுதான்") நிலையானவர்கள். Noise மறைந்துவிடாது, close calls-க்கு
+    நகர்கிறது — அங்கே அது செய்யும் சேதம் மிகக் குறைவு. Supervised fine-tuning-ஆல்
+    பிரதி எடுக்க மட்டுமே முடியும்; ஒரு நல்ல பதில் இன்னொரு நல்ல பதிலை வெல்லும்
+    என்பதை அதனால் கற்க முடியாது. ஒரு vote-ஆல் முடியும். இதையெல்லாம்
+    சுற்றியிருக்கும் மூன்று-நிலைப் pipeline (demonstrations, comparisons, RL)
+    <a href="../instructgpt/">InstructGPT page</a>-ல் இருக்கிறது; அதை இரண்டாவதாகப்
+    படியுங்கள்.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">loss<sub>RM</sub> = −log σ( r(x, y<sub>win</sub>) − r(x, y<sub>lose</sub>) )<br>
+  objective(π) = E<sub>y∼π</sub>[ r(x, y) ] − β · KL( π ‖ π<sub>ref</sub> )</div>
+
+  <p>இரண்டு models இருப்பதால் இரண்டு வரிகள். ஒவ்வொன்றையும் pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>r(win) − r(lose)</code></td><td>scalar</td><td>Margin. Positive என்றால் model மனிதருடன் ஒத்துப்போகிறது</td></tr>
+      <tr><td><code>σ(·)</code></td><td>(0, 1)</td><td>Margin → உண்மையில் நடந்த vote-க்கு model தரும் probability</td></tr>
+      <tr><td><code>−log</code></td><td>scalar</td><td>ஒரு bit மேல் cross-entropy. நம்பிக்கையுடன் சரியாக இருந்தால் சிறியது, நம்பிக்கையுடன் தவறாக இருந்தால் மிகப் பெரியது</td></tr>
+      <tr><td><code>E<sub>y∼π</sub>[r]</code></td><td>scalar</td><td>Policy எழுதுவதற்கு reward model தரும் சராசரி score. <strong>Optimiser ஏறுவது இதன் மேல்தான்</strong></td></tr>
+      <tr><td><code>β · KL(π ‖ π<sub>ref</sub>)</code></td><td>scalar ≥ 0</td><td>E<sub>y∼π</sub>[log π(y) − log π<sub>ref</sub>(y)]: policy எவ்வளவு விலகியது, nats-ல். β = 0 என்றால் leash இல்லை</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>எவ்வளவு என்று கேட்காதே, எது என்று கேள்</h2>
+  <p>
+    Script ஒரு பொம்மை உலகைக் கட்டுகிறது: 4 prompts, ஒவ்வொன்றுக்கும் 8 candidate
+    answers, ஒரு answer என்பது நான்கு எண்கள் (<code>correct</code>,
+    <code>length</code>, <code>hedges</code>, <code>polite</code>). மனிதர்கள் என்ன
+    விரும்புகிறார்கள் என்பதை ஒரு மறைவான <code>true_reward</code> சொல்கிறது:
+    சரியாக இருப்பதுதான் பெரும்பகுதி, ஒரு நீளத்திற்கு மேல் யாரும் படிப்பதில்லை.
+    Reward model அந்த function-ஐப் பார்ப்பதே இல்லை, <code>correct</code>-ஐயும்
+    பார்ப்பதில்லை: அது text படிக்கிறது, எனவே <code>sounds</code> கிடைக்கிறது —
+    correctness பற்றிய அதன் சொந்த யூகம், நான்கில் ஒரு முறை தவறு. <strong>Reference
+    policy</strong> (supervised model) குறுகிய-முதல்-நடுத்தர பதில்களை எழுதுகிறது,
+    அதன் demonstrations எழுதியது போல. Prompt 0:
+  </p>
+
+<pre><code>  ans  correct sounds length hedges polite   TRUE   ref%
+    0        0      1   0.10   0.02   0.14   0.11  20.3%
+    1        1      1   0.23   0.44   0.36   2.71  20.3%
+    2        1      1   0.36   0.21   0.12   2.81  20.3%
+    3        1      1   0.49   0.06   0.65   <span class="ok">3.56  20.3%  ← மிகச் சிறந்த பதில்</span>
+    4        0      0   0.61   0.13   0.28  -0.04  12.2%
+    5        0      1   0.74   0.38   0.09  -1.62   4.3%
+    6        1      1   0.87   0.34   0.58   0.90   1.6%
+    7        1      1   1.00   0.04   0.93   <span class="hl">0.67   0.6%  ← நீளமான சுவர். அரிது</span></code></pre>
+
+  <p>
+    இப்போது ஒரு மனிதரிடம் கேளுங்கள்: reference உண்மையில் எழுதக்கூடிய இரண்டு
+    பதில்களை எடுத்து, இரண்டையும் காட்டி, வென்றதைப் பதிவு செய்யுங்கள். மனிதர்
+    Bradley-Terry வழியில் noisy, P(A wins) = σ(true<sub>A</sub> − true<sub>B</sub>),
+    எனவே ஒரு close call என்பது நாணயச் சுழற்சி.
+  </p>
+
+<pre><code>  prompt  A  B   true_A  true_B   P(A wins)   label
+       1  5  0     2.13   -0.25        <span class="hl">0.92   0  ← தவறு. 8% வாய்ப்பு உண்டு</span>
+       2  1  2    -0.61    2.63        0.04   2
+       1  2  0    -0.09   -0.25        0.54   0
+       1  2  1    -0.09    0.38        0.38   1
+       0  2  0     2.81    0.11        0.94   2
+       1  1  3     0.38    3.18        <span class="ok">0.06   3</span></code></pre>
+
+  <p>
+    Label என்பது ஒரு bit. 7/10 இல்லை, rubric இல்லை, ஒன்று ஏன் வென்றது என்பது
+    பற்றி data-வில் எதுவும் இல்லை. அந்த "ஏன்"-ஐ, தான் பார்க்கக்கூடியதிலிருந்து
+    reward model யூகிக்க வேண்டும்.
+  </p>
+
+  <h2>Reward model என்பது tester-ஓட ஒரு model</h2>
+  <p>
+    ஒரு 4→16→1 network, அந்த 2000 bits மேல், <code>−log σ(r(win) −
+    r(lose))</code> தவிர வேறொன்றுமில்லாமல் train ஆகிறது. Loss 0.6805-லிருந்து
+    0.4591-க்குப் போய் அங்கேயே நிற்கிறது, ஏனெனில் votes-ஏ noisy. முக்கியமான ஒரே
+    சோதனை: அதன் <em>வரிசை</em> உண்மையுடன் பொருந்துகிறதா — பொருந்துகிறது: 32
+    answers மேல் rank correlation 0.877, 2000 clicks-லிருந்து. Scale அதற்குச்
+    சொந்தமானது, ஏனெனில் Bradley-Terry வித்தியாசங்களை மட்டுமே பார்க்கிறது, எனவே
+    Stiennon et al. செய்வது போல நான் normalise செய்கிறேன் (reference answers
+    சராசரியாக 0 score; β எல்லா model-க்கும் ஒரே பொருள் தரும்படி unit spread-க்கும்
+    scale செய்கிறேன்). வரிசை மட்டுமே ஒப்பிடத்தக்கது.
+  </p>
+
+  <h2>சங்கிலியுடன் ஏறு</h2>
+  <p>
+    Policy என்பது 8 answers மேல் ஒரு softmax, prompt-க்கு ஒரு வரி logits, மேலும்
+    அது <em>reference-ஆகவே தொடங்குகிறது</em>. ஒவ்வொரு step-லும்: answers sample
+    செய், ஒவ்வொன்றையும் reward model-ஆல் score செய், leash-ஐக் கழி, logits-ஐ
+    லேசாகத் தள்ளு. Sample-க்கான reward சரியாக InstructGPT-ஓடதுதான்,
+    <code>rm(answer) − β · (log π(answer) − log π_ref(answer))</code>: KL penalty
+    reward-க்குள் மடிக்கப்பட்டது. Papers PPO பயன்படுத்துகின்றன. நான் REINFORCE
+    பயன்படுத்துகிறேன் — அதே objective, இருக்கும் மிக எளிய estimator-உடன்:
+    logits-ஐப் பொறுத்து log-softmax-ன் gradient <code>onehot(answer) −
+    probs</code>, எனவே policy gradient ஒரே வரி. Optimiser Adam, papers-ல்
+    இருப்பது போல. Optimiser பார்ப்பது <code>rm</code>; <code>true</code> என்பது
+    நீங்கள் ஒருபோதும் பார்க்க முடியாதது.
+  </p>
+
+<pre><code>  step    0   rm  0.000   true  1.117   KL  0.000
+  step   50   rm  0.870   true  2.524   KL  0.682
+  step  100   rm  0.881   true  2.517   KL  0.688
+  step  150   rm  0.889   true  2.528   KL  0.701
+  step  200   rm  0.892   true  2.532   KL  0.706
+  step  250   rm  0.893   true  2.534   KL  0.707
+  step  300   rm  0.894   true  <span class="ok">2.535</span>   KL  0.709
+
+same reward model, beta = 0: true reward peaked at step 100
+(3.103), then ended at <span class="hl">2.704</span></code></pre>
+
+  <div class="note">
+    <strong>KL term ஒரு அலங்காரம் இல்லை.</strong> அதே reward model, leash இல்லை:
+    true reward 3.103-ல் உச்சம் தொட்டு 2.704-ல் முடிகிறது. நல்ல reward model-க்கும்
+    மென்மையான இடங்கள் உண்டு, ஒரு optimiser அவற்றைக் கண்டுபிடித்தே தீரும். Tester-ஐ
+    மகிழ்விப்பதற்குப் பதிலாக tester-ஓட model-ஐ policy சுரண்டுவதைத் தடுப்பது
+    leash-தான்.
+  </div>
+
+  <p class="thanglish">
+    Beta = 0 vachaa rm score merike merike poidum, aana true reward peak aagi
+    apram keela iranga aarambichidum. Adha thaan reward hacking-nu solraanga.
+  </p>
+
+  <h2>Goodhart-ன் விதி, ஒரு table-ல்</h2>
+  <p>
+    இப்போது யாராவது எனக்குக் காட்டியிருக்க வேண்டும் என்று நினைக்கும் சோதனை. 2000-க்குப்
+    பதிலாக 150 comparisons மேல் reward model-ஐ train செய்யுங்கள். Data இருக்கும்
+    இடத்தில் அது இன்னும் ஓரளவு நல்லது (reference எழுதும் குறுகிய பதில்கள் மேல்
+    rank correlation 0.802). β = 0 வையுங்கள். இரண்டு columns-ஐயும் பாருங்கள்.
+  </p>
+
+<pre><code>  step    0   rm  0.000   true  1.117   KL  0.000
+  step   25   rm  0.722   true  2.181   KL  0.475
+  step   50   rm  1.062   true  2.656   KL  1.039
+  step   75   rm  1.296   <span class="ok">true  2.870   KL  1.745  ← உச்சம்</span>
+  step  100   rm  1.390   true  2.841   KL  2.064
+  step  125   rm  1.695   true  2.488   KL  2.543
+  step  150   rm  1.759   true  2.418   KL  2.749
+  step  175   rm  1.815   true  2.217   KL  2.919
+  step  200   rm  1.930   true  1.782   KL  3.640
+  step  225   rm  1.937   true  1.763   KL  3.700
+  step  250   rm  1.939   true  1.760   KL  3.716
+  step  275   rm  1.940   true  1.758   KL  3.725
+  step  300   rm  1.941   true  <span class="hl">1.758   KL  3.730  ← rm இன்னும் ஏறுகிறது</span></code></pre>
+
+  <p>
+    Step 75 வரை இது மகிழ்ச்சியான பாதை போலவே தெரிகிறது. பிறகு reward model
+    விரும்பும், மனிதர்கள் விரும்பாத ஒன்றை policy கண்டுபிடிக்கிறது, அதன் பிறகு
+    columns இரண்டும் நிரந்தரமாகப் பிரிந்துவிடுகின்றன. நான்கு prompts-ல் இரண்டு
+    நீளமான சுவரில் முடிந்தன. Prompt 2, மெலிந்த model ஒவ்வொரு பதிலைப் பற்றி
+    நினைப்பதுடன்:
+  </p>
+
+<pre><code>  ans  correct sounds length hedges polite   TRUE   ref%      rm
+    0        0      0   0.10   0.01   0.35   0.34  20.3%   -0.16
+    1        0      1   0.23   0.58   0.27  -0.61  20.3%   -2.49
+    2        1      1   0.36   0.46   0.33   2.63  20.3%    0.69
+    3        1      1   0.49   0.04   0.54   <span class="ok">3.49  20.3%    1.21  ← உண்மை தேர்வு</span>
+    4        1      1   0.61   0.44   0.32   2.55  12.2%    0.84
+    5        1      0   0.74   0.00   0.62   2.48   4.3%   -0.42
+    6        1      1   0.87   0.04   0.66   1.42   1.6%   -1.98
+    7        1      0   1.00   0.01   0.93   <span class="hl">0.72   0.6%    1.90  ← model-ஓட தேர்வு</span></code></pre>
+
+  <p>
+    Data இருக்கும் இடத்தில் reward model நன்றாகவே இருக்கிறது. Data-க்கு வெளியே அது
+    யூகிக்கிறது: reference கிட்டத்தட்ட ஒருபோதும் நீளமான சுவரை எழுதியதில்லை, எனவே
+    300 answers-ல் model அதை இரண்டு முறை மட்டுமே பார்த்தது, அங்கே அதன் score
+    என்பது ஒரு 16-unit network தற்செயலாக extrapolate செய்வது. Policy மிக உயர்ந்த
+    score-ஐத் தேடிப் போனது, அந்த உயர்ந்த score இருந்தது யூகம் உயரமாக விழுந்த
+    இடத்தில்தான். அதுதான் நீங்கள் சந்திக்கப் போகும் bug. "reward model தவறு"
+    என்பது அல்ல — அது எப்போதும் உண்மைதான் — "optimiser என்பது அது எங்கே தவறு
+    என்பதைத் தேடும் ஒரு search" என்பதுதான். பெரிய அளவில் Gao et al. இதே வளைவை
+    வரைந்தார்கள் (<a href="https://arxiv.org/abs/2210.10760">arXiv 2210.10760</a>):
+    reward model score மேலே, உண்மையான preference மேலே பிறகு கீழே, KL-ன் function-ஆக.
+  </p>
+
+  <p class="thanglish">
+    Reward model data irukkura idathula nallaa dhaan irukku. Veliya pona adhu
+    yoosikkuthu, optimiser andha thappa dhaan thedi pogudhu.
+  </p>
+
+  <h2>Leash-ன் நீளம்</h2>
+  <p>அதே மெலிந்த reward model, β-ன் மூன்று மதிப்புகள், ஒவ்வொன்றுக்கும் 300 steps.</p>
+
+<pre><code>  beta    final rm   final true   final KL
+   0.0       1.941        <span class="hl">1.758</span>      3.730
+   0.5       1.237        <span class="ok">2.360</span>      1.143
+   2.0       0.385        1.605      0.091
+
+  the reference itself:          true      1.117   KL    0.000</code></pre>
+
+  <p>
+    β = 0, <code>rm</code>-ல் வெல்கிறது, <code>true</code>-ல் தோற்கிறது. β = 2
+    reference-ஐ விட்டு அரிதாகவே நகர்கிறது. நடுவில் இருப்பதுதான் கருத்து: reward
+    model எந்தப் பகுதியில் train ஆனதோ அதை விட்டு வெளியேறாமல் reference-ஐ விட
+    மேம்படுத்துங்கள். β derive செய்யப்படுவதில்லை, tune செய்யப்படுகிறது.
+  </p>
+
+  <div class="note">
+    <strong>Interview-ல் சொல்ல வேண்டிய எண் β அல்ல, KL.</strong> "நீங்கள் நம்பிய
+    model-ஐ விட்டு policy எவ்வளவு தூரம் விலகியிருக்கிறது?" என்பதுதான் ஒரு RLHF
+    run-ன் health metric, nats-ல் அறிவிக்கப்படுகிறது. KL term ஏன் இருக்கிறது என்று
+    கேட்டால், இதற்கு மேலே இருக்கும் table-ஐக் காட்டுங்கள்.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने models ship किए हैं, MLOps किया है, और human
+    preference data पर fine-tune भी किया है — पर उस library ने हर चलता-फिरता
+    पुर्ज़ा <code>trainer.train()</code> के पीछे छिपा रखा था। reward model किस
+    चीज़ पर train हुआ, KL term वहाँ क्यों है, और लोग "reward hacking" को
+    कहावत की तरह क्यों बोलते हैं — मैं आपको कुछ नहीं बता सकता था। समस्या गणित
+    नहीं थी। किसी ने यह नहीं बताया कि यह पूरी चीज़ एक A/B test है, जिसमें
+    tester की जगह tester का एक model खड़ा है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (reward model, policy,
+    reference, KL penalty, Bradley-Terry, reward hacking, Goodhart, PPO,
+    REINFORCE…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में
+    आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>Spec नहीं लिख सकते, पर A/B test कर सकते हैं</h2>
+
+  <p>यह एहसास आप जानते हैं, और इससे निकलने का रास्ता भी:</p>
+
+<pre><code>def loss(answer):
+    # "helpful, honest, harmless"
+    return ???                  # यह लाइन कोई नहीं लिख सकता
+
+def which_is_better(answer_a, answer_b):
+    return ask_a_person()       # एक bit: "A" या "B". लोग इसमें अच्छे हैं</code></pre>
+
+  <p>
+    उन्हीं bits के साथ जो आप करते हैं, वही RLHF है। एक model fit कीजिए जो vote
+    की भविष्यवाणी करे: वह है <strong>reward model</strong>। अपने language
+    model के knobs इस तरह घुमाइए कि वह model ख़ुश हो: वह है
+    <strong>policy</strong>। और policy को पट्टे पर रखिए, ताकि वह ऐसे जवाबों
+    की तरफ़ न भटक जाए जो reward model ने कभी देखे ही नहीं: वह है
+    <strong>KL penalty</strong>।
+  </p>
+
+<pre><code>r      = fit(votes)                          # reward model: answer -&gt; score
+policy = climb(r, start=ref, leash=beta)     # r को optimise करो, पर ref के पास रहो</code></pre>
+
+  <p>पूरा विचार यही है। दो लाइनें, और मुसीबत दूसरी में रहती है।</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Reward model</strong> r(x, y)</td><td>Prompt x के जवाब y का सीखा हुआ score, votes पर fit किया गया</td><td>A/B tester का एक model</td></tr>
+      <tr><td><strong>Bradley-Terry</strong></td><td>P(A beats B) = σ(r<sub>A</sub> − r<sub>B</sub>)</td><td>Elo. दो scores, एक sigmoid, एक probability</td></tr>
+      <tr><td><strong>Policy</strong> π</td><td>वह model जिसे tune किया जा रहा है। जवाबों पर एक distribution</td><td>जो चीज़ आप ship करते हैं</td></tr>
+      <tr><td><strong>Reference</strong> π<sub>ref</sub></td><td>वह supervised model जहाँ से आपने शुरू किया। Frozen</td><td><code>main</code> branch</td></tr>
+      <tr><td><strong>KL penalty</strong>, β</td><td>π, π<sub>ref</sub> से कितना खिसक चुका है, reward में से घटाया जाता है; β उसका coefficient है</td><td>कितने बड़े diff की इजाज़त है। β पट्टे की लंबाई है, हाथ से tune होती है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Scores क्यों नहीं, votes क्यों? उसी वजह से जिस वजह से आप surveys की जगह
+    A/B tests चलाते हैं: absolute scores में ("क्या यह 7 है?") लोग अस्थिर
+    होते हैं और relative में ("यह वाला") स्थिर। Noise ग़ायब नहीं होता, वह
+    close calls में चला जाता है, जहाँ उससे सबसे कम नुक़सान होता है। Supervised
+    fine-tuning सिर्फ़ नक़ल कर सकती है; वह यह नहीं सीख सकती कि एक अच्छा जवाब
+    दूसरे अच्छे जवाब को हरा देता है। एक vote यह सीख सकता है। इस सब को लपेटने
+    वाली तीन-चरणों की pipeline (demonstrations, comparisons, RL)
+    <a href="../instructgpt/">InstructGPT page</a> है; उसे दूसरे नंबर पर
+    पढ़िए।
+  </p>
+
+  <h2>वह एक formula</h2>
+
+  <div class="formula">loss<sub>RM</sub> = −log σ( r(x, y<sub>win</sub>) − r(x, y<sub>lose</sub>) )<br>
+  objective(π) = E<sub>y∼π</sub>[ r(x, y) ] − β · KL( π ‖ π<sub>ref</sub> )</div>
+
+  <p>दो लाइनें क्योंकि दो models हैं। हर एक को pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>r(win) − r(lose)</code></td><td>scalar</td><td>Margin. Positive का मतलब model इंसान से सहमत है</td></tr>
+      <tr><td><code>σ(·)</code></td><td>(0, 1)</td><td>Margin → जो vote सचमुच हुआ, उसे model जो probability देता है</td></tr>
+      <tr><td><code>−log</code></td><td>scalar</td><td>एक bit पर cross-entropy. आश्वस्त और सही हो तो छोटा, आश्वस्त और ग़लत हो तो बहुत बड़ा</td></tr>
+      <tr><td><code>E<sub>y∼π</sub>[r]</code></td><td>scalar</td><td>Policy जो लिखती है उसका औसत reward-model score. <strong>Optimiser इसी पर चढ़ता है</strong></td></tr>
+      <tr><td><code>β · KL(π ‖ π<sub>ref</sub>)</code></td><td>scalar ≥ 0</td><td>E<sub>y∼π</sub>[log π(y) − log π<sub>ref</sub>(y)]: policy कितनी खिसकी, nats में। β = 0 यानी कोई पट्टा नहीं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>कितना नहीं, कौन-सा पूछिए</h2>
+  <p>
+    Script एक खिलौना दुनिया बनाती है: 4 prompts, हर एक के 8 candidate जवाब, और
+    एक जवाब यानी चार संख्याएँ (<code>correct</code>, <code>length</code>,
+    <code>hedges</code>, <code>polite</code>)। एक छिपा हुआ
+    <code>true_reward</code> बताता है कि लोग क्या चाहते हैं: सही होना ही
+    ज़्यादातर है, और एक लंबाई के बाद कोई पढ़ता नहीं। Reward model वह function
+    कभी नहीं देखता, और <code>correct</code> भी नहीं देखता: वह text पढ़ता है,
+    इसलिए उसे <code>sounds</code> मिलता है — correctness का उसका अपना अंदाज़ा,
+    चार में से एक बार ग़लत। <strong>Reference policy</strong> (supervised
+    model) छोटे-से-मँझोले जवाब लिखती है, जैसे उसके demonstrations लिखते थे।
+    Prompt 0:
+  </p>
+
+<pre><code>  ans  correct sounds length hedges polite   TRUE   ref%
+    0        0      1   0.10   0.02   0.14   0.11  20.3%
+    1        1      1   0.23   0.44   0.36   2.71  20.3%
+    2        1      1   0.36   0.21   0.12   2.81  20.3%
+    3        1      1   0.49   0.06   0.65   <span class="ok">3.56  20.3%  ← सचमुच सबसे अच्छा जवाब</span>
+    4        0      0   0.61   0.13   0.28  -0.04  12.2%
+    5        0      1   0.74   0.38   0.09  -1.62   4.3%
+    6        1      1   0.87   0.34   0.58   0.90   1.6%
+    7        1      1   1.00   0.04   0.93   <span class="hl">0.67   0.6%  ← शब्दों की दीवार. दुर्लभ</span></code></pre>
+
+  <p>
+    अब किसी इंसान से पूछिए: दो ऐसे जवाब चुनिए जो reference सचमुच लिखती, दोनों
+    दिखाइए, और जीतने वाला दर्ज कीजिए। इंसान Bradley-Terry तरीक़े से noisy है,
+    P(A wins) = σ(true<sub>A</sub> − true<sub>B</sub>), इसलिए क़रीबी मुक़ाबला
+    सिक्के का उछाल है।
+  </p>
+
+<pre><code>  prompt  A  B   true_A  true_B   P(A wins)   label
+       1  5  0     2.13   -0.25        <span class="hl">0.92   0  ← ग़लत. 8% मौक़ा था</span>
+       2  1  2    -0.61    2.63        0.04   2
+       1  2  0    -0.09   -0.25        0.54   0
+       1  2  1    -0.09    0.38        0.38   1
+       0  2  0     2.81    0.11        0.94   2
+       1  1  3     0.38    3.18        <span class="ok">0.06   3</span></code></pre>
+
+  <p>
+    Label एक bit है। कोई 7/10 नहीं, कोई rubric नहीं, और data में कहीं यह नहीं
+    लिखा कि एक <em>क्यों</em> जीता। वह "क्यों" reward model को उसी से अंदाज़ा
+    लगाना है जो वह देख सकता है।
+  </p>
+
+  <h2>Reward model, tester का ही एक model है</h2>
+  <p>
+    एक 4→16→1 network, उन्हीं 2000 bits पर train किया गया, सिर्फ़ <code>−log
+    σ(r(win) − r(lose))</code> के सहारे। Loss 0.6805 से 0.4591 तक जाता है और
+    वहीं रुक जाता है, क्योंकि votes ख़ुद noisy हैं। असल जाँच सिर्फ़ यह है कि
+    उसका <em>क्रम</em> सच्चाई से मिलता है या नहीं, और मिलता है: सभी 32 जवाबों
+    पर rank correlation 0.877, 2000 clicks से। Scale उसका अपना है, क्योंकि
+    Bradley-Terry सिर्फ़ अंतर देखता है, इसलिए मैं वैसे ही normalise करता हूँ
+    जैसे Stiennon et al. करते हैं (reference जवाबों का औसत score 0; साथ ही
+    unit spread पर scale, ताकि β का मतलब हर model के लिए एक ही रहे)। सिर्फ़
+    क्रम की तुलना की जा सकती है।
+  </p>
+
+  <h2>पट्टे के साथ चढ़िए</h2>
+  <p>
+    Policy 8 जवाबों पर एक softmax है, हर prompt के लिए logits की एक पंक्ति, और
+    वह <em>reference से ही शुरू होती है</em>। हर step: जवाब sample कीजिए, हर
+    एक को reward model से score कीजिए, पट्टा घटाइए, logits को हल्का धकेलिए।
+    हर sample का reward ठीक InstructGPT वाला है, <code>rm(answer) − β · (log
+    π(answer) − log π_ref(answer))</code>: KL penalty reward के भीतर मोड़ दिया
+    गया। Papers PPO इस्तेमाल करते हैं। मैं REINFORCE इस्तेमाल करता हूँ, वही
+    objective सबसे सीधे estimator के साथ: logits के सापेक्ष log-softmax का
+    gradient <code>onehot(answer) − probs</code> है, इसलिए policy gradient एक
+    लाइन है। Optimiser Adam है, जैसे papers में। Optimiser को <code>rm</code>
+    दिखता है; <code>true</code> वह है जो आपको कभी नहीं दिखता।
+  </p>
+
+<pre><code>  step    0   rm  0.000   true  1.117   KL  0.000
+  step   50   rm  0.870   true  2.524   KL  0.682
+  step  100   rm  0.881   true  2.517   KL  0.688
+  step  150   rm  0.889   true  2.528   KL  0.701
+  step  200   rm  0.892   true  2.532   KL  0.706
+  step  250   rm  0.893   true  2.534   KL  0.707
+  step  300   rm  0.894   true  <span class="ok">2.535</span>   KL  0.709
+
+same reward model, beta = 0: true reward peaked at step 100
+(3.103), then ended at <span class="hl">2.704</span></code></pre>
+
+  <div class="note">
+    <strong>KL term सजावट नहीं है।</strong> वही reward model, पट्टा नहीं: true
+    reward 3.103 पर चोटी छूता है और 2.704 पर ख़त्म होता है। एक ठीक-ठाक reward
+    model में भी कमज़ोर जगहें होती हैं, और optimiser उन्हें ढूँढ ही लेगा।
+    पट्टा ही वह चीज़ है जो policy को tester को ख़ुश करने के बजाय tester के
+    model का फ़ायदा उठाने से रोकती है।
+  </div>
+
+  <h2>Goodhart का नियम, एक table में</h2>
+  <p>
+    अब वह प्रयोग जो काश किसी ने मुझे दिखाया होता। Reward model को 2000 के
+    बजाय 150 comparisons पर train कीजिए। जहाँ उसके पास data है वहाँ वह अब भी
+    ठीक है (reference जो छोटे जवाब लिखती है उन पर rank correlation 0.802)।
+    β = 0 रखिए। अब दोनों columns देखिए।
+  </p>
+
+<pre><code>  step    0   rm  0.000   true  1.117   KL  0.000
+  step   25   rm  0.722   true  2.181   KL  0.475
+  step   50   rm  1.062   true  2.656   KL  1.039
+  step   75   rm  1.296   <span class="ok">true  2.870   KL  1.745  ← चोटी</span>
+  step  100   rm  1.390   true  2.841   KL  2.064
+  step  125   rm  1.695   true  2.488   KL  2.543
+  step  150   rm  1.759   true  2.418   KL  2.749
+  step  175   rm  1.815   true  2.217   KL  2.919
+  step  200   rm  1.930   true  1.782   KL  3.640
+  step  225   rm  1.937   true  1.763   KL  3.700
+  step  250   rm  1.939   true  1.760   KL  3.716
+  step  275   rm  1.940   true  1.758   KL  3.725
+  step  300   rm  1.941   true  <span class="hl">1.758   KL  3.730  ← rm अब भी चढ़ रहा है</span></code></pre>
+
+  <p>
+    Step 75 तक यह सुखद रास्ता लगता है। फिर policy को कुछ ऐसा मिल जाता है जो
+    reward model को बहुत पसंद है और लोगों को बिल्कुल नहीं, और उसके बाद दोनों
+    columns हमेशा के लिए अलग हो जाते हैं। चार में से दो prompts शब्दों की
+    दीवार पर ख़त्म हुए। Prompt 2, हर जवाब पर पतले model की राय के साथ:
+  </p>
+
+<pre><code>  ans  correct sounds length hedges polite   TRUE   ref%      rm
+    0        0      0   0.10   0.01   0.35   0.34  20.3%   -0.16
+    1        0      1   0.23   0.58   0.27  -0.61  20.3%   -2.49
+    2        1      1   0.36   0.46   0.33   2.63  20.3%    0.69
+    3        1      1   0.49   0.04   0.54   <span class="ok">3.49  20.3%    1.21  ← सच्चाई की पसंद</span>
+    4        1      1   0.61   0.44   0.32   2.55  12.2%    0.84
+    5        1      0   0.74   0.00   0.62   2.48   4.3%   -0.42
+    6        1      1   0.87   0.04   0.66   1.42   1.6%   -1.98
+    7        1      0   1.00   0.01   0.93   <span class="hl">0.72   0.6%    1.90  ← model की पसंद</span></code></pre>
+
+  <p>
+    जहाँ data है वहाँ reward model ठीक है। अपने data के बाहर वह अंदाज़ा लगा
+    रहा है: reference ने शब्दों की दीवार लगभग कभी नहीं लिखी, इसलिए model ने
+    300 जवाबों में उसे दो बार देखा, और वहाँ उसका score वही है जो एक 16-unit
+    network संयोग से extrapolate कर देता है। Policy सबसे ऊँचे score की तलाश
+    में निकली, और सबसे ऊँचा score वहीं था जहाँ अंदाज़ा ऊपर गिरा। यही वह bug
+    है जो आपको मिलेगा। "reward model ग़लत है" नहीं, जो हमेशा सच है, बल्कि
+    "optimiser एक search है, ठीक उन्हीं जगहों की जहाँ वह ग़लत है"। बड़े पैमाने
+    पर Gao et al. ने यही वक्र खींचा
+    (<a href="https://arxiv.org/abs/2210.10760">arXiv 2210.10760</a>): reward
+    model score ऊपर, असली preference पहले ऊपर फिर नीचे, KL के फलन के रूप में।
+  </p>
+
+  <h2>पट्टे की लंबाई</h2>
+  <p>वही पतला reward model, β के तीन मान, हर एक पर 300 steps।</p>
+
+<pre><code>  beta    final rm   final true   final KL
+   0.0       1.941        <span class="hl">1.758</span>      3.730
+   0.5       1.237        <span class="ok">2.360</span>      1.143
+   2.0       0.385        1.605      0.091
+
+  the reference itself:          true      1.117   KL    0.000</code></pre>
+
+  <p>
+    β = 0, <code>rm</code> पर जीतता है और <code>true</code> पर हारता है।
+    β = 2 reference से मुश्किल से हटता है। बीच वाला ही असल बात है: reference
+    से बेहतर होइए, पर उस इलाक़े से बाहर जाए बिना जहाँ reward model train हुआ
+    था। β निकाला नहीं जाता, tune किया जाता है।
+  </p>
+
+  <div class="note">
+    <strong>Interview वाला नंबर β नहीं, KL है।</strong> "जिस model पर आपने
+    भरोसा किया था, उससे policy कितनी दूर खिसकी?" — यही एक RLHF run का health
+    metric है, nats में बताया जाता है। कोई पूछे कि KL term क्यों है, तो इससे
+    ऊपर वाली table की तरफ़ इशारा कीजिए।
+  </div>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -444,6 +994,37 @@ def train_policy(rm_table, R_true, ref_logp, beta, steps=300, lr=0.05,
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>
