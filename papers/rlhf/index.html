@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reinforcement Learning from Human Feedback — for programmers</title>
+<meta name="description" content="RLHF explained as code: you can't write the loss for 'helpful', but people can pick A or B. A reward model fitted to votes, a policy on a KL leash, and Goodhart's law printed as a table. Runnable NumPy plus a tiny PyTorch reward model.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Reinforcement Learning from Human Feedback</h1>
+    <p class="paper-meta">Christiano et al., 2017 · Stiennon et al., 2020</p>
+    <p class="lede">
+      Explained as an A/B test with a model of the tester in the loop, because
+      that's the only version I could hold in my head.
+    </p>
+    <p>
+      <a href="rlhf_from_scratch.py" download>Download rlhf_from_scratch.py</a> —
+      everything below runs from it. NumPy, plus a tiny CPU PyTorch reward model.
+    </p>
+  </div>
+
+  <p>
+    I'm an AI Engineer. I've shipped models, done the MLOps, and I have fine-tuned
+    on human preference data with a library that hid every moving part behind
+    <code>trainer.train()</code>. I could not have told you what the reward model
+    was trained on, why the KL term is there, or why people say "reward hacking"
+    like a proverb. The maths wasn't the problem. Nobody told me the whole thing
+    is an A/B test, with a model of the tester standing in for the tester.
+  </p>
+
+  <h2>You can't spec it, but you can A/B test it</h2>
+
+  <p>You know this feeling, and you know the way out of it:</p>
+
+<pre><code>def loss(answer):
+    # "helpful, honest, harmless"
+    return ???                  # nobody can write this line
+
+def which_is_better(answer_a, answer_b):
+    return ask_a_person()       # one bit: "A" or "B". People are good at this</code></pre>
+
+  <p>
+    RLHF is what you do with those bits. Fit a model that predicts the vote: the
+    <strong>reward model</strong>. Turn your language model's knobs to make that
+    model happy: the <strong>policy</strong>. And keep the policy on a leash, so
+    it can't wander off into answers the reward model has never seen: the
+    <strong>KL penalty</strong>.
+  </p>
+
+<pre><code>r      = fit(votes)                          # reward model: answer -&gt; score
+policy = climb(r, start=ref, leash=beta)     # optimise r, but stay near ref</code></pre>
+
+  <p>That's the whole idea. Two lines, and the second is where the trouble lives.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Reward model</strong> r(x, y)</td><td>A learned score for answer y to prompt x, fitted to votes</td><td>A model of the A/B tester</td></tr>
+      <tr><td><strong>Bradley-Terry</strong></td><td>P(A beats B) = σ(r<sub>A</sub> − r<sub>B</sub>)</td><td>Elo. Two scores, one sigmoid, a probability</td></tr>
+      <tr><td><strong>Policy</strong> π</td><td>The model being tuned. A distribution over answers</td><td>The thing you ship</td></tr>
+      <tr><td><strong>Reference</strong> π<sub>ref</sub></td><td>The supervised model you started from. Frozen</td><td>The <code>main</code> branch</td></tr>
+      <tr><td><strong>KL penalty</strong>, β</td><td>How far π has drifted from π<sub>ref</sub>, charged against the reward; β is the coefficient</td><td>The size of diff you're allowed. β is the leash length, tuned by hand</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Why votes and not scores? For the reason you run A/B tests instead of surveys:
+    people are inconsistent at absolute scores ("is this a 7?") and consistent at
+    relative ones ("this one"). The noise doesn't vanish, it moves to the close
+    calls, where it does the least damage. Supervised fine-tuning can only
+    imitate; it can't learn that one good answer beats another good answer. A vote
+    can. The three-stage pipeline that wraps all this (demonstrations,
+    comparisons, RL) is the <a href="../instructgpt/">InstructGPT page</a>; read
+    it second.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">loss<sub>RM</sub> = −log σ( r(x, y<sub>win</sub>) − r(x, y<sub>lose</sub>) )<br>
+  objective(π) = E<sub>y∼π</sub>[ r(x, y) ] − β · KL( π ‖ π<sub>ref</sub> )</div>
+
+  <p>Two lines because there are two models. Read each as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>r(win) − r(lose)</code></td><td>scalar</td><td>The margin. Positive means the model agrees with the person</td></tr>
+      <tr><td><code>σ(·)</code></td><td>(0, 1)</td><td>Margin → the probability the model gives to the vote that actually happened</td></tr>
+      <tr><td><code>−log</code></td><td>scalar</td><td>Cross-entropy on one bit. Small when confident and right, huge when confident and wrong</td></tr>
+      <tr><td><code>E<sub>y∼π</sub>[r]</code></td><td>scalar</td><td>Average reward-model score of what the policy writes. <strong>This is what the optimiser climbs</strong></td></tr>
+      <tr><td><code>β · KL(π ‖ π<sub>ref</sub>)</code></td><td>scalar ≥ 0</td><td>E<sub>y∼π</sub>[log π(y) − log π<sub>ref</sub>(y)]: how far the policy has drifted, in nats. β = 0 means no leash</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Ask which, not how much</h2>
+  <p>
+    The script builds a toy world: 4 prompts, 8 candidate answers each, and an
+    answer is four numbers (<code>correct</code>, <code>length</code>,
+    <code>hedges</code>, <code>polite</code>). A hidden <code>true_reward</code>
+    says what people want: being right is most of it, and past a certain length
+    nobody reads it. The reward model never sees that function, and never sees
+    <code>correct</code> either: it reads text, so it gets <code>sounds</code>,
+    its own guess at correctness, wrong one time in four. The <strong>reference
+    policy</strong> (the supervised model) writes short-to-medium answers, like
+    its demonstrations did. Prompt 0:
+  </p>
+
+<pre><code>  ans  correct sounds length hedges polite   TRUE   ref%
+    0        0      1   0.10   0.02   0.14   0.11  20.3%
+    1        1      1   0.23   0.44   0.36   2.71  20.3%
+    2        1      1   0.36   0.21   0.12   2.81  20.3%
+    3        1      1   0.49   0.06   0.65   <span class="ok">3.56  20.3%  ← the truly best answer</span>
+    4        0      0   0.61   0.13   0.28  -0.04  12.2%
+    5        0      1   0.74   0.38   0.09  -1.62   4.3%
+    6        1      1   0.87   0.34   0.58   0.90   1.6%
+    7        1      1   1.00   0.04   0.93   <span class="hl">0.67   0.6%  ← the wall of text. Rare</span></code></pre>
+
+  <p>
+    Now ask a person: pick two answers the reference would actually write, show
+    both, record the winner. The person is noisy the Bradley-Terry way, P(A wins)
+    = σ(true<sub>A</sub> − true<sub>B</sub>), so a close call is a coin flip.
+  </p>
+
+<pre><code>  prompt  A  B   true_A  true_B   P(A wins)   label
+       1  5  0     2.13   -0.25        <span class="hl">0.92   0  ← wrong. 8% chance of that</span>
+       2  1  2    -0.61    2.63        0.04   2
+       1  2  0    -0.09   -0.25        0.54   0
+       1  2  1    -0.09    0.38        0.38   1
+       0  2  0     2.81    0.11        0.94   2
+       1  1  3     0.38    3.18        <span class="ok">0.06   3</span></code></pre>
+
+  <p>
+    The label is one bit. No 7/10, no rubric, and nothing in the data says
+    <em>why</em> one won. The reward model has to guess the why from what it can
+    see.
+  </p>
+
+  <h2>The reward model is a model of the tester</h2>
+  <p>
+    A 4→16→1 network, trained on 2000 of those bits with nothing but <code>−log
+    σ(r(win) − r(lose))</code>. The loss goes from 0.6805 to 0.4591 and stops
+    there, because the votes themselves are noisy. The only check that matters is
+    whether its <em>ordering</em> matches the truth, and it does: rank correlation
+    0.877 over all 32 answers, from 2000 clicks. The scale is its own, because
+    Bradley-Terry only sees differences, so I normalise the way Stiennon et al. do
+    (reference answers score 0 on average; I also scale to unit spread so β means
+    the same for every model here). Only the order is comparable.
+  </p>
+
+  <h2>Climb it, on a leash</h2>
+  <p>
+    The policy is a softmax over the 8 answers, one row of logits per prompt, and
+    it <em>starts as the reference</em>. Each step: sample answers, score each
+    with the reward model, subtract the leash, nudge the logits. The reward per
+    sample is exactly InstructGPT's, <code>rm(answer) − β · (log π(answer) − log
+    π_ref(answer))</code>: the KL penalty folded into the reward. The papers use
+    PPO. I use REINFORCE, the same objective with the plainest estimator there is:
+    the gradient of log-softmax with respect to the logits is <code>onehot(answer)
+    − probs</code>, so the policy gradient is one line. The optimiser is Adam, as
+    in the papers. <code>rm</code> is what the optimiser sees; <code>true</code>
+    is what you never get to see.
+  </p>
+
+<pre><code>  step    0   rm  0.000   true  1.117   KL  0.000
+  step   50   rm  0.870   true  2.524   KL  0.682
+  step  100   rm  0.881   true  2.517   KL  0.688
+  step  150   rm  0.889   true  2.528   KL  0.701
+  step  200   rm  0.892   true  2.532   KL  0.706
+  step  250   rm  0.893   true  2.534   KL  0.707
+  step  300   rm  0.894   true  <span class="ok">2.535</span>   KL  0.709
+
+same reward model, beta = 0: true reward peaked at step 100
+(3.103), then ended at <span class="hl">2.704</span></code></pre>
+
+  <div class="note">
+    <strong>The KL term is not decoration.</strong> Same reward model, no leash:
+    true reward peaks at 3.103 and ends at 2.704. Even a decent reward model has
+    soft spots, and an optimiser will find them. The leash is what stops the
+    policy exploiting the model of the tester instead of pleasing the tester.
+  </div>
+
+  <h2>Goodhart's law, in a table</h2>
+  <p>
+    Now the experiment I wish someone had shown me. Train the reward model on 150
+    comparisons instead of 2000. It is still decent where it has data (rank
+    correlation 0.802 on the short answers the reference writes). Set β = 0. Watch
+    the two columns.
+  </p>
+
+<pre><code>  step    0   rm  0.000   true  1.117   KL  0.000
+  step   25   rm  0.722   true  2.181   KL  0.475
+  step   50   rm  1.062   true  2.656   KL  1.039
+  step   75   rm  1.296   <span class="ok">true  2.870   KL  1.745  ← peak</span>
+  step  100   rm  1.390   true  2.841   KL  2.064
+  step  125   rm  1.695   true  2.488   KL  2.543
+  step  150   rm  1.759   true  2.418   KL  2.749
+  step  175   rm  1.815   true  2.217   KL  2.919
+  step  200   rm  1.930   true  1.782   KL  3.640
+  step  225   rm  1.937   true  1.763   KL  3.700
+  step  250   rm  1.939   true  1.760   KL  3.716
+  step  275   rm  1.940   true  1.758   KL  3.725
+  step  300   rm  1.941   true  <span class="hl">1.758   KL  3.730  ← rm still climbing</span></code></pre>
+
+  <p>
+    Up to step 75 this looks like the happy path. Then the policy finds something
+    the reward model loves and people don't, and the columns part ways for good.
+    Two of the four prompts ended on the wall of text. Prompt 2, with the thin
+    model's opinion of each answer:
+  </p>
+
+<pre><code>  ans  correct sounds length hedges polite   TRUE   ref%      rm
+    0        0      0   0.10   0.01   0.35   0.34  20.3%   -0.16
+    1        0      1   0.23   0.58   0.27  -0.61  20.3%   -2.49
+    2        1      1   0.36   0.46   0.33   2.63  20.3%    0.69
+    3        1      1   0.49   0.04   0.54   <span class="ok">3.49  20.3%    1.21  ← truth's pick</span>
+    4        1      1   0.61   0.44   0.32   2.55  12.2%    0.84
+    5        1      0   0.74   0.00   0.62   2.48   4.3%   -0.42
+    6        1      1   0.87   0.04   0.66   1.42   1.6%   -1.98
+    7        1      0   1.00   0.01   0.93   <span class="hl">0.72   0.6%    1.90  ← model's pick</span></code></pre>
+
+  <p>
+    The reward model is fine where it has data. Off its data it is guessing: the
+    reference almost never wrote a wall of text, so the model saw one twice in 300
+    answers, and its score out there is whatever a 16-unit network happens to
+    extrapolate. The policy went looking for the highest score, and the highest
+    score is where the guess landed high. That's the bug you will hit. Not "the
+    reward model is wrong", which is always true, but "the optimiser is a search
+    for where it is wrong". At scale, Gao et al. drew this exact curve
+    (<a href="https://arxiv.org/abs/2210.10760">arXiv 2210.10760</a>): reward
+    model score up, real preference up then down, as a function of KL.
+  </p>
+
+  <h2>The leash length</h2>
+  <p>Same thin reward model, three values of β, 300 steps each.</p>
+
+<pre><code>  beta    final rm   final true   final KL
+   0.0       1.941        <span class="hl">1.758</span>      3.730
+   0.5       1.237        <span class="ok">2.360</span>      1.143
+   2.0       0.385        1.605      0.091
+
+  the reference itself:          true      1.117   KL    0.000</code></pre>
+
+  <p>
+    β = 0 wins on <code>rm</code> and loses on <code>true</code>. β = 2 barely
+    leaves the reference. The middle is the point: improve on the reference
+    without leaving the region where the reward model was trained. β is tuned, not
+    derived.
+  </p>
+
+  <div class="note">
+    <strong>The interview number is not β, it's the KL.</strong> "How far has the
+    policy drifted from the model you trusted?" is the health metric of an RLHF
+    run, reported in nats. Asked why the KL term exists, point at the table above
+    this one.
+  </div>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism: the world, the votes, the policy and its gradient. A
+  4→16→1 PyTorch model for the one part that needs backprop, fitting the reward
+  model. CPU, about four seconds. No function over 33 lines. Below, the two
+  functions that are the paper; the toy world, the votes, the reward-model fit and
+  seven lines of Adam are in the script.
+</p>
+<p>
+  <a href="rlhf_from_scratch.py" download><strong>Download the full
+  script</strong></a> — 444 lines including six runnable demos. Then:
+</p>
+<pre><code>python3 rlhf_from_scratch.py</code></pre>
+
+<pre><code>def bradley_terry_loss(r_win, r_lose):
+    return -F.logsigmoid(r_win - r_lose).mean()
+
+
+def train_policy(rm_table, R_true, ref_logp, beta, steps=300, lr=0.05,
+                 batch=64, log_every=25, verbose=False, moving_reference=False,
+                 plain_sgd=False, seed=0):
+    rng = np.random.default_rng(seed)
+    logits = ref_logp.copy()                         # start AT the reference
+    penalty_ref = ref_logp
+    state = [np.zeros_like(logits), np.zeros_like(logits)]
+    history = []
+    for step in range(0, steps + 1):
+        logp = log_softmax(logits)
+        probs = np.exp(logp)
+        if moving_reference:
+            penalty_ref = logp.copy()          # the break: leash tied to self
+        if step % log_every == 0:
+            rm_now = (probs * rm_table).sum(-1).mean()        # optimiser's view
+            true_now = (probs * R_true).sum(-1).mean()        # what you never see
+            row = (step, rm_now, true_now, kl_to_reference(logp, ref_logp))
+            history.append(row)
+            if verbose:
+                print("  step {:4d}   rm {:6.3f}   true {:6.3f}   KL {:6.3f}"
+                      .format(*row))
+        grad = np.zeros_like(logits)
+        for p in range(N_PROMPTS):
+            a = rng.choice(N_RESP, size=batch, p=probs[p])    # sample answers
+            R = rm_table[p, a] - beta * (logp[p, a] - penalty_ref[p, a])
+            adv = R - R.mean()                                        # baseline
+            grad[p] = (adv[:, None] * (np.eye(N_RESP)[a] - probs[p])).mean(0)
+        if plain_sgd:
+            logits += lr * grad                                       # the break
+        else:
+            logits += adam_step(grad, state, lr, step + 1)            # ascent
+    return np.exp(log_softmax(logits)), history</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. You debug for a living —
+  reverse-engineering from broken behaviour is your native mode. Demo 6 runs most
+  of these and prints them side by side.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Set <code>BETA = 0.0</code></td><td>Demo 3's true reward peaks at 3.103 and ends at 2.704; demo 5's row reads true 1.758 at KL 3.730. <code>rm</code> never stops climbing. That's reward hacking.</td></tr>
+    <tr><td>Change <code>collect_comparisons(2000, …)</code> in demo 2 to <code>150</code></td><td>Rank correlation 0.877 → 0.580. The wall of text was shown 2 times instead of 23. The model now has a blind spot, and a policy with β = 0 will find it.</td></tr>
+    <tr><td>Swap to <code>r_lose - r_win</code> in <code>bradley_terry_loss</code></td><td>Rank correlation −0.893. The model learned the opposite ordering, confidently, and the policy will climb straight down.</td></tr>
+    <tr><td>Pass <code>moving_reference=True</code> (the reference is the current policy every step)</td><td>The penalty reads exactly 0 forever. Final true 1.758 at KL 3.730, identical to β = 0. A leash tied to yourself is not a leash.</td></tr>
+    <tr><td>Pass <code>plain_sgd=True</code> and 3000 steps</td><td>True reward 3.194 and no hack at all. Nothing is fixed: the reward model is exactly as wrong. A rare answer's probability grows as its own square under plain SGD, so the policy never explores far enough to ask. A real language model has a million ways to be longer, so it always asks.</td></tr>
+    <tr><td>Train on the truth: <code>train_policy(R_true, R_true, …)</code></td><td>True 3.187 of a possible 3.196 in 300 steps, no reward model needed. You will never be able to do this. <code>R_true</code> is the thing you were trying to build.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers — but only the method sections. In
+  Christiano et al. that is §2.2: optimising the policy, eliciting preferences,
+  fitting the reward function. In Stiennon et al., the method section's paragraphs
+  on reward models and human feedback policies, plus the figure where reward-model
+  score and human preference part ways as KL grows. Skip the Atari and MuJoCo
+  results and the summarisation leaderboard. You'll find the papers are just the
+  comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  Honestly: a sigmoid, a log, and a weighted average. The log is there so a
+  product of probabilities becomes a sum. The "expectation" in the objective is a
+  weighted average over what the policy would say, and the KL is a weighted
+  average of log-ratios. That is the whole formula sheet.
+</p>
+<p>
+  The one derivative worth knowing by heart: the gradient of log-softmax with
+  respect to the logits is <code>onehot − probs</code>. It is one line of
+  <code>train_policy</code> and it is the entire policy gradient. PPO's clipping
+  is engineering on top of it; <code>loss.backward()</code> handles the reward
+  model. What separates AI engineers here is not the maths. It is knowing that the
+  reward model is a model, that models are wrong off their data, and that an
+  optimiser is a search for exactly the places where it is wrong.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the reward model as a model of the tester, and the
+  leash as the only thing between you and Goodhart. These fill in what I skipped.
+  The second paper, <a href="https://arxiv.org/abs/2009.01325">Stiennon et al.,
+  2020</a>, is the same recipe applied to a language model: the reward model
+  becomes a language model with one output unit, the policy becomes GPT, and the
+  KL penalty is written the way I wrote it. Its over-optimisation figure is my
+  demo 4, measured with real people.
+</p>
+
+<ul class="paper-list">
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1706.03741">
+      <span class="paper-title">Deep Reinforcement Learning from Human Preferences</span>
+      <span class="paper-meta">Christiano, Leike, Brown, Martic, Legg, Amodei, 2017. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read §2.2 with the script open: it is the code above, with an Atari agent
+      where I have a softmax over eight answers. They also choose <em>which</em>
+      pairs to ask about, a part I skipped entirely.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/rlhf">
+      <span class="paper-title">Illustrating Reinforcement Learning from Human Feedback</span>
+      <span class="paper-meta">Lambert, Castricato, von Werra, Havrilla. Diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      The three-stage pipeline as pictures, and PPO named properly. Where I said
+      "the papers use PPO, this is REINFORCE", this shows what the swap involves.
+      Best first read if diagrams land better than a printed table.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2024-11-28-reward-hacking/">
+      <span class="paper-title">Reward Hacking in Reinforcement Learning</span>
+      <span class="paper-meta">Lilian Weng. A survey, with the maths.</span>
+    </a>
+    <p class="paper-pitch">
+      My demo 4 is one instance. This is the taxonomy: why it happens, what has
+      been tried against it, and what it looks like in deployed language models.
+      Go here when "it found the blind spot" stops being enough.
+    </p>
+  </li>
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Hugging Face → Christiano §2.2 →
+  Stiennon → Weng. Increasing depth, and each assumes the previous. One more, for
+  later: DPO (<a href="https://arxiv.org/abs/2305.18290">Rafailov et al.,
+  2023</a>) showed you can skip the explicit reward model and train the policy on
+  the comparisons directly. Read it once you can explain why the leash is in the
+  objective above, because the leash is the part DPO keeps.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

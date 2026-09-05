@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generative Adversarial Nets — for programmers</title>
+<meta name="description" content="The GAN paper explained as code. A forger and a detective that train each other: two losses, two optimisers, taking turns. Runnable NumPy plus a tiny CPU PyTorch loop, seven demos, and the four ways training falls over.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Generative Adversarial Nets</h1>
+    <p class="paper-meta">Goodfellow et al., 2014</p>
+    <p class="lede">
+      Explained as a training loop with two optimisers, because that's what it is — plus the
+      four ways it falls over, which the paper only hints at.
+    </p>
+    <p>
+      <a href="gan_from_scratch.py" download>Download gan_from_scratch.py</a>
+      — everything below runs from it. NumPy, plus a tiny CPU PyTorch model for the training
+      step. Twelve seconds on a laptop.
+    </p>
+  </div>
+
+  <p>
+    I'm an AI Engineer. I've shipped models, done the MLOps, and I still couldn't read this
+    paper. Not because of the maths — there's one formula and one proof, and both fit on a
+    page. Because nobody told me the trick: <em>the loss function is a second model</em>. Once
+    you see that, the paper is a training loop you've already written, with one extra
+    optimiser. The interesting part is what goes wrong.
+  </p>
+
+  <h2>The loss function is a model</h2>
+
+  <p>You know this loop:</p>
+
+<pre><code>for x, y in data:
+    loss = criterion(model(x), y)   # criterion is fixed: MSE, cross-entropy
+    loss.backward(); opt.step()</code></pre>
+
+  <p>The criterion is a constant judge. It never learns. A GAN swaps it for a judge that is learning too — <em>against you</em>:</p>
+
+<pre><code>fake   = G(z)                                                 # forger's attempt
+loss_D = -(log(D(real)) + log(1 - D(fake.detach()))).mean()   # detective's turn
+loss_D.backward(); opt_D.step()
+
+loss_G = -log(D(G(z))).mean()                                 # forger's turn
+loss_G.backward(); opt_G.step()                               # and repeat</code></pre>
+
+  <p>
+    That's the whole paper's beating heart. Two networks, two losses, taking turns. The
+    paper's own analogy is counterfeiters versus police; mine is a red team and a blue team,
+    each retraining on the other's latest output. The clever bit is that the forger never
+    sees the real data. All it ever sees is the detective's verdict — the detective <em>is</em>
+    its loss function, and that loss gets sharper every round. Nobody writes down p(x). No
+    likelihood, no loss curve that means "better": just samples and backprop. That is why it
+    worked, and why the logs are so hard to read.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>G</strong>, generator</td><td>Noise in, sample out</td><td>A procedural generator: seed → level</td></tr>
+      <tr><td><strong>D</strong>, discriminator</td><td>Sample in, P(real) out</td><td>A spam filter, retrained every round</td></tr>
+      <tr><td><strong>z</strong></td><td>Random noise fed to G</td><td>The RNG seed. Different seed, different sample</td></tr>
+      <tr><td><strong>p<sub>g</sub></strong></td><td>The distribution of G(z) over all z</td><td>Everything your generator can produce, as a histogram</td></tr>
+      <tr><td><strong>.detach()</strong></td><td>A tensor with its history cut off</td><td>A read-only view. Gradients stop here</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">min<sub>G</sub> max<sub>D</sub> V(D, G) = E<sub>x∼p<sub>data</sub></sub>[log D(x)] + E<sub>z∼p<sub>z</sub></sub>[log(1 − D(G(z)))]</div>
+
+  <p>Equation 1. Read it as a scoreboard the detective wants high and the forger wants low:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>z</code></td><td>(n, noise_dim)</td><td>n random seeds. Gaussian noise; nothing learned</td></tr>
+      <tr><td><code>G(z)</code></td><td>(n, 1)</td><td>n fakes. Here a point on a line; in the paper, an image</td></tr>
+      <tr><td><code>D(x)</code></td><td>(n, 1)</td><td>Probability of "real", between 0 and 1</td></tr>
+      <tr><td><code>log D(x)</code></td><td>mean over n</td><td><strong>Detective's score on real data.</strong> 0 if it's sure, very negative if wrong</td></tr>
+      <tr><td><code>log(1 − D(G(z)))</code></td><td>mean over n</td><td><strong>Detective's score on fakes.</strong> 0 if it spots every one</td></tr>
+      <tr><td><code>max<sub>D</sub></code></td><td>—</td><td>The detective's turn: push both terms up</td></tr>
+      <tr><td><code>min<sub>G</sub></code></td><td>—</td><td>The forger's turn: push the second term down. It can't touch the first</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    In code that is <code>d_loss</code> and <code>g_loss_saturating</code>, two lines each,
+    in the code section below. D maximises the whole thing, so its loss is the negative; G
+    only appears in the second term. Then the one practical trick the paper adds in the
+    paragraph after equation 1: don't train G to minimise log(1 − D(G(z))), train it to
+    maximise log D(G(z)). Same fixed point, "much stronger gradients early in learning".
+    That's <code>g_loss</code>, the non-saturating loss. It is a recommendation, not part of
+    the theory — the proofs are about equation 1. Everyone implements the recommendation.
+    The next two sections show why.
+  </p>
+
+  <h2>The best detective is a ratio, and −log 4 is the finish line</h2>
+  <p>
+    Section 4 proves two things, and both are arithmetic you can check on a grid with no
+    networks. Proposition 1: for a fixed forger, the best possible detective is
+    D<sup>*</sup>(x) = p<sub>data</sub>(x) / (p<sub>data</sub>(x) + p<sub>g</sub>(x)).
+    Theorem 1: with that detective the value of the game is
+    −log 4 + 2·JSD(p<sub>data</sub> ‖ p<sub>g</sub>), so its global minimum is −log 4 = −1.386,
+    reached exactly when the forger's distribution equals the data's. My data is three
+    Gaussian bumps at −6, −2 and +2 — the paper's own Figure 1 is a 1-D toy like this.
+    Three candidate forgers, scored in closed form:
+  </p>
+
+<pre><code>-log 4 = -1.386   &lt;- the value of the game if the forger wins
+
+forger                        D*(-6)  D*(-2)  V(D*,G)   -log4 + 2*JSD
+only the bump at -2            <span class="hl">1.000</span>   0.250   -0.750     -0.750
+all three, twice as wide       0.667   0.667   -1.203     -1.203
+p_data exactly                 0.500   0.500   <span class="ok">-1.386</span>     -1.386</code></pre>
+
+  <p>
+    Where the forger never goes (x = −6, first row) the detective is certain: 1.000. Where
+    the forger matches the data exactly, the detective is a coin flip everywhere, 0.500, and
+    the value bottoms out at −log 4. The last two columns agree to three decimals: that's
+    Theorem 1, checked numerically.
+  </p>
+
+  <div class="note">
+    <strong>The number you'll be asked about is −log 4.</strong> It's log ½ + log ½: a
+    detective that says 0.5 to everything, scored on both terms. It is the forger's win
+    condition, not the detective's — a D loss heading there is good news.
+  </div>
+
+  <h2>Two losses, and why the trick exists</h2>
+  <p>D is a sigmoid on a logit. Differentiate each forger loss with respect to that logit and each collapses to a single term:</p>
+
+<pre><code>   saturating      log(1 - D)  -&gt;  d/dlogit = -D        -&gt; 0 as D -&gt; 0
+   non-saturating  -log D      -&gt;  d/dlogit = -(1 - D)  -&gt; 1 as D -&gt; 0
+
+    D(G(z))    |grad| saturating    |grad| non-sat
+      0.500                0.500             0.500
+      0.100                0.100             0.900
+      0.010                <span class="hl">0.010</span>             0.990
+      0.001                0.001             <span class="ok">0.999</span></code></pre>
+
+  <p>
+    Early in training the forger is terrible and the detective is sure of it: D(G(z)) ≈ 0.
+    The loss as written then has a gradient of ≈ 0 — exactly when the forger most needs one.
+    The trick flips it: the worse you're doing, the bigger the push. Measured on the real
+    networks, after the detective gets a 1000-round head start against a frozen forger:
+  </p>
+
+<pre><code>   D(G(z)) after the head start: 0.0071
+   |gradG| with saturating (eq. 1)         : <span class="hl">0.0213</span>
+   |gradG| with non-saturating (the trick) : <span class="ok">2.2216</span></code></pre>
+
+  <p>
+    Same networks, same noise, same detective. A hundredth of the signal. "Saturating" means
+    the sigmoid saturating — the same disease as an unscaled softmax in the attention paper.
+    Numerical hygiene, again.
+  </p>
+
+  <h2>The game, played properly</h2>
+  <p>
+    One D step, one G step, 4000 rounds, Adam. The script prints the detective's accuracy on
+    real and on fake data, the paper's V, the norm of the forger's gradient, the spread of
+    1000 fakes, and how many land within 1.0 of each bump:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    500     0.83 / 0.29   -1.363    0.064      3.42      108 /  177 /  308
+   1000     0.29 / 0.67   -1.380    0.081      3.10      192 /   95 /  342
+   2000     0.64 / 0.58   -1.369    0.116      3.34      210 /  165 /  358
+   3000     0.61 / 0.41   -1.377    0.492      3.64      224 /  258 /  346
+   4000     0.94 / 0.09   <span class="ok">-1.384</span>    0.215      3.78      <span class="ok">238 /  272 /  330</span>
+  final fakes: mean -2.01  std 3.78  off every bump: 160 of 1000</code></pre>
+
+  <p>
+    Three things to read. The last column: fakes on all three bumps, not perfectly even, still
+    evening out. V: parked at −1.38, which is −log 4 to two decimals — the forger has
+    effectively won. And the accuracy pair: 0.94 / 0.09 looks lopsided until you add them.
+    Real plus fake ≈ 1.03 is chance — a detector that says "real" to everything scores
+    exactly 1.00 on that sum. There is nothing left to detect. Note the detective's learning
+    rate is a quarter of the forger's (5e-4 against 2e-3); at equal rates, on this data, the
+    middle bump starves. The game is a balancing act, and the rest of this page is what
+    happens when the balance goes.
+  </p>
+
+  <h2>The failure modes have names</h2>
+  <p>
+    The theory assumes the detective is optimal at every step and the forger has unlimited
+    capacity. Neither is ever true, and section 6 admits it in a sentence: G must not be
+    trained too much without updating D, "to avoid the Helvetica scenario in which G
+    collapses too many values of z to the same value of x". Everyone who trains one of these
+    hits that and its cousins. Four of them, each one edit away from the healthy run.
+  </p>
+
+  <h3>Mode collapse: the forger out-runs the detective</h3>
+  <p>Give the forger ten times the learning rate, <code>lr_g=2e-2</code>. Every 100 rounds:</p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    100     1.00 / 0.00   -1.373    0.013      0.27        0 /    0 /    9
+    300     0.60 / 1.00   -1.276    0.038      <span class="hl">0.31</span>        0 /  <span class="hl">992</span> /    0
+    400     0.00 / 1.00   -1.222    0.795      4.68      116 /    1 /    0
+    600     0.53 / 0.65   -1.372    0.022      5.74       58 /   52 /  571
+    800     0.33 / 1.00   -1.275    0.009      0.24      <span class="hl">648</span> /    0 /    0
+   1000     0.54 / 0.46   -1.397    0.042      3.32      276 /   59 /  397</code></pre>
+
+  <p>
+    Fake std 0.31: a thousand samples in one heap. At round 300 the heap is on −2, at 600 it's
+    on +2, at 800 it's on −6. The forger finds the one place the detective currently rates
+    "real", moves everything there, the detective catches up, and it hops. It never learns to
+    be in three places at once, because one place is always the cheapest next move. That's
+    the Helvetica scenario, with counts. What did <em>not</em> collapse in my runs: five G
+    steps per D step at the normal rate, and a 1-dimensional z. In 1-D a staircase from one
+    noise value to three bumps is easy to learn; those two bite in 2-D and on images.
+  </p>
+
+  <h3>The detective wins: the forger's gradient vanishes</h3>
+  <p>
+    Now the opposite. Momentum SGD (what the paper says it used), five D steps per G step
+    (Algorithm 1's k; the paper used 1), and G's loss exactly as equation 1 writes it:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    200     <span class="hl">1.00 / 1.00</span>   -0.017    <span class="hl">0.044</span>      0.14        0 /    0 /    0
+    400     0.99 / 1.00   -0.018    0.073      0.20        <span class="hl">0 /    0 /    0</span>
+  final fakes: mean +0.18  std 0.20  off every bump: 1000 of 1000</code></pre>
+
+  <p>
+    The detective is perfect. V is −0.02 instead of −1.39. And the forger has not moved: 400
+    rounds in, its samples still sit at 0 with a spread of 0.2, where the random init put
+    them. A perfect detective is a useless teacher. Same run, one change — the
+    non-saturating loss:
+  </p>
+
+<pre><code>    100     0.67 / 1.00   -0.729    <span class="ok">0.671</span>      1.01        0 /    0 /  604
+    400     0.67 / 1.00   -0.818    1.334      0.27        0 /    0 / <span class="ok">1000</span></code></pre>
+
+  <p>
+    The forger moves in the first 100 rounds — straight onto one bump, because a strong
+    detective under SGD is still a bad game. But it moves. That's the entire content of the
+    paper's "in practice" paragraph, in two tables.
+  </p>
+
+  <div class="note">
+    <strong>Why the tutorial you copied doesn't freeze even with the written loss: Adam.</strong>
+    It divides each gradient by its running scale, so a gradient of 0.02 and one of 2 produce
+    the same-sized step. On this toy that hides the saturation completely. On images the tiny
+    gradient is also mostly noise, and Adam amplifies noise. Use the trick regardless.
+  </div>
+
+  <h3>The forgotten detach</h3>
+  <p>
+    In the detective's turn the fakes come out of G. If you don't <code>.detach()</code> them,
+    D's loss backpropagates through D <em>and on into G</em>. The norm of G's gradient right
+    after a D step:
+  </p>
+
+<pre><code>   detach=True   |gradG| after D's step: <span class="ok">0.0000</span>
+   detach=False  |gradG| after D's step: <span class="hl">0.0606</span>
+   cosine(leaked gradient, G's own gradient): <span class="hl">-1.000</span></code></pre>
+
+  <p>
+    Cosine −1: the leaked gradient points exactly against the forger's own. Of course it does —
+    D's loss wants fakes <em>more</em> detectable. Whether it is ever applied depends on where
+    your <code>zero_grad()</code> sits. Zero G right before its own backward and the leak is
+    wiped; you only paid for a wasted backward pass, which is why this bug is often silent.
+    This script zeroes both networks at the top of the round, so it is applied:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+   1000     0.33 / 1.00   -1.081    0.106      1.85      198 /  339 /    0
+   3000     0.33 / <span class="hl">1.00</span>   -1.128    0.066      2.21      430 /  430 /    <span class="hl">0</span></code></pre>
+
+  <p>A whole bump gone, and the detective at 1.00 on fakes for the entire run. Compare the last column with the healthy table.</p>
+
+  <h3>Forgetting to alternate: not a game any more</h3>
+  <p>
+    The tempting shortcut: add the two losses, one optimiser over both networks, one
+    <code>backward()</code>. It compiles, it runs, and it is not adversarial. D's own term
+    pushes D(G(z)) down; G's term, now flowing into D's weights too, pushes it up; they cancel
+    where D(G(z)) = 0.5. And G's gradient through the combined loss is zero at exactly that
+    point. Nobody pushes anybody:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    600     1.00 / 0.78   -0.694    <span class="hl">0.000</span>      <span class="hl">0.00</span>        0 /    0 /    0
+   1000     1.00 / 0.77   -0.693    0.001      0.00        0 /    0 /    0
+  final fakes: mean +0.03  std 0.00  off every bump: 1000 of 1000</code></pre>
+
+  <p>
+    Fake std 0.00 for a thousand rounds: the forger never left its starting point. V is
+    −0.693 = −log 2, which is log 1 + log ½ — the detective says 1 to every real sample and ½
+    to every fake, and has no reason to say anything else. A game needs two players who each
+    want something the other doesn't. One loss has one wish.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism: the optimal detective and the value of the game, straight from
+  section 4. A tiny PyTorch model, CPU only, for the one part that needs gradients — the
+  training loop. Every function under 20 lines. <code>log</code> is <code>torch.log</code>
+  with a clamp, so log(0) can't happen.
+</p>
+<p>
+  <a href="gan_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 130 lines of mechanism plus seven runnable demos. Then:
+</p>
+<pre><code>python3 gan_from_scratch.py</code></pre>
+
+<pre><code>def d_loss(d_real, d_fake):
+    """Detective: maximise log D(x) + log(1 - D(G(z)))  -&gt;  minimise minus that."""
+    return -(log(d_real) + log(1 - d_fake)).mean()
+
+
+def g_loss_saturating(d_fake):
+    """Forger, as WRITTEN in equation 1: minimise log(1 - D(G(z))).
+    When D is confident (D(G(z)) ~ 0) this has almost no gradient. Demo 2."""
+    return log(1 - d_fake).mean()
+
+
+def g_loss(d_fake):
+    """Forger, as the paper RECOMMENDS (section 3, the paragraph after eq. 1):
+    maximise log D(G(z)) instead. Same fixed point, far bigger gradient early."""
+    return -log(d_fake).mean()
+
+
+def train_step(G, D, opt_G, opt_D, rng, batch, noise_dim,
+               k_d=1, k_g=1, g_loss_fn=g_loss, detach=True):
+    # Clear both gradient buffers once, at the top of the round.
+    opt_D.zero_grad()
+    opt_G.zero_grad()
+
+    # (1) THE DETECTIVE'S TURN, k_d times. Real should score 1, fake 0.
+    #     fake.detach() cuts the graph: D's loss must not flow back into G.
+    for _ in range(k_d):
+        real = torch.from_numpy(sample_real(batch, rng))
+        fake = G(torch.randn(batch, noise_dim))
+        if detach:
+            fake = fake.detach()
+        loss_d = d_loss(D(real), D(fake))
+        loss_d.backward()
+        opt_D.step()
+
+    # (2) THE FORGER'S TURN, k_g times. Fresh noise. Push D(G(z)) towards 1.
+    #     D's weights get a gradient too, but only opt_G.step() is called,
+    #     so D stays put. That is what "taking turns" means in code.
+    for _ in range(k_g):
+        loss_g = g_loss_fn(D(G(torch.randn(batch, noise_dim))))
+        loss_g.backward()
+        opt_G.step()
+
+    return -loss_d.item(), grad_norm(G)</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a living —
+  reverse-engineering from broken behaviour is your native mode, and with a GAN it's the only
+  mode: there is no loss curve to trust. Each row is one keyword argument to
+  <code>train()</code> in the healthy run, or one deleted line.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Delete <code>fake = fake.detach()</code> in <code>train_step</code> (or pass <code>detach=False</code>)</td><td>|gradG| after D's step is 0.0606 instead of 0.0000, cosine −1.000 against G's own gradient. Trained: the +2 bump empties — 430 / 430 / 0 — and D scores 1.00 on fakes all run.</td></tr>
+    <tr><td>Pass <code>g_loss_fn=g_loss_saturating</code> with a detective that can win: <code>optim="sgd", k_d=5</code></td><td>D 1.00 / 1.00, V −0.017, |gradG| 0.044, fake std 0.14, nothing near any bump for 400 rounds. The forger is frozen at its init. Same with <code>g_loss</code>: it moves in 100 rounds.</td></tr>
+    <tr><td>Change <code>lr_g=2e-3</code> to <code>lr_g=2e-2</code></td><td>Fake std drops to 0.31 and one column reads 992, the others 0. Then it hops: −2 at round 300, +2 at 600, −6 at 800. Mode collapse.</td></tr>
+    <tr><td>Change <code>lr_d=5e-4</code> to <code>lr_d=5e-3</code> (detective ×10)</td><td>In my runs the middle bump starves — a count under 100 while the outer two hold around 400 each — and V drifts up from −1.38 towards −1.2. D pulls ahead; G chases the two bumps it can reach.</td></tr>
+    <tr><td>Replace the two turns with <code>not_a_game_step</code> (<code>combined=True</code>): one loss, one optimiser</td><td>Fake std 0.00 and 0 / 0 / 0 for 1000 rounds. V flat at −0.693 = −log 2: D says 1 to real, ½ to fake, and the two gradients on G cancel. Nothing is adversarial.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §3 (one page: equation 1, Figure 1 and the
+  non-saturating trick), Algorithm 1, and the two statements in §4.1, Proposition 1 and
+  Theorem 1. Skip the proofs on the first pass, and skip §5 — the Parzen-window likelihood
+  numbers were the best anyone could do in 2014 and nobody reports them now. Read §6 last:
+  half a page, and it names the failure modes you just produced. You'll find the paper is
+  just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  Honestly: the maths in this paper is one expectation (an average over samples — a
+  <code>.mean()</code>), one log (so a product of probabilities becomes a sum), and one ratio.
+  Proposition 1 is "maximise a·log y + b·log(1 − y) over y", a one-line calculus exercise
+  with the answer a/(a+b). Theorem 1 is that ratio substituted back in and the result
+  recognised as a known distance between distributions, Jensen–Shannon. Same league as the
+  attention paper.
+</p>
+<p>
+  You don't need to derive the gradients — <code>loss.backward()</code> did — and you don't
+  need §4.2's convergence proof, which assumes a convex space of generators that a neural net
+  violates on line one; the paper says as much right after it. What you do need, and what
+  the maths won't give you, is the engineering: which loss, which optimiser, whose learning
+  rate is bigger, where the detach goes, and how to read a log where the loss going to zero
+  means you lost. That is the interview question, and it's this page.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one angle: the GAN as two optimisers taking turns, and the four ways the
+  turns go wrong. Deliberately narrow — no images, no convolutions, none of the fixes.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1406.2661">
+      <span class="paper-title">Generative Adversarial Nets</span>
+      <span class="paper-meta">Goodfellow, Pouget-Abadie, Mirza, Xu, Warde-Farley, Ozair, Courville, Bengio, 2014. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      §3 and Algorithm 1 are <code>train_step</code>. Proposition 1 and Theorem 1 are demo 1.
+      Figure 1 is this page's toy, drawn. Then §6, which admits in advance everything demo 4
+      showed you.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2017-08-20-gan/">
+      <span class="paper-title">From GAN to WGAN</span>
+      <span class="paper-meta">Lilian Weng. Maths, carefully.</span>
+    </a>
+    <p class="paper-pitch">
+      The full derivation of Theorem 1 with KL and Jensen–Shannon written out, then the thing
+      I only named: why JS is a bad distance when the two distributions don't overlap, and
+      how the Wasserstein distance (WGAN) answers it.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1701.00160">
+      <span class="paper-title">NIPS 2016 Tutorial: Generative Adversarial Networks</span>
+      <span class="paper-meta">Ian Goodfellow. The first author, two years on. Long.</span>
+    </a>
+    <p class="paper-pitch">
+      The taxonomy of generative models I skipped, the failure modes with the theory of why,
+      and a tips-and-tricks section. Skim the tips first; read the rest when you want the map
+      of the field.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://github.com/soumith/ganhacks">
+      <span class="paper-title">ganhacks: how to train a GAN</span>
+      <span class="paper-meta">Soumith Chintala and others. An engineering checklist, no theory.</span>
+    </a>
+    <p class="paper-pitch">
+      A numbered list of tricks from a DCGAN author: normalise inputs, separate real and fake
+      batches, label smoothing, which loss patterns mean trouble. The runbook for a log that
+      looks like demo 4. Spectral normalisation and the rest of the stabilisation literature
+      came after; this is the pre-flight list.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> the paper's §3 → ganhacks → Weng → the tutorial.
+  The page you now can read, then the runbook, then the maths for why the runbook exists,
+  then the survey. If you only read one, read Weng — it's where WGAN, gradient penalties and
+  spectral norm start to make sense as answers to the two failures above.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

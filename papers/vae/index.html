@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto-Encoding Variational Bayes (the VAE) — for programmers</title>
+<meta name="description" content="The VAE paper explained as code. An autoencoder whose bottleneck is a bell curve, the reparameterisation trick as 'move the dice outside the function', and a KL tax you can watch. Runnable NumPy plus a tiny CPU PyTorch model, five deliberate breaks.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Auto-Encoding Variational Bayes (the VAE)</h1>
+    <p class="paper-meta">Kingma and Welling, 2013</p>
+    <p class="lede">
+      An autoencoder whose bottleneck is a bell curve instead of a number. Explained
+      as code, because that's how I finally read it.
+    </p>
+    <p>
+      <a href="vae_from_scratch.py" download>Download vae_from_scratch.py</a> —
+      everything below runs from it. NumPy for the mechanism, plus a tiny CPU
+      PyTorch model for the training step.
+    </p>
+  </div>
+
+  <p>
+    I'm an AI Engineer. I've shipped a VAE without noticing — Stable Diffusion's
+    pixels come out of a VAE decoder — and I still couldn't read this paper. Pages
+    of Bayesian notation, and the two ideas that matter are three lines of
+    arithmetic each. Nobody told me the rest is a proof that those three lines are
+    <em>allowed</em>.
+  </p>
+
+  <h2>A VAE is lossy compression with a rule about the codes</h2>
+
+  <p>You've built this:</p>
+
+<pre><code>code  = compress(x)          # squeeze the input down to a few numbers
+x_hat = decompress(code)     # rebuild it
+loss  = how_far_off(x, x_hat)</code></pre>
+
+  <p>
+    That's an autoencoder. It compresses fine. What it cannot do is
+    <strong>generate</strong>: hand the decompressor a random code and you get junk,
+    because the codes live wherever the compressor felt like putting them — a shape
+    nobody wrote down, in a region nobody can find again.
+  </p>
+
+  <p>The VAE makes two changes:</p>
+
+<pre><code>mu, log_var = encoder(x)                   # not a code: a bell curve of codes
+z     = mu + exp(0.5 * log_var) * randn()  # pick one code from that curve
+x_hat = decoder(z)
+loss  = how_far_off(x, x_hat) + kl(mu, log_var)  # + "codes must look like N(0,1)"</code></pre>
+
+  <p>
+    The compressor returns a distribution, and there's a tax whenever that
+    distribution doesn't look like standard normal noise. Pay the tax all through
+    training and afterwards <em>any</em> standard normal noise you draw is a valid
+    code: decode it and you get a new, plausible input. That's the generative trick.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Encoder</strong> q(z|x)</td><td>Takes x, returns (μ, log σ²): the centre and width of a bell curve</td><td>A compressor that returns a range, not a value</td></tr>
+      <tr><td><strong>Decoder</strong> p(x|z)</td><td>Takes a code z, rebuilds x</td><td>The decompressor. An ordinary MLP</td></tr>
+      <tr><td><strong>Latent</strong> z</td><td>One code, sampled from the bell curve</td><td>The compressed bytes</td></tr>
+      <tr><td><strong>Prior</strong> p(z) = N(0, I)</td><td>What codes are supposed to look like</td><td>The schema the codes must validate against</td></tr>
+      <tr><td><strong>KL term</strong></td><td>How far the encoder's bell curve is from N(0, I)</td><td>The linter that fails the build when a code breaks the schema</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">log p(x) ≥ E<sub>z ~ q(z|x)</sub>[ log p(x|z) ] − KL( q(z|x) ‖ N(0, I) )</div>
+
+  <p>
+    The right-hand side is the ELBO, the bound in section 2.2 of the paper. Training
+    maximises it, so the loss is its negative: reconstruction plus tax. Two helpers
+    make it computable:
+  </p>
+
+  <div class="formula">z = μ + σ ⊙ ε,   ε ~ N(0, I)        KL = −½ Σ (1 + log σ² − μ² − σ²)</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>encoder(x)</code></td><td>(n, d<sub>z</sub>) twice</td><td>Two heads on one MLP: μ and log σ². A bell curve per input</td></tr>
+      <tr><td><code>ε ~ N(0, I)</code></td><td>(n, d<sub>z</sub>)</td><td><strong>The dice.</strong> Drawn outside the model. No parameters, no gradient</td></tr>
+      <tr><td><code>z = μ + exp(½ log σ²) ε</code></td><td>(n, d<sub>z</sub>)</td><td><strong>The trick.</strong> Add and multiply. Backprop walks through this</td></tr>
+      <tr><td><code>decoder(z)</code></td><td>(n, d<sub>x</sub>)</td><td>Rebuild the input from the code</td></tr>
+      <tr><td><code>‖x − x̂‖² / 2σ<sub>x</sub>²</code></td><td>(n,)</td><td><strong>Reconstruction.</strong> −log p(x|z) for a Gaussian decoder — MSE is a likelihood in disguise</td></tr>
+      <tr><td><code>−½ Σ(1 + log σ² − μ² − σ²)</code></td><td>(n,)</td><td><strong>The tax.</strong> KL to N(0, I), closed form, the paper's Appendix B</td></tr>
+      <tr><td><code>mean(recon + KL)</code></td><td>scalar</td><td>−ELBO. Then <code>loss.backward()</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    One thing the table hides. A decoder whose output is the mean of a Gaussian with
+    fixed std σ<sub>x</sub> has −log p(x|z) = squared error / 2σ<sub>x</sub>² plus a
+    constant. So "MSE" is the paper's likelihood term, and σ<sub>x</sub> is the
+    exchange rate between reconstruction and tax. I fixed it at 0.1; change it and
+    you've changed the KL weight without touching the KL.
+  </p>
+
+  <h2>The trick: move the dice outside the function</h2>
+  <p>
+    You want z drawn from N(μ, σ²), and you want <code>loss.backward()</code> to
+    reach μ and σ. But <code>rng.normal(mu, sigma)</code> is a black box: the
+    randomness happens <em>inside</em> it, so there's no function of μ to
+    differentiate. Nudge μ and z moves by a random amount, not by a derivative.
+  </p>
+  <p>
+    The fix is to draw the randomness first, from a distribution with no parameters,
+    then turn it into z with arithmetic: <code>eps = randn()</code>, then
+    <code>z = mu + sigma * eps</code>. Same distribution for z. But now dz/dμ = 1
+    and dz/dσ = ε, and backprop walks straight through. That's section 2.4, and it's
+    the reason the paper exists: the older score-function estimator "exhibits very
+    high variance", in the paper's own words, and this replaces it with plain
+    backprop. The other contribution the introduction lists is the encoder itself —
+    a <em>recognition model</em> that answers inference in one forward pass, instead
+    of an optimisation loop per datapoint. A cache for the expensive per-item
+    computation.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>want N( 1.50, 0.40)   100000 draws of mu + sigma*eps:  mean  1.500  std 0.401
+want N(-2.00, 3.00)   100000 draws of mu + sigma*eps:  mean -1.998  std 3.003
+
+now the gradient. dz/dmu by finite difference, (z(mu+h) - z(mu)) / h
+  'direct' = two separate rng.normal(mu, sigma) calls, fresh dice each
+  h=0.1    reparam:  <span class="ok">1.000</span>   direct once:    -2.786   direct rms/1000:     5.9
+  h=0.01   reparam:  1.000   direct once:     4.828   direct rms/1000:    57.0
+  h=0.001  reparam:  1.000   direct once:  <span class="hl">-247.014</span>   direct rms/1000:   554.6
+  dz/dsigma, reparameterised: -1.224   and eps was -1.224</code></pre>
+
+  <p>
+    Shrink h and the direct version gets <em>worse</em>, not better — it's noise of
+    size σ divided by h; there is no derivative there to find. Reparameterised, it's
+    exactly 1, and dz/dσ is exactly the ε that was rolled. And the reason every
+    implementation says <code>exp(0.5 * log_var)</code>: a raw network output can be
+    negative, a standard deviation can't, so the encoder emits log σ² and the exp
+    makes σ positive by construction.
+  </p>
+
+  <div class="note">
+    <strong>In PyTorch this is the difference between
+    <code>Normal(mu, sigma).sample()</code> and <code>.rsample()</code>.</strong>
+    <code>sample()</code> returns a tensor with no <code>grad_fn</code>;
+    <code>rsample()</code> returns <code>mu + sigma * eps</code> with an
+    <code>AddBackward0</code>. The <em>r</em> is this paper.
+  </div>
+
+  <h2>The tax: KL to a standard normal, in one line</h2>
+  <p>
+    KL(q ‖ p) is "how surprised p would be by q's samples", in nats. For
+    q = N(μ, σ²) against p = N(0, 1) it's the one-liner in the formula above: zero at μ = 0,
+    σ = 1, bigger the further you move, summed over latent dimensions.
+  </p>
+
+  <p><strong>The closed form, checked against a 200,000-sample estimate:</strong></p>
+
+<pre><code>   mu  sigma   closed form   monte carlo
+  0.0    1.0        <span class="ok">0.0000</span>        0.0000
+  1.0    1.0        0.5000        0.5001
+  0.0    2.0        0.8069        0.8105
+  0.0    0.5        0.3181        0.3172
+  2.0    0.5        2.3181        2.3174
+  0.0    0.1        <span class="hl">1.8076</span>        1.8064
+  3.0    1.0        4.5000        4.5004</code></pre>
+
+  <p>
+    The row to stare at is (0.0, 0.1). A <em>narrow</em> bell curve is taxed too —
+    1.8 nats for shrinking σ to 0.1. That's what stops the VAE quietly turning
+    itself back into a plain autoencoder with σ = 0. It has to pay for precision,
+    and it will only pay where precision buys reconstruction.
+  </p>
+
+  <h2>Training: watch the two terms fight</h2>
+  <p>
+    The toy data is 512 points on a unit ring with a little radial noise —
+    one-dimensional structure living in 2-D. Two-layer MLPs, a 2-D latent, Adam,
+    full batch, 1500 steps on a CPU. One ε per datapoint per step, which section 2.3
+    of the paper says is enough when the batch is large.
+  </p>
+
+<pre><code>step     0  loss   53.213  recon   53.199  kl  0.014  mse <span class="hl">1.0640</span>
+step   250  loss    4.206  recon    0.922  kl  3.284  mse 0.0184
+step   500  loss    4.069  recon    0.917  kl  3.152  mse 0.0183
+step  1000  loss    4.077  recon    0.886  kl  3.191  mse 0.0177
+step  1500  loss    3.982  recon    0.750  kl  3.232  mse 0.0150
+
+reconstruction mse, z = mu (no noise):      <span class="ok">0.0033</span>
+reconstruction mse, z sampled from q(z|x): 0.0165
+encoder's mean sigma 0.231, mean |mu| 0.878, KL per point 3.232 nats</code></pre>
+
+  <p>
+    Step 0 is worth a look. A fresh encoder already outputs roughly N(0, 1), so the
+    tax is nearly zero (0.014) and the decoder predicts the origin for everything:
+    mse 1.064, about the data's own spread. Then the encoder <em>buys</em>
+    information — the KL climbs to about 3.2 nats and stays there, and
+    reconstruction falls over 300× to 0.0033. The tax never reaches zero; it settles
+    where the next nat of precision stops paying for itself.
+  </p>
+
+  <h2>The generative claim: noise in, ring out</h2>
+  <p>
+    This is the test a plain autoencoder fails. Draw 2000 z's from N(0, I) — numbers
+    that have never seen the data — decode them, and measure the radius of what
+    comes out. "on ring" is the fraction within 0.1 of radius 1.
+  </p>
+
+<pre><code>                       radius mean radius std  on ring
+the data                     0.996      0.047    0.969
+raw noise, no decoder        1.260      0.666    <span class="hl">0.126</span>
+decoded prior noise          0.947      0.122    <span class="ok">0.856</span></code></pre>
+
+  <p>
+    Raw 2-D noise lands on the ring 12.6% of the time, by accident. Pass the same
+    noise through the decoder and 85.6% lands. The decoder has only ever seen codes
+    that came from real points; it works on fresh noise because the tax forced those
+    codes to look like fresh noise.
+  </p>
+
+  <div class="note">
+    <strong>0.856, not 0.969.</strong> The samples' radius spreads 0.122 against the
+    data's 0.047. That's the VAE blur, in 2-D: a likelihood objective is minimised
+    by the <em>average</em> of everything consistent with a code, so uncertainty
+    comes out as a smear. GANs don't average, which is why their samples look
+    crisper.
+  </div>
+
+  <h2>β: the dial between compression and fidelity</h2>
+  <p>
+    The paper has no β; the KL weight is 1 because that's what the bound says. β-VAE
+    (Higgins et al., 2017) made it a dial, and turning it is the fastest way to feel
+    what the tax is for. Same model, data and steps. "mse" is reconstruction with
+    z = μ; "recon std" is how spread out the reconstructions are.
+  </p>
+
+<pre><code>                         mse      kl   sigma   |mu| recon std  on ring
+beta=1 (the paper)    0.0033   3.232   0.231   0.88     0.703    0.856
+beta=0, no KL         0.0002  11.069   0.005   1.07     0.704    <span class="hl">0.189</span>
+beta=4 (beta-VAE)     0.0047   2.319   0.334   0.86     0.690    0.826
+beta=50, huge KL      0.9084   0.036   0.981   0.14     <span class="hl">0.033</span>    0.000
+(data itself)                                           0.704    0.969
+(raw noise, undecoded)                                             0.126</code></pre>
+
+  <p>
+    <strong>β = 0</strong> is the plain autoencoder: best reconstruction, and prior
+    noise lands on the ring 18.9% of the time — barely above the 12.6% with no
+    decoder at all. <strong>β = 4</strong> is the β-VAE regime: samples still land,
+    at the price of a 40% blurrier reconstruction; on this toy, push past about
+    β = 8 and the samples go too. <strong>β = 50</strong> is posterior collapse: σ → 1,
+    μ → 0, and every reconstruction is nearly the same point.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism: the trick and the KL, three lines each. A tiny PyTorch
+  model, CPU only, trains seven variants in about 15 seconds. The torch version of
+  the trick is one line inside <code>train_vae</code>, with the deliberate bugs next
+  to it behind a flag.
+</p>
+<p>
+  <a href="vae_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 200 lines plus four runnable demos. Then:
+</p>
+<pre><code>python3 vae_from_scratch.py</code></pre>
+
+<pre><code># ---------------------------------------------------------------------------
+# STAGE 1 -- THE TRICK. Section 2.4 of the paper.
+#
+# You want z ~ N(mu, sigma^2), and you want gradients to flow back into mu and
+# sigma. A call like rng.normal(mu, sigma) is a black box: the randomness
+# happens INSIDE it, so there is no function of mu to differentiate.
+#
+# Fix: draw the randomness first, from a distribution that has no parameters,
+# then turn it into z with plain arithmetic.
+#
+#     eps ~ N(0, 1)              # the dice roll. No parameters. No gradient.
+#     z   = mu + sigma * eps     # add and multiply. Backprop walks through this.
+#
+# dz/dmu = 1, dz/dsigma = eps. Same distribution for z, but now differentiable.
+# The encoder outputs log(sigma^2), not sigma, so sigma = exp(0.5 * log_var)
+# is positive by construction and can never go negative.
+# ---------------------------------------------------------------------------
+def reparameterise(mu, log_var, eps):
+    sigma = np.exp(0.5 * log_var)
+    return mu + sigma * eps
+
+# ---------------------------------------------------------------------------
+# STAGE 2 -- THE TAX. KL( N(mu, sigma^2) || N(0, 1) ), closed form, Appendix B.
+#
+#     KL = -1/2 * sum( 1 + log(sigma^2) - mu^2 - sigma^2 )
+#
+# Zero when mu=0 and sigma=1. Grows as the bell curve moves or changes width.
+# This is the penalty for a code not looking like standard normal noise.
+# Summed over latent dimensions, because the dims are independent.
+# ---------------------------------------------------------------------------
+def kl_standard_normal(mu, log_var):
+    return -0.5 * np.sum(1 + log_var - mu ** 2 - np.exp(log_var), axis=-1)
+
+SIGMA_X = 0.1
+
+
+def elbo_loss(x, x_hat, mu, log_var, beta=1.0):
+    recon = ((x - x_hat) ** 2).sum(dim=-1) / (2 * SIGMA_X ** 2)
+    kl = -0.5 * (1 + log_var - mu ** 2 - log_var.exp()).sum(dim=-1)
+    return (recon + beta * kl).mean(), recon.mean(), kl.mean()</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for
+  a living — reverse-engineering from broken behaviour is your native mode. Each row
+  is one edit and the numbers it printed; demo 4 runs them all, side by side.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Set <code>beta=0.0</code> in <code>train_vae</code></td><td>mse drops to 0.0002 — the best in the table — and "on ring" drops to 0.189. Perfect reconstructions, useless samples. σ has gone to 0.005.</td></tr>
+    <tr><td>Replace <code>z = mu + torch.exp(0.5 * log_var) * eps</code> with <code>z = mu</code></td><td>A plain autoencoder in a VAE costume. σ prints exactly 1.000, because it's unused and the KL parks it there for free. On ring: 0.013.</td></tr>
+    <tr><td>Forget the exp: <code>z = mu + log_var * eps</code></td><td>The thing multiplying ε is now a raw output. The network drives it to 0 to kill the noise: min −0.0049, mean −0.0007, a negative "standard deviation". The KL column reads 0.027 as if σ were 1. Two halves of the loss now disagree.</td></tr>
+    <tr><td>Set <code>beta=50.0</code></td><td>Posterior collapse. KL 0.036, σ 0.981, |μ| 0.14: the encoder says nothing. Reconstruction spread 0.033 against the data's 0.704 — every output is nearly the same point. mse 0.9084.</td></tr>
+    <tr><td>Draw ε once and reuse it: <code>bug="fixed_eps"</code></td><td>mse 0.0130 with the ε it trained on, 0.0377 with any other — it fit the dice roll, not the distribution. The paper's estimator is unbiased only because ε is fresh every step. On this toy the prior samples still land (0.942); the 3× gap is the tell.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §2.2 to §2.4 (the bound, the
+  estimator, the trick), Appendix B (the KL one-liner) and §3 (the actual VAE). Skip
+  the appendices on full variational Bayes and the marginal-likelihood estimator.
+  You'll find the paper is just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  This paper needs four things. An <em>expectation</em> is an average over samples —
+  a <code>for</code> loop and a mean, which is all "Monte Carlo" means. A
+  <em>log</em> turns products into sums, which is why everything is a log-likelihood
+  and why MSE shows up. A <em>Gaussian</em> is two numbers per dimension. And
+  <em>KL</em> is a distance-ish score between two distributions which, for two
+  Gaussians, is a one-liner you copy from Appendix B. What you don't need is to
+  derive the bound: that's one step, Jensen's inequality, "log of an average ≥
+  average of logs", and you can use the loss for the rest of your career without
+  reproving it — the same way you use <code>loss.backward()</code> without deriving
+  backprop.
+</p>
+<p>
+  The interview question you'll be asked is "why the reparameterisation trick?" One
+  sentence: you can't backprop through a random number generator, so move the
+  sampling out to a parameter-free ε and make z a deterministic function of μ, σ and
+  ε. The follow-up is "why are VAE samples blurry?" — the likelihood objective
+  averages over everything consistent with a code. You've now seen both happen.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one angle: the VAE as compression with a tax, in code you can
+  break. Two people cover what I skipped — the notation and the derivation.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1312.6114">
+      <span class="paper-title">Auto-Encoding Variational Bayes</span>
+      <span class="paper-meta">Kingma and Welling, 2013. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      §2.4 is the trick, half a page. §2.2 and §2.3 are the bound and the estimator;
+      Appendix B is the KL you printed; §3 is the model you just trained, on MNIST
+      and Frey Face instead of a ring.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2018-08-12-vae/">
+      <span class="paper-title">From Autoencoder to Beta-VAE</span>
+      <span class="paper-meta">Lilian Weng. Maths, with every step written out.</span>
+    </a>
+    <p class="paper-pitch">
+      The derivation I skipped — where the ELBO comes from and why it's a lower
+      bound — then keeps going past this paper to β-VAE, VQ-VAE and the rest of the
+      family, so the dial I called β becomes a research line.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jaan.io/what-is-variational-autoencoder-vae-tutorial">
+      <span class="paper-title">What is a variational autoencoder?</span>
+      <span class="paper-meta">Jaan Altosaar. Two vocabularies side by side.</span>
+    </a>
+    <p class="paper-pitch">
+      The same model explained twice, in deep-learning words (encoder, decoder,
+      loss) and in probability words (inference, posterior), each mapped to the
+      other. If the notation was the wall, this is the translation table.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Altosaar → the paper → Weng. Altosaar
+  makes the notation readable, the paper is short once it is, and Weng adds the
+  derivation and the family tree. If you only read one, read Altosaar.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

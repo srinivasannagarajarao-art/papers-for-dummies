@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Denoising Diffusion Probabilistic Models — for programmers</title>
+<meta name="description" content="The DDPM paper explained as code: a for loop that adds noise, a closed-form jump to any step, and a small model that learns the one-step undo. Runnable NumPy plus a tiny CPU PyTorch trainer, with a section on where Stable Diffusion fits.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Denoising Diffusion Probabilistic Models</h1>
+    <p class="paper-meta">Ho, Jain &amp; Abbeel, 2020 — and where Stable Diffusion (Rombach et al., 2022) fits</p>
+    <p class="lede">
+      Explained as a for loop you learn to run backwards, because the
+      variational bound in the paper hid that from me for a year.
+    </p>
+    <p>
+      <a href="diffusion_from_scratch.py" download>Download diffusion_from_scratch.py</a>
+      — everything below runs from it. NumPy for the mechanism, plus a tiny
+      CPU PyTorch model for the training step.
+    </p>
+  </div>
+
+  <p>
+    I'd run Stable Diffusion on my own GPU, swapped samplers by name, argued
+    about guidance scales. Then I opened the paper all of that descends from and
+    stalled at equation 3, a variational bound with three kinds of KL term in it.
+    Nobody told me the bound is scaffolding. The method is: corrupt data with a
+    <code>for</code> loop, learn a one-step undo, run the loop backwards.
+  </p>
+
+  <h2>Learn to undo a for loop</h2>
+
+  <p>You know this — a loop that ruins something a little at a time:</p>
+
+<pre><code>x = x0
+for t in range(1, T + 1):                          # T = 1000 in the paper
+    x = sqrt(1 - beta[t]) * x + sqrt(beta[t]) * randn()   # shrink, add noise
+# x is static now. No trace of x0 left.</code></pre>
+
+  <p>
+    Two facts turn that into a generative model. First, you never have to run
+    the loop: Gaussians compose, so a one-liner jumps to any step <em>t</em>.
+    Second, the only thing that gets learned is a one-step undo:
+  </p>
+
+<pre><code>x_t = sqrt(alpha_bar[t]) * x0 + sqrt(1 - alpha_bar[t]) * eps   # jump to step t
+
+eps_hat = model(x_t, t)          # the ONE learned thing: "what noise was added?"
+
+x = randn()                      # start from static
+for t in range(T, 0, -1):        # the same loop, backwards
+    x = undo(x, t, model(x, t))  # subtract predicted noise, add a little back</code></pre>
+
+  <p>
+    That's the paper. A corruption function with random access to any stage,
+    and a model that is <code>ctrl-z</code> for one stage.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>β<sub>t</sub></strong></td><td>How much noise step t adds</td><td>The corruption rate for one loop iteration</td></tr>
+      <tr><td><strong>ᾱ<sub>t</sub></strong></td><td>How much of x<sub>0</sub> survives to step t</td><td>A prefix product, precomputed once, like a prefix-sum table</td></tr>
+      <tr><td><strong>q(x<sub>t</sub> | x<sub>0</sub>)</strong></td><td>The forward jump</td><td><code>git checkout</code> any commit without replaying the log</td></tr>
+      <tr><td><strong>ε<sub>θ</sub>(x<sub>t</sub>, t)</strong></td><td>The model: which noise was added?</td><td>A one-step undo, told how deep into the loop it is</td></tr>
+      <tr><td><strong>p<sub>θ</sub>(x<sub>t−1</sub> | x<sub>t</sub>)</strong></td><td>One reverse step</td><td>The loop body, run backwards</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">L<sub>simple</sub> = E<sub>t, x<sub>0</sub>, ε</sub> ‖ ε − ε<sub>θ</sub>( √ᾱ<sub>t</sub> x<sub>0</sub> + √(1−ᾱ<sub>t</sub>) ε,  t ) ‖<sup>2</sup></div>
+
+  <p>Read it inside-out, as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>t ~ Uniform{1..T}</code></td><td>one int per sample</td><td>Pick a random depth into the loop</td></tr>
+      <tr><td><code>ε ~ N(0, I)</code></td><td>(n, d)</td><td>Draw the noise you are about to add. This is also the answer key</td></tr>
+      <tr><td><code>√ᾱ<sub>t</sub> x<sub>0</sub> + √(1−ᾱ<sub>t</sub>) ε</code></td><td>(n, d)</td><td><strong>The jump.</strong> x<sub>t</sub> in one line, no loop</td></tr>
+      <tr><td><code>ε<sub>θ</sub>(x<sub>t</sub>, t)</code></td><td>(n, d)</td><td>The model's guess at ε</td></tr>
+      <tr><td><code>‖ε − ε<sub>θ</sub>‖<sup>2</sup></code></td><td>scalar</td><td>Plain MSE. Adam does the rest</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    d is 2 in my script, 32×32×3 in the paper's CIFAR-10 runs. It's a
+    regression: it trains like a classifier where a GAN trains like a fight.
+    The variational bound in §3 shows this MSE is a <em>weighted</em> version
+    of it; §3.4 then drops the weights because the samples got better without
+    them. That is the paper's key practical finding. Equation 14.
+  </p>
+
+  <h2>The schedule: three arrays, nothing learned</h2>
+  <p>
+    β<sub>t</sub> goes linearly from 0.0001 to 0.02 over T = 1000 steps (§4 of
+    the paper). α<sub>t</sub> = 1 − β<sub>t</sub>. ᾱ<sub>t</sub> is the running
+    product of the alphas: how much of the original signal is still standing
+    at step t. Precomputed once, indexed by t.
+  </p>
+
+  <p><strong>From the running code:</strong></p>
+
+<pre><code>how much of x_0 survives to step t  (alpha_bar_t):
+  t =    0   alpha_bar = 1.000000   sqrt(alpha_bar) = 1.0000
+  t =  250   alpha_bar = 0.524085   sqrt(alpha_bar) = 0.7239
+  t =  500   alpha_bar = 0.078587   sqrt(alpha_bar) = 0.2803
+  t = 1000   alpha_bar = 0.000040   sqrt(alpha_bar) = 0.0064
+
+x_T built by the closed-form jump, 20000 draws from ONE x_0 each:
+  x_0            mean of x_T        std of x_T
+  [1. 0.]        [ 0.015 -0.009]    [1.002 1.   ]
+  [-1.  0.]      [-0.005 -0.004]    [1. 1.]
+  [3. 3.]        [0.018 0.02 ]      [1.001 1.005]  <span class="ok">✓ even from off the ring</span></code></pre>
+
+  <p>
+    That second table is the contract. Whatever x<sub>0</sub> you start from,
+    x<sub>T</sub> is N(0, 1), so sampling can <em>start</em> from N(0, 1)
+    without ever seeing the data. Break it (<code>make_schedule(5)</code>,
+    in the table below) and sampling starts in the wrong place.
+  </p>
+
+  <h2>The shortcut: any step in one line</h2>
+  <p>
+    Add two independent Gaussians and the <em>variances</em> add. Chain t
+    shrink-and-noise steps and they collapse to one Gaussian centred on
+    √ᾱ<sub>t</sub> x<sub>0</sub> with variance 1 − ᾱ<sub>t</sub>. Equation 4.
+    That is why training never runs the loop: pick a t, jump.
+  </p>
+
+  <p><strong>Don't take my word for it. The loop and the jump, side by side:</strong></p>
+
+<pre><code>x_0 = (1, 0). Compare the x-coordinate of x_t, 20000 draws each.
+
+     t   loop  mean   std  |  jump  mean   std  |  theory sqrt(ab)  sqrt(1-ab)
+    10    0.999 0.043  |   0.999 0.043  |       0.999     0.044
+   100    0.946 0.321  |   0.948 0.320  |       0.947     0.321
+   500    0.286 0.972  |   0.285 0.969  |       0.280     0.960
+  1000    0.013 0.994  |   0.018 0.997  |       0.006     1.000  <span class="ok">✓</span></code></pre>
+
+  <p>
+    The square roots are the part people get wrong. ᾱ<sub>t</sub> and
+    1 − ᾱ<sub>t</sub> are variances; the coefficient on a sample is the
+    standard deviation. Forget the <code>np.sqrt</code>:
+  </p>
+
+<pre><code>     t   correct  mean   std  |  no-sqrt  mean   std  |  theory  mean   std
+   100      0.947  0.320  |      0.897  <span class="hl">0.103</span>  |        0.947 0.321
+   300      0.626  0.781  |      0.394  0.607  |        0.630 0.777</code></pre>
+
+  <h2>Training: predict the noise, not the image</h2>
+  <p>
+    Algorithm 1 in the paper is four lines, and my <code>train</code> loop is
+    those four lines with the paper's line number as a comment on each. Draw
+    x<sub>0</sub>, t and ε, jump to x<sub>t</sub>, ask the model for ε, MSE.
+    The model is a 3-layer MLP here and a U-Net in the paper. Same job.
+  </p>
+
+<pre><code>baseline -- always predict zero noise -- scores 1.0000. Beat that.
+
+  step   500   loss 0.2552
+  step  1000   loss 0.2279
+  step  3000   loss 0.2000
+  step  4000   loss 0.1924
+
+  trained 4000 steps on CPU in 4.6s
+  held-out loss: 0.1918  <span class="ok">✓</span></code></pre>
+
+  <p>
+    The model gets <em>t</em> as an input, through the same sine/cosine
+    embedding the transformer uses for position
+    (<a href="../attention/">the attention page</a>). It needs it: the same
+    x<sub>t</sub> could be a ring point plus a little noise or mostly noise,
+    and how much to remove depends on which. Take t away:
+  </p>
+
+<pre><code>  held-out loss, all t:         with t 0.1918   without t 0.2358
+  held-out loss, t &lt;= 50 only:  with t 0.8107   without t <span class="hl">1.1272  ← worse than zero</span></code></pre>
+
+  <div class="note">
+    <strong>The question you'll be asked: what does the model predict?</strong>
+    The noise, not the image. The paper's ablation table compares predicting
+    the posterior mean against predicting ε; ε wins under the simple loss.
+    Later work predicts x<sub>0</sub> too, but the sampler must be told which.
+  </div>
+
+  <h2>Sampling: the loop, backwards</h2>
+  <p>
+    Algorithm 2. Start from N(0, I). For t = T down to 1: ask the model for
+    ε̂, subtract β<sub>t</sub> / √(1−ᾱ<sub>t</sub>) of it, divide by
+    √α<sub>t</sub>, then add fresh noise with variance β<sub>t</sub> — none on
+    the last step. Watch the batch tighten from a blob onto the ring:
+  </p>
+
+<pre><code>the batch, mid-flight:
+    t = 1000   mean radius 1.250   radius spread 0.659
+    t =  500   mean radius 1.230   radius spread 0.636
+    t =  100   mean radius 1.004   radius spread 0.318
+    t =    1   mean radius 0.991   radius spread 0.123
+
+  real data (ring)                 mean radius 1.001   radius spread 0.100
+  generated, 1000 DDPM steps       mean radius 0.991   radius spread 0.123  <span class="ok">✓</span></code></pre>
+
+  <p>
+    The model never sees a ring at sampling time; it only learned "what noise
+    was added", and undoing that a thousand times makes the ring fall out.
+    The "add fresh noise back" step looks like a bug and isn't. Drop it:
+  </p>
+
+<pre><code>  real data (ring)                 mean radius 1.001   radius spread 0.100
+  DDPM, with noise (correct)       mean radius 0.979   radius spread 0.129
+  DDPM, noise term removed         mean radius <span class="hl">0.705</span>   radius spread <span class="hl">0.031</span>
+  DDIM, 50 steps, eta = 0          mean radius 0.967   radius spread 0.135  <span class="ok">✓</span></code></pre>
+
+  <p>
+    Without the noise the samples shrink toward the centre and lose their
+    spread. The last row is the fix for the thousand-call problem:
+    <a href="https://arxiv.org/abs/2010.02502">DDIM</a> (Song et al., 2020) is
+    also deterministic but with corrected coefficients — guess x<sub>0</sub>
+    from ε̂, re-noise that guess to a much earlier step. Same model, 50 calls.
+    Every fast sampler in a Stable Diffusion dropdown descends from it.
+  </p>
+
+  <h2>Where Stable Diffusion fits</h2>
+  <p>
+    <a href="https://arxiv.org/abs/2112.10752">Latent diffusion</a> (Rombach et
+    al., 2022) is this exact algorithm with two changes and one consequence.
+  </p>
+  <p>
+    <strong>Run it in latent space.</strong> First train a lightly regularised
+    <a href="../vae/">VAE</a> that squeezes a 512×512×3 image into a 64×64×4
+    latent, 48 times fewer numbers. Run Algorithms 1 and 2 on the latents,
+    not the pixels, and decode once at the end.
+  </p>
+  <p>
+    <strong>Condition on text.</strong> A text encoder (CLIP's, in the released
+    model) turns the prompt into token vectors. The U-Net gets cross-attention
+    layers: query from the image features, keys and values from the text tokens.
+    The <a href="../attention/">dictionary lookup</a> again, with the image
+    asking the prompt what it should contain.
+  </p>
+  <p>
+    <strong>The consequence</strong> is why it runs on a gaming card: the loop
+    runs over 16k latent values instead of 786k pixels. The guidance-scale
+    slider (classifier-free guidance) is a third paper; the loop is unchanged.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism: schedule, forward loop, jump and reverse step are
+  closed-form and need no gradients. A tiny PyTorch MLP, CPU only, trains in
+  about five seconds for the one part that does.
+</p>
+<p>
+  <a href="diffusion_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 220 lines plus five runnable demos and six deliberate breaks. Then:
+</p>
+<pre><code>python3 diffusion_from_scratch.py</code></pre>
+
+<pre><code>def make_schedule(T=1000, beta_start=1e-4, beta_end=0.02):
+    betas = np.concatenate([[0.0], np.linspace(beta_start, beta_end, T)])
+    alphas = 1.0 - betas
+    alpha_bar = np.cumprod(alphas)          # alpha_bar[0] = 1: no noise yet
+    return betas, alphas, alpha_bar
+
+def q_step(x_prev, t, betas):
+    noise = RNG.normal(size=x_prev.shape)
+    return np.sqrt(1 - betas[t]) * x_prev + np.sqrt(betas[t]) * noise
+
+#   x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps,  eps ~ N(0, I)
+def q_sample(x0, t, alpha_bar, eps):
+    ab = alpha_bar[t]                                  # scalar, or (n,) per-sample
+    ab = ab.reshape(-1, 1) if np.ndim(ab) else ab
+    return np.sqrt(ab) * x0 + np.sqrt(1 - ab) * eps
+
+def train(model, data, alpha_bar, steps=4000, batch=256, lr=1e-3,
+          target="eps", log_every=500):
+    T = len(alpha_bar) - 1
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    running = 0.0
+    for step in range(1, steps + 1):
+        x0 = data[RNG.integers(0, len(data), batch)]       # 2: x_0 ~ q(x_0)
+        t = RNG.integers(1, T + 1, batch)                   # 3: t ~ Uniform{1..T}
+        eps = RNG.normal(size=x0.shape)                     # 4: eps ~ N(0, I)
+        xt = q_sample(x0, t, alpha_bar, eps)                # the jump, no loop
+        y = eps if target == "eps" else x0                  # x0 = break-it target
+        pred = model(torch.tensor(xt, dtype=torch.float32), torch.tensor(t))
+        loss = ((pred - torch.tensor(y, dtype=torch.float32)) ** 2).mean()  # 5
+        opt.zero_grad(); loss.backward(); opt.step()
+        running += loss.item()
+        if step % log_every == 0:
+            print(f"  step {step:5d}   loss {running / log_every:.4f}")
+            running = 0.0
+    return model
+
+def p_step(x_t, t, eps_hat, betas, alphas, alpha_bar, add_noise=True):
+    undo = betas[t] / np.sqrt(1 - alpha_bar[t]) * eps_hat
+    mean = (x_t - undo) / np.sqrt(alphas[t])
+    if t == 1 or not add_noise:
+        return mean
+    return mean + np.sqrt(betas[t]) * RNG.normal(size=x_t.shape)
+
+def sample(model, n, sched, add_noise=True, log_at=(), x_init=None):
+    betas, alphas, alpha_bar = sched
+    T = len(betas) - 1
+    x = RNG.normal(size=(n, 2)) if x_init is None else x_init   # 1: x_T ~ N(0, I)
+    for t in range(T, 0, -1):                                    # 2: for t = T..1
+        eps_hat = predict_noise(model, x, t)                     # 3: ask the model
+        x = p_step(x, t, eps_hat, betas, alphas, alpha_bar, add_noise)   # 4
+        if t in log_at:
+            m, s = ring_stats(x)
+            print(f"    t = {t:4d}   mean radius {m:.3f}   radius spread {s:.3f}")
+    return x
+</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. Every row
+  below is already wired into <code>demo_5_break_it</code>, so the correct
+  number prints beside the broken one.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>q_sample</code>, drop the roots: <code>ab * x0 + (1 - ab) * eps</code></td><td>At t = 100 the std of x<sub>t</sub> is 0.103 instead of 0.321. A third of the noise. The model trains at one noise level and samples at another.</td></tr>
+    <tr><td><code>make_schedule(T, beta_end=0.2)</code></td><td>740 of 1000 steps have ᾱ<sub>t</sub> &lt; 0.001. At t = 500, corr(x<sub>t</sub>, x<sub>0</sub>) = 0.0100: the training pair is (ε, ε) and the model learns to copy its input. The paper's own schedule wastes its last 175 steps this way; the cosine schedule in <a href="https://arxiv.org/abs/2102.09672">Improved DDPM</a> fixes it.</td></tr>
+    <tr><td><code>sample(model, 2000, sched, add_noise=False)</code></td><td>Mean radius 0.705, spread 0.031, against 1.001 and 0.100. Samples shrink toward the centre. Not broken, a different sampler: DDIM is this with corrected coefficients, and gets 0.967 / 0.135 in 50 steps.</td></tr>
+    <tr><td><code>make_schedule(5)</code></td><td>ᾱ<sub>T</sub> = 0.9506, noise fraction 0.222. x<sub>T</sub> still looks like the ring, but sampling starts from N(0, 1) anyway: spread 0.216 versus 0.100. Start the same model from the true x<sub>T</sub> and it gets 0.134. The starting point was the bug, not the sampler.</td></tr>
+    <tr><td><code>NoisePredictor(use_t=False)</code></td><td>Held-out loss plateaus at 0.2358 instead of 0.1918. At t ≤ 50 it scores 1.1272, worse than predicting zero. Samples: mean radius 0.679, spread 0.286. Smeared.</td></tr>
+    <tr><td><code>train(model, data, alpha_bar, target="x0")</code>, sampler unchanged</td><td>Mean radius 62.063. The sampler subtracts what it's handed as noise; hand it a guess at x<sub>0</sub> and every step removes the wrong thing. Convert x̂<sub>0</sub> to ε̂ first and it works again (1.024 / 0.076).</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §2 for the forward process
+  (equation 4 is the jump), §3.2 for where predicting ε comes from, and §3.4
+  for Algorithms 1 and 2 and the simple loss. Skip §3.3, the progressive coding
+  experiments and the appendix. The paper is just the comments you've read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  The one fact this paper runs on: add two independent Gaussians and the
+  variances add. That is the entire closed-form jump, and why the square roots
+  are there. Past that it's a prefix product, an MSE and a <code>for</code> loop.
+</p>
+<p>
+  What you don't need: the variational bound in §2 and §3 (three pages of KL
+  terms whose punchline is "use MSE"), score matching, Langevin dynamics, the
+  SDE view that came a year later. All real; none needed to ship a diffusion
+  model or explain one in an interview.
+</p>
+<p>
+  What separates engineers on diffusion work is elsewhere: sampler and step
+  count against a latency budget, guidance scale against prompt fidelity, VAE
+  artefacts, and knowing the noise schedule is a hyperparameter you may change.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: diffusion as a loop you learn to reverse, in
+  code you can break. Two other people cover what I skipped.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2006.11239">
+      <span class="paper-title">Denoising Diffusion Probabilistic Models</span>
+      <span class="paper-meta">Ho, Jain &amp; Abbeel, 2020. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      §2 and §3.4 first: equation 4, Algorithms 1 and 2, equation 14. Then the
+      ablation table in §4, the evidence behind "predict ε with the simple loss".
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2021-07-11-diffusion-models/">
+      <span class="paper-title">What are Diffusion Models?</span>
+      <span class="paper-meta">Lilian Weng. The maths, complete.</span>
+    </a>
+    <p class="paper-pitch">
+      Everything I called scaffolding, derived line by line: the posterior
+      q(x<sub>t−1</sub> | x<sub>t</sub>, x<sub>0</sub>), the bound, how the simple
+      loss falls out of it. Go here when "trust me, the variances add" isn't enough.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jalammar.github.io/illustrated-stable-diffusion/">
+      <span class="paper-title">The Illustrated Stable Diffusion</span>
+      <span class="paper-meta">Jay Alammar. Diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      My Stable Diffusion section as pictures: text encoder, latent grid, U-Net
+      with cross-attention inside it, decoder at the end, drawn as boxes with
+      tensors flowing between them.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> the paper's §3.4 → Alammar → Weng.
+  Algorithms first, because you already have them in code; the maths last.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

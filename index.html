@@ -43,7 +43,7 @@
     it, and a short list of things to break so you can watch what fails.
   </p>
 
-  <h2 class="papers-group">ai-ml/</h2>
+  <h2 class="papers-group">ai-ml/transformers/</h2>
   <ul class="paper-list">
 
     <li class="paper">
@@ -62,6 +62,78 @@
       </p>
     </li>
 
+    <li class="paper">
+      <a class="paper-link" href="papers/rope/">
+        <span class="paper-title">RoFormer: Rotary Position Embedding</span>
+        <span class="paper-meta">Su et al., 2021</span>
+      </a>
+      <p class="paper-pitch">
+        Rotate q and k instead of adding a position vector, and the dot product
+        only sees distance. Every claim is a printed number.
+      </p>
+      <p class="paper-langs"><a href="papers/rope/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/gpt/">
+        <span class="paper-title">GPT: Generative Pre-trained Transformers</span>
+        <span class="paper-meta">Radford et al., 2018 to Brown et al., 2020</span>
+      </a>
+      <p class="paper-pitch">
+        Decoder-only, next token, then scale. The generation loop is a while
+        loop. A character-level GPT trained in your terminal.
+      </p>
+      <p class="paper-langs"><a href="papers/gpt/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/bert/">
+        <span class="paper-title">BERT: Deep Bidirectional Transformers</span>
+        <span class="paper-meta">Devlin et al., 2018</span>
+      </a>
+      <p class="paper-pitch">
+        Remove the causal mask, hide 15% of the tokens, guess them. Then bolt a
+        head on per task. A tiny masked model, trained live.
+      </p>
+      <p class="paper-langs"><a href="papers/bert/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/llama/">
+        <span class="paper-title">LLaMA: Open and Efficient Foundation Models</span>
+        <span class="paper-meta">Touvron et al., 2023</span>
+      </a>
+      <p class="paper-pitch">
+        Not a new idea, a recipe: four deltas on the 2017 transformer and far
+        more tokens than the scaling laws said. Parameter arithmetic included.
+      </p>
+      <p class="paper-langs"><a href="papers/llama/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/moe/">
+        <span class="paper-title">Mixture of Experts: the Sparsely-Gated Layer</span>
+        <span class="paper-meta">Shazeer et al., 2017</span>
+      </a>
+      <p class="paper-pitch">
+        A load balancer in front of eight small networks. Eight times the
+        parameters, twice the compute. Hot shards and dropped tokens, as in production.
+      </p>
+      <p class="paper-langs"><a href="papers/moe/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/vit/">
+        <span class="paper-title">An Image Is Worth 16×16 Words (ViT)</span>
+        <span class="paper-meta">Dosovitskiy et al., 2020</span>
+      </a>
+      <p class="paper-pitch">
+        The whole paper is a reshape: cut the image into patches and it's a
+        sentence. Shapes printed at every step.
+      </p>
+      <p class="paper-langs"><a href="papers/vit/">English</a></p>
+    </li>
+
     <li class="paper soon">
       <span class="paper-title">KV caching and the generation loop</span>
       <span class="paper-meta">Not written yet</span>
@@ -71,12 +143,120 @@
       </p>
     </li>
 
-    <li class="paper soon">
-      <span class="paper-title">LoRA: low-rank adaptation</span>
-      <span class="paper-meta">Not written yet</span>
+  </ul>
+
+  <h2 class="papers-group">ai-ml/fine-tuning/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
+      <a class="paper-link" href="papers/lora/">
+        <span class="paper-title">LoRA: Low-Rank Adaptation</span>
+        <span class="paper-meta">Hu et al., 2021</span>
+      </a>
       <p class="paper-pitch">
-        Fine-tuning without touching the base weights.
+        A fine-tune is a diff on the weights, and the diff is low-rank. Store
+        the patch, not the repo. Merge it for free at inference.
       </p>
+      <p class="paper-langs"><a href="papers/lora/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/peft/">
+        <span class="paper-title">Parameter-Efficient Fine-Tuning: the family</span>
+        <span class="paper-meta">Houlsby et al., 2019, and what followed</span>
+      </a>
+      <p class="paper-pitch">
+        One question five ways: where do you insert the small trainable thing?
+        Adapters, prefixes, prompts, (IA)³ and LoRA, with parameter counts.
+      </p>
+      <p class="paper-langs"><a href="papers/peft/">English</a></p>
+    </li>
+
+  </ul>
+
+  <h2 class="papers-group">ai-ml/alignment/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
+      <a class="paper-link" href="papers/rlhf/">
+        <span class="paper-title">Reinforcement Learning from Human Feedback</span>
+        <span class="paper-meta">Christiano et al., 2017</span>
+      </a>
+      <p class="paper-pitch">
+        You can't write the loss for "helpful", but you can ask which of two
+        answers is better. Reward hacking, reproduced on purpose.
+      </p>
+      <p class="paper-langs"><a href="papers/rlhf/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/instructgpt/">
+        <span class="paper-title">InstructGPT: Following Instructions with Human Feedback</span>
+        <span class="paper-meta">Ouyang et al., 2022</span>
+      </a>
+      <p class="paper-pitch">
+        The three-stage recipe that turned a completion engine into an
+        assistant. Each stage's gain in one table. This is ChatGPT's recipe.
+      </p>
+      <p class="paper-langs"><a href="papers/instructgpt/">English</a></p>
+    </li>
+
+  </ul>
+
+  <h2 class="papers-group">ai-ml/generative/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
+      <a class="paper-link" href="papers/vae/">
+        <span class="paper-title">Auto-Encoding Variational Bayes (VAE)</span>
+        <span class="paper-meta">Kingma and Welling, 2013</span>
+      </a>
+      <p class="paper-pitch">
+        An autoencoder whose bottleneck is a distribution. The reparameterisation
+        trick is moving the random number outside the function.
+      </p>
+      <p class="paper-langs"><a href="papers/vae/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/gan/">
+        <span class="paper-title">Generative Adversarial Nets</span>
+        <span class="paper-meta">Goodfellow et al., 2014</span>
+      </a>
+      <p class="paper-pitch">
+        A forger and a detective train each other. Mode collapse and vanishing
+        gradients, triggered deliberately on a toy problem.
+      </p>
+      <p class="paper-langs"><a href="papers/gan/">English</a></p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/diffusion/">
+        <span class="paper-title">Denoising Diffusion Probabilistic Models</span>
+        <span class="paper-meta">Ho et al., 2020</span>
+      </a>
+      <p class="paper-pitch">
+        Learn to undo a noise-adding for-loop one step at a time. The forward
+        process is a formula; the model is a one-step undo.
+      </p>
+      <p class="paper-langs"><a href="papers/diffusion/">English</a></p>
+    </li>
+
+  </ul>
+
+  <h2 class="papers-group">ai-ml/retrieval/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
+      <a class="paper-link" href="papers/rag/">
+        <span class="paper-title">Retrieval-Augmented Generation</span>
+        <span class="paper-meta">Lewis et al., 2020</span>
+      </a>
+      <p class="paper-pitch">
+        An open-book exam. The retriever is the index, the prompt is the page
+        you slide across. The failures are retrieval bugs, not model bugs.
+      </p>
+      <p class="paper-langs"><a href="papers/rag/">English</a></p>
     </li>
 
   </ul>

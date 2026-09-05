@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>An Image Is Worth 16×16 Words — for programmers</title>
+<meta name="description" content="The Vision Transformer paper explained as code. Cut the image into tiles, flatten them, and the transformer from Attention Is All You Need does the rest. Runnable NumPy, six demos that prove it by breaking it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>An Image Is Worth 16×16 Words</h1>
+    <p class="paper-meta">Dosovitskiy et al., 2020 — the Vision Transformer</p>
+    <p class="lede">The whole paper is one reshape. I kept looking for the clever part, and it was <code>.reshape</code> the entire time.</p>
+    <p>
+      <a href="vit_from_scratch.py" download>Download vit_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
+
+  <p>
+    I'd shipped image classifiers: fine-tuned ResNets, exported to ONNX, argued
+    about input normalisation in code review. Then transformers ate vision and I
+    assumed there was a new trick for pixels. There isn't. Cut the image into
+    tiles, flatten each into a row, hand the rows to the exact encoder from the
+    <a href="../attention/">attention page</a>. The interesting engineering is
+    what that reshape throws away, and why it wins anyway.
+  </p>
+
+  <h2>Tokenising an image</h2>
+
+  <p>You know this pipeline. Every language model starts with it:</p>
+<pre><code>ids    = tokenizer("the cat ate food")   # [464, 3797, 8268, 2057]
+tokens = embedding_table[ids]            # (4, D)   one row per word
+out    = transformer(tokens)             # (4, D)   same shape, now in context</code></pre>
+
+  <p>The paper is that pipeline with a different tokeniser. Words come from a vocabulary; tiles come from a grid:</p>
+<pre><code>patches = patchify(image, p=16)          # (196, 768)  196 tiles, 16*16*3 each
+tokens  = patches @ E                    # (196, D)    a matmul, not a lookup
+tokens  = concat([cls, tokens]) + pos    # (197, D)    one extra row, plus order
+out     = transformer(tokens)            # (197, D)    unchanged since 2017</code></pre>
+  <p>
+    Two differences from text, and they're the only image-specific ideas in the
+    paper. No vocabulary: a tile is 768 continuous numbers, not an id, so the
+    embedding is a matmul, not a lookup. And the tokeniser has no rules. It's a grid.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Patch</strong></td><td>One p×p×3 tile of the image</td><td>A word</td></tr>
+      <tr><td><strong>Flatten</strong></td><td>That tile as one row of p·p·3 numbers</td><td>The word's bytes</td></tr>
+      <tr><td><strong>E</strong></td><td>A (p·p·3, D) matrix every row is multiplied by</td><td>The embedding table, as a matmul because there's no vocab</td></tr>
+      <tr><td><strong>CLS token</strong></td><td>One learned row prepended to the sequence</td><td>A sentinel. The row you read at the end</td></tr>
+      <tr><td><strong>Position embedding</strong></td><td>A learned (N+1, D) table added to the rows</td><td>The index in the list. Without it the list is a set</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why it beat the CNN — and when it didn't</h2>
+
+  <p>A convolution is a <code>for</code> loop over a sliding window:</p>
+<pre><code>for y, x in every_pixel:
+    out[y, x] = kernel · img[y-1:y+2, x-1:x+2]   # only the 3x3 neighbourhood,
+                                                 # same kernel at every (y, x)</code></pre>
+  <p>
+    Two assumptions are baked into that loop: nearby pixels matter more than far
+    ones, and a cat in the corner is the same cat as one in the middle. A CNN
+    gets both for free from its structure. ViT gets neither: tile 0 and tile
+    195 are related only through attention weights it must learn, and "nearby
+    pixels matter" is something it must discover from data. The paper's phrase
+    is <em>much less image-specific inductive bias</em>. Fewer assumptions is a
+    trade: worse when data is scarce, better once there's enough data to learn
+    the assumptions and then some. On ImageNet-1k alone, ViT lands below a
+    ResNet of comparable size. Pretrained on ImageNet-21k (14M images) or
+    JFT-300M it wins; the biggest, ViT-H/14, tops the paper's headline table at
+    88.55% on ImageNet. The interview question is "why does ViT need more data
+    than a CNN?", and the answer is that sentence about inductive bias.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">z<sub>0</sub> = [x<sub>class</sub>; x<sub>p</sub><sup>1</sup>E; x<sub>p</sub><sup>2</sup>E; …; x<sub>p</sub><sup>N</sup>E] + E<sub>pos</sub></div>
+
+  <p>Equation 1. Read it left to right as shapes, for ViT-Base on a 224×224 image with patch 16:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>x</code></td><td>(224, 224, 3)</td><td>The image. Height, width, channel</td></tr>
+      <tr><td><code>x<sub>p</sub></code></td><td>(196, 768)</td><td><strong>The reshape.</strong> N = 224·224 / 16² = 196 tiles, each 16·16·3 = 768 numbers</td></tr>
+      <tr><td><code>E</code></td><td>(768, 768)</td><td>Patch embedding. Square only because ViT-Base picked D = 768</td></tr>
+      <tr><td><code>x<sub>p</sub>E</code></td><td>(196, 768)</td><td>196 tokens. From here on, this is a sentence</td></tr>
+      <tr><td><code>x<sub>class</sub></code></td><td>(1, 768)</td><td>The learned CLS row, prepended → (197, 768)</td></tr>
+      <tr><td><code>+ E<sub>pos</sub></code></td><td>(197, 768)</td><td>Learned, 1D, one vector per slot. Added, not concatenated</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Equations 2 and 3 are the encoder block, stacked 12 deep for Base, 24 for
+    Large, 32 for Huge; Equation 4 says read row 0 after a final LayerNorm. Both
+    are on the attention page already. The one change since 2017: LayerNorm
+    moves to <em>before</em> each sublayer (pre-norm), and the MLP uses GELU.
+    At fine-tune time the paper feeds a bigger image, keeps the patch size so
+    there are more tokens, and 2D-interpolates the learned position table to
+    the new grid; they note that's the only place a 2D assumption goes in by hand.
+  </p>
+
+  <h2>The reshape, with every shape printed</h2>
+
+  <p>
+    The script uses a 32×32×3 toy image and 8×8 patches so the numbers stay
+    readable: 16 tiles of 192 numbers. Three steps. <strong>Cut</strong> each
+    spatial axis into (how many tiles, pixels per tile). <strong>Group</strong>
+    the two "which tile" axes together and the two "which pixel" axes
+    together, which is a transpose. <strong>Flatten</strong> to one row per
+    tile. Demo 1 does it one line at a time so you can breakpoint each step.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+<pre><code>  image    (32, 32, 3)       (H, W, C)
+  cut      (4, 8, 4, 8, 3)   (H/p, p, W/p, p, C)
+  grouped  (4, 4, 8, 8, 3)   (H/p, W/p, p, p, C)
+  patches  (16, 192)         (N, p*p*C)          &lt;- the sentence
+  tokens   (16, 64)          (N, D)              patches @ E
+  + cls    (17, 64)          (N+1, D)            BERT-style
+  + pos    (17, 64)          (N+1, D)            added
+  block    (17, 64)          (N+1, D)            shape unchanged
+  attn     (17, 17)          (N+1, N+1)          all patches see all
+  cls out  (64,)             (D,)                the row we read
+  logits   (10,)             (n_classes,)
+
+unpatchify(patchify(img)) == img? <span class="ok">True</span></code></pre>
+  <p>
+    3072 numbers in, 3072 out, regrouped into 16 rows. Nothing is computed
+    until <code>patches @ E</code>. From <code>(16, 64)</code> onward the shapes
+    are the attention page's <code>(n_tokens, d_model)</code>, and the 17×17
+    attention matrix means every tile sees every tile, plus CLS. The round-trip
+    at the bottom is the test I'd write: if it fails, the reshape is wrong,
+    whatever the shapes say.
+  </p>
+
+  <h2>Position: a bag of tiles</h2>
+
+  <p>
+    Attention is a set operation. The attention page proved it with "cat ate
+    food" versus "food ate cat"; here it's a jigsaw with the pieces swapped.
+    Shuffle the 16 tiles into a new image, run both, and compare the CLS row
+    with the position table off and on:
+  </p>
+
+<pre><code>tile permutation: [ 1 12  7 10 14  4  5  8  0  9  2 13 11  6  3 15]
+shuffled image == original? False
+
+position embeddings OFF: CLS max abs diff = 1.44e-15  allclose? <span class="hl">True</span>   ← blind
+position embeddings ON : CLS max abs diff = 0.0495    allclose? <span class="ok">False</span>  ← sees it</code></pre>
+  <p>
+    That 1.44e-15 is not zero, and I won't pretend it is. The shuffle changes
+    the order the attention sum runs in, and float64 rounds differently in a
+    different order. Fifteen decimal places is "identical" by any test you'd
+    write; the 0.0495 with positions on is thirteen orders of magnitude bigger.
+    That <code>+ self.pos</code> is the only thing telling the model where a
+    tile was. The paper keeps the table deliberately dumb: learned, 1D, one
+    vector per slot, like a list index. They tried 2D-aware versions and report
+    no gain, because the plain table learns the grid on its own; the paper's
+    inspection section has the picture, where the similarity between learned
+    position vectors forms rows and columns.
+  </p>
+
+  <p>
+    The same shuffle settles which row you read at the end. BERT-style it's
+    row 0, but there are three obvious candidates:
+  </p>
+
+<pre><code>max abs diff under the shuffle, position embeddings OFF:
+  z[0]        CLS token       1.44e-15
+  z[1:].mean  mean-pool       6.66e-16
+  z[6]        patch token 6   <span class="hl">1.47</span>
+  (token 6 now holds tile 4, not tile 5)</code></pre>
+  <p>
+    CLS and the mean of the patch rows are both reads over the whole set, so
+    both survive. A single patch row is a read at a position, so it moves. The
+    paper's appendix tried mean-pooling instead of CLS and found it works just
+    as well once the learning rate is re-tuned; the CLS token is a BERT habit,
+    not a requirement.
+  </p>
+
+  <h2>Why 16×16: the n² bill</h2>
+
+  <p>
+    Patch size is the one dial the paper adds, and it sets everything. Tokens
+    n = (224/p)², and every attention layer builds an n×n score matrix per
+    head. The script prints the bill for a 224×224 image:
+  </p>
+
+<pre><code>   patch  per token  tokens n          n x n   vs 16x16
+    1x1           3     50176  <span class="hl">2,517,630,976</span>  65536.00x
+    4x4          48      3136      9,834,496    256.00x
+    8x8         192       784        614,656     16.00x
+   16x16        768       196         <span class="ok">38,416</span>      1.00x
+   32x32       3072        49          2,401      0.06x</code></pre>
+  <p>
+    Halve the patch, quadruple the tokens, sixteen times the attention matrix.
+    One pixel per token would be 2.5 billion scores per head per layer, which is
+    why nobody does that. 16×16 gives 196 tokens: a paragraph, not a book. Two
+    things fall out of the table. 16·16·3 = 768 is exactly ViT-Base's D, so its
+    embedding matrix happens to be square. And the model names: ViT-L/16 is
+    Large with patch 16; ViT-H/14 uses patch 14 for more tokens at more cost.
+  </p>
+
+  <div class="note">
+    <strong>The title is a shape.</strong> "16×16 words" is the tile, and 196
+    of them is the sentence. Everything a transformer costs scales with that
+    sentence length squared.
+  </div>
+
+  <h2>The wrong reshape is silent</h2>
+
+  <p>
+    This is the bug you will actually ship. Skip the cut and the transpose and
+    go straight to <code>img.reshape(16, 192)</code>. NumPy reads the image row
+    by row, so each "patch" is two full-width strips, not an 8×8 square. The
+    shape is identical. Nothing throws.
+  </p>
+
+<pre><code>shapes: (16, 192) (16, 192)  equal? True
+
+patch 5, first 8 values (R G B R G B R G):
+  right: [0.258 0.258 0.    0.29  0.258 0.    0.323 0.258]
+  wrong: <span class="hl">[0.    0.323 1.    0.032 0.323 1.    0.065 0.323]</span>
+
+what is 'patch 5', really?
+  right == img[8:16, 8:16]  an 8x8 square?  <span class="ok">True</span>
+  wrong == img[10:12, :]    a 2x32 strip?   True
+
+model runs on the wrong patches anyway: logits (10,)</code></pre>
+  <p>
+    Red ramps left to right in the toy image, green top to bottom. The right row
+    starts at pixel (8, 8), so red and green both read 0.258. The wrong row
+    starts at pixel (10, 0): red 0, green 0.323, blue on the wrong checkerboard
+    square. Same shape, different picture, ten plausible logits. It will even
+    train; the accuracy is just quietly bad and you'll blame the learning rate.
+    The PyTorch flavour is running this recipe on a (C, H, W) tensor without
+    moving the channel axis first. The failure you want is the loud one: 32
+    isn't divisible by 5, the cut can't happen, and NumPy refuses. Real
+    pipelines resize to 224 before patchifying for exactly this reason.
+  </p>
+<pre><code>  p=8: patches (16, 192)
+  p=5: <span class="ok">ValueError: cannot reshape array of size 3072 into shape (6,5,6,5,3)</span></code></pre>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no training — just the forward pass, so
+  you can watch the reshape happen. Every function under 20 lines.
+  <code>softmax</code>, <code>attention</code> and <code>layernorm</code> are
+  the attention page's, unchanged: in the script, not repeated here.
+</p>
+<p>
+  <a href="vit_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 160 lines plus six runnable demos. Then:
+</p>
+<pre><code>python3 vit_from_scratch.py</code></pre>
+
+<pre><code>import numpy as np
+
+
+def patchify(img, p):
+    H, W, C = img.shape
+    # (1) CUT: split each spatial axis into (how many patches, pixels each).
+    #     (H, W, C) -&gt; (H/p, p, W/p, p, C). Throws if p does not divide H, W.
+    cut = img.reshape(H // p, p, W // p, p, C)
+    # (2) GROUP: bring the two "which patch" axes together, and the two
+    #     "which pixel inside it" axes together. This transpose is the line
+    #     everyone skips. Skipping it is silent garbage (demo 5).
+    grouped = cut.transpose(0, 2, 1, 3, 4)       # (H/p, W/p, p, p, C)
+    # (3) FLATTEN: one row per patch. p*p pixels, R G B R G B ... in order.
+    return grouped.reshape((H // p) * (W // p), p * p * C)
+
+
+class EncoderBlock:
+    def __init__(self, D, seed):
+        rng = np.random.default_rng(seed)
+        s = 1 / np.sqrt(D)
+        self.W_q, self.W_k, self.W_v, self.W_o = [
+            rng.normal(0, s, (D, D)) for _ in range(4)]
+        self.W_1 = rng.normal(0, s, (D, 4 * D))             # MLP: D -&gt; 4D -&gt; D
+        self.W_2 = rng.normal(0, 1 / np.sqrt(4 * D), (4 * D, D))
+
+    def __call__(self, z):
+        h = layernorm(z)                                     # LN first
+        a, weights = attention(h @ self.W_q, h @ self.W_k, h @ self.W_v)
+        z = z + a @ self.W_o                                 # residual: a diff
+        z = z + gelu(layernorm(z) @ self.W_1) @ self.W_2     # MLP, residual
+        return z, weights
+
+
+class ViT:
+    def __init__(self, H, W, C, p, D, n_blocks, n_classes, seed=0):
+        rng = np.random.default_rng(seed)
+        self.p, self.N = p, (H // p) * (W // p)
+        self.E = rng.normal(0, 1 / np.sqrt(p * p * C), (p * p * C, D))
+        self.cls = rng.normal(0, 0.02, (1, D))
+        self.pos = rng.normal(0, 0.02, (self.N + 1, D))
+        self.blocks = [EncoderBlock(D, seed=i + 1) for i in range(n_blocks)]
+        self.W_head = rng.normal(0, 1 / np.sqrt(D), (D, n_classes))
+
+    def __call__(self, img, use_pos=True):
+        return self.forward(patchify(img, self.p), use_pos)  # (N, p*p*C) in
+
+    def forward(self, patches, use_pos=True):
+        tokens = patches @ self.E                            # (N, D)   x_p E
+        z = np.concatenate([self.cls, tokens], axis=0)       # (N+1, D) prepend
+        if use_pos:
+            z = z + self.pos                                 # (N+1, D) + E_pos
+        for block in self.blocks:
+            z, weights = block(z)                            # (N+1, D) unchanged
+        z = layernorm(z)                                     # Eq. 4: LN(z_L^0)
+        return z[0] @ self.W_head, z, weights                # logits, rows, attn</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Call <code>patchify(img, 5)</code></td><td><code>ValueError: cannot reshape array of size 3072 into shape (6,5,6,5,3)</code>. Loud, immediate, at the first line. This is the good failure.</td></tr>
+    <tr><td>Delete <code>z = z + self.pos</code></td><td>Shuffle the tiles and the CLS row is unchanged: max abs diff 1.44e-15, <code>allclose? True</code>. The same answer for any tile order. It can't see layout at all.</td></tr>
+    <tr><td>In <code>ViT.__call__</code>, swap <code>patchify</code> for <code>patchify_wrong</code></td><td>Nothing. Shapes match, <code>logits (10,)</code>, no error. "Patch 5" is now <code>img[10:12, :]</code>, a 2×32 strip. Silent, and it'll train.</td></tr>
+    <tr><td>Read <code>z[6]</code> instead of <code>z[0]</code> for the head</td><td>Under the shuffle it moves by 1.47 while CLS and <code>z[1:].mean(0)</code> stay at 1e-15. Mean-pooling is a legitimate head (the paper's appendix, with a re-tuned learning rate). One patch row is not.</td></tr>
+    <tr><td>Train it on a small dataset</td><td>You can't, here: there is no training loop. The paper's finding is that on ImageNet-1k alone ViT trails a comparable ResNet, and only overtakes it after ImageNet-21k or JFT-300M pretraining, because it has less image-specific inductive bias and must learn locality from data.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §3.1, which is the script
+  with Greek letters, §4.3 for the "how much data does it need" curves, and
+  the two appendix ablations on head type and position embeddings. Skip the
+  compute tables and the self-supervision section. You'll find the paper is
+  just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is no new maths in this paper. If you cleared the attention page you
+  have cleared this one: a reshape and a transpose are array indexing, the
+  patch embedding is one matmul, and the rest is the same softmax and
+  weighted average as before.
+</p>
+<p>
+  The one thing worth being fluent in is the arithmetic in the n² table: tokens
+  from patch size, attention cost from tokens, so memory and latency from patch
+  size. That's the sum you'll do at work when someone asks whether the model
+  fits on the GPU at 384×384, and it's three multiplications. You don't need to
+  know why 1D position embeddings learn a 2D grid. Nobody fully does.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: an image as a sentence, in code you can break.
+  These fill in what I deliberately skipped.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2010.11929">
+      <span class="paper-title">An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale</span>
+      <span class="paper-meta">Dosovitskiy et al., 2020. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      §3.1 is the script with Greek letters: Equations 1 to 4 are
+      <code>patchify</code>, the block, and the head. §4.3 has the plots that
+      answer "how much data", and the appendix has the ablations I quoted on
+      CLS versus mean-pool and 1D versus 2D positions.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://github.com/lucidrains/vit-pytorch">
+      <span class="paper-title">vit-pytorch</span>
+      <span class="paper-meta">Phil Wang (lucidrains). The model in about a hundred lines of PyTorch.</span>
+    </a>
+    <p class="paper-pitch">
+      The step from my NumPy to something you'd train. Multi-head, dropout, a
+      real head, and the whole of my <code>patchify</code> as one
+      <code>einops.rearrange</code> call. Diff it against the script.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/fine-tune-vit">
+      <span class="paper-title">Fine-Tune ViT for Image Classification with Transformers</span>
+      <span class="paper-meta">Hugging Face blog. The engineer's actual job.</span>
+    </a>
+    <p class="paper-pitch">
+      Nobody pretrains a ViT on JFT-300M at work. You take a pretrained one and
+      fine-tune it on your own images, which is the paper's own recommendation.
+      End to end, with the processor that does the resize-to-224 I mentioned.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> §3.1 of the paper → vit-pytorch →
+  the Hugging Face fine-tune. How, then real code, then your own dataset. If
+  you only read one, read vit-pytorch with the script open beside it.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

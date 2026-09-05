@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parameter-Efficient Fine-Tuning: the family — for programmers</title>
+<meta name="description" content="Adapters, prefix tuning, prompt tuning, (IA)³ and LoRA explained as one question: where do you hook a small trainable thing into a frozen network? Runnable NumPy, six demos, real parameter counts.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Parameter-Efficient Fine-Tuning: the family</h1>
+    <p class="paper-meta">Houlsby et al., 2019 — with Li &amp; Liang 2021, Lester et al. 2021, Liu et al. 2022</p>
+    <p class="lede">
+      Five papers, one question: where do you plug the small trainable thing
+      into the big frozen one?
+    </p>
+    <p>
+      <a href="peft_from_scratch.py" download>Download peft_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
+
+  <p>
+    I'm an AI Engineer. I've run <code>get_peft_model()</code> in production,
+    picked <code>r=8</code> because the tutorial did, and I still couldn't tell
+    you why an adapter adds latency and a LoRA doesn't. Five papers, five
+    acronyms, and nobody told me they are one paper asked five ways.
+  </p>
+
+  <h2>PEFT is middleware</h2>
+
+  <p>You know this. The framework handles the request. You don't fork it:</p>
+
+<pre><code>def handle(request):              # the framework. Frozen. Not yours.
+    return framework.handle(request)
+
+app.use(my_middleware)            # small, yours, sits in the request path</code></pre>
+
+  <p>
+    Full fine-tuning is forking the framework: every file is yours now, one
+    copy per task. PEFT is registering middleware. Freeze the base, put one
+    small trainable thing in the path, train only that:
+  </p>
+
+<pre><code>for p in model.parameters():
+    p.requires_grad = False        # the whole method is this line
+
+def adapter(h):                    # Houlsby 2019. h flows through untouched
+    return h + W_up @ relu(W_down @ h)   # plus a tiny, learned diff</code></pre>
+
+  <p>Every method on this page is that, with the hook somewhere else.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Frozen base</strong></td><td>The pretrained weights. Never updated</td><td>The framework you <code>pip install</code></td></tr>
+      <tr><td><strong>Hook</strong></td><td>The few parameters that do train</td><td>Your middleware</td></tr>
+      <tr><td><strong>Residual</strong> <code>h + f(h)</code></td><td>The hook proposes a diff, not a replacement</td><td>A skip link. <code>next()</code> still runs</td></tr>
+      <tr><td><strong>Bottleneck</strong></td><td>Squeeze d → m → d with m ≪ d</td><td>A thin interface, not a second framework</td></tr>
+      <tr><td><strong>Merge</strong></td><td>Fold the hook back into the frozen weights</td><td>Inlining. Zero cost at runtime</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Did it beat full fine-tuning? Not on accuracy — on everything else. Full
+    fine-tuning BERT-large moves 340M parameters and stores a 340M checkpoint
+    per task. Houlsby's adapters train about 3.6% of the parameters and land
+    within 0.4 points of full fine-tuning on GLUE. So the interview question
+    is never "which is more accurate". It's "where does each go, what does it
+    cost to train, what does it cost to serve".
+  </p>
+
+  <h2>The one formula</h2>
+  <div class="formula">Adapter(h) = h + W<sub>up</sub> · ReLU(W<sub>down</sub> · h + b<sub>down</sub>) + b<sub>up</sub></div>
+
+  <p>Read it inside-out, as pipeline stages:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>h</code></td><td>(n, d)</td><td>The sublayer's output. n tokens, d wide. Frozen code made it</td></tr>
+      <tr><td><code>W<sub>down</sub></code></td><td>(d, m)</td><td><strong>Squeeze.</strong> d=64 down to m=8. This is where the saving lives</td></tr>
+      <tr><td><code>ReLU</code></td><td>(n, m)</td><td>A nonlinearity, so the two matrices don't collapse into one</td></tr>
+      <tr><td><code>W<sub>up</sub></code></td><td>(m, d)</td><td><strong>Unsqueeze.</strong> Back to d. Initialised to zero</td></tr>
+      <tr><td><code>h +</code></td><td>(n, d)</td><td>Skip link. Shape unchanged, so it drops into any block</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Two per block in the paper: after attention and after the feed-forward,
+    before each add-and-norm. Houlsby also unfreezes the layer norms; I leave
+    those frozen to keep the count clean.
+  </p>
+
+  <h2>Five hooks, one frozen block</h2>
+  <p>
+    The script builds one block — d=64, one head, FFN 4d — as a dict of
+    arrays. Nothing in it trains. Each method is a function that returns
+    only its trainable thing, and <code>n_params()</code> counts it.
+  </p>
+
+<pre><code>  attention (W_q, W_k, W_v, W_o):   16,384
+  feed-forward (W_1, b_1, W_2, b_2):  33,088
+  two layer norms:                      256
+  TOTAL frozen params:               49,728
+
+method                   per block  % block  x12 blocks
+full fine-tuning            49,728  100.00%      49,728
+adapters, m=8 (x2)           2,192    4.41%      26,304
+prefix tuning, p=8           1,024    2.06%      12,288
+prompt tuning, p=8             512    1.03%  <span class="ok">       512</span>
+(IA)^3                         384    0.77%       4,608
+LoRA r=8 on W_q, W_v         2,048    4.12%      24,576</code></pre>
+
+  <p>
+    Every method except prompt tuning pays per layer; prompt tuning pays once,
+    at the input, however deep the model is. The percentages are high only
+    because the toy is tiny — a hook grows with d, a block with d² — which is
+    how these become Houlsby's 3.6% and (IA)³'s 0.01% at real widths. And this
+    is the table you'll be asked for:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Method</th><th>Where the hook goes</th><th>Trainable (toy)</th><th>Inference cost</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Adapter</strong> <span class="muted">Houlsby 2019</span></td><td>After each sublayer, inside the residual</td><td>2,192 (4.41%)</td><td>Extra sequential matmuls. Latency</td></tr>
+      <tr><td><strong>Prefix tuning</strong> <span class="muted">Li &amp; Liang 2021</span></td><td>p extra K and V rows, every layer</td><td>1,024 (2.06%)</td><td>+p entries in every layer's KV cache</td></tr>
+      <tr><td><strong>Prompt tuning</strong> <span class="muted">Lester 2021</span></td><td>p extra input rows, once</td><td>512 (1.03%)</td><td>+p tokens through the whole stack</td></tr>
+      <tr><td><strong>(IA)³</strong> <span class="muted">Liu 2022</span></td><td>Scaling vectors on K, V and the FFN hidden</td><td>384 (0.77%)</td><td>Zero, after merging</td></tr>
+      <tr><td><strong>LoRA</strong> <span class="muted">Hu 2021</span></td><td>Low-rank diff on W<sub>q</sub>, W<sub>v</sub></td><td>2,048 (4.12%)</td><td>Zero, after merging</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Step 0 must be a no-op</h2>
+  <p>
+    A hook that changes the output before training has thrown the pretrained
+    model away on the first forward pass. Houlsby's fix: zero the
+    up-projection. Which of the five start clean?
+  </p>
+
+<pre><code>max |block_with_hook(X) - block(X)| before any training:
+  adapters, W_up = 0:           <span class="ok">0.000000</span>
+  adapters, W_up random:        <span class="hl">0.376937</span>  ← not a no-op
+  (IA)^3, vectors = 1:          0.000000
+  prefix, K and V = 0:          0.277744  ← not a no-op
+  prompt, 8 sampled tokens:     0.491051  ← not a no-op</code></pre>
+
+  <p>
+    Adapter and (IA)³: byte-identical. The prefix is not, even zeroed — a
+    zero key still scores exp(0) = 1 in the softmax, so it takes attention
+    mass from real tokens before anything is learned. Prompt tokens likewise:
+    they are seen. LoRA starts clean for the adapter's reason: B = 0.
+  </p>
+
+  <div class="note">
+    <strong>Zero the last matrix, not the first.</strong> Zero W<sub>down</sub>
+    instead and the gradient into W<sub>up</sub> is zero too; training never
+    leaves the origin. Same trick in LoRA.
+  </div>
+
+  <h2>Prefix tuning: keys decide, values deliver</h2>
+  <p>
+    Li and Liang moved the hook into attention. Prepend p learned vectors to
+    the keys and p to the values, every layer, so real tokens' queries have p
+    extra slots to look at. Nothing passes through W<sub>k</sub> or
+    W<sub>v</sub>: the prefix <em>is</em> the keys and values. The paper trains
+    about 0.1% of the parameters this way on GPT-2 and BART (via a small MLP
+    for stability, thrown away after; I skip it). Now learn only the values:
+  </p>
+
+<pre><code>attention weights shape with p=4 prefix rows: (16, 20)  (n, p+n)
+weight each query puts on the 4 prefix slots (first 3 queries):
+[[0.043 0.027 0.05  0.047]
+ [0.071 0.061 0.017 0.067]
+ [0.083 0.04  0.023 0.007]]
+
+BREAK IT: train V only, leave the prefix keys at zero
+[[0.035 0.035 0.035 0.035]
+ [0.027 0.027 0.027 0.027]
+ [0.032 0.032 0.032 0.032]]
+change every value row, max |weights diff|: <span class="hl">0.0</span></code></pre>
+
+  <p>
+    With learned keys each query reads the four slots differently. With zero
+    keys the columns are identical and redrawing every value vector moves the
+    weights by exactly 0: the prefix has collapsed into one fixed vector added
+    to everyone. Keys are the addressing, values the payload. You need both.
+  </p>
+
+  <h2>Prompt tuning: the hook is in the input</h2>
+  <p>
+    Lester et al. asked the smallest version of the question: what if the only
+    trainable thing is p token embeddings, prepended once at the input? No hook
+    in any block; they are ordinary positions and every layer sees them.
+  </p>
+
+<pre><code>input: 8 prompt rows + 16 real rows = (24, 64)
+attention mass real tokens put on the prompt:
+  mean 0.340   min 0.196   max 0.546   (uniform would be 0.333)
+
+BREAK IT: read the output at row 0
+  out.shape = (24, 64)   ← 8 of those rows are the prompt
+  out[0]  belongs to prompt[0]      out[8] belongs to real token 0
+  the answer is out[8:], shape <span class="ok">(16, 64)</span></code></pre>
+
+  <p>
+    A third of the attention mass, on tokens nobody has trained yet (sampled
+    from real token vectors, the paper's recommended init). Training moves
+    them so what real tokens read there is useful. And the output has 24 rows:
+    <code>out[0]</code> is a prompt token's output. Slice the prompt off.
+  </p>
+
+  <div class="note">
+    <strong>The honest caveat.</strong> Lester's headline finding is that
+    prompt tuning only matches full fine-tuning once the model passes roughly
+    10B parameters. Below that it lags. I can't show that without training,
+    so I'm telling you instead: if your model is BERT-sized, wrong hook.
+  </div>
+
+  <h2>(IA)³ and LoRA: hooks that fold away</h2>
+  <p>
+    Liu et al. went smaller still. (IA)³ learns three vectors per block — one
+    scales the keys, one the values, one the FFN hidden — and nothing else.
+    384 numbers here, about 0.01% of a real model. A scale is a multiply, so
+    afterwards you fold it into the frozen matrix (columns of W<sub>k</sub> and
+    W<sub>v</sub>, rows of W<sub>2</sub>) and the hook is gone. That's the
+    column the family is really sorted by:
+  </p>
+
+<pre><code>base block FLOPs: 1,638,400
+
+method               extra FLOPs  extra tokens  adds a step?
+adapters, m=8             65,536             0           <span class="hl">yes</span>
+prefix, p=8               32,768             8            no
+prompt, p=8              868,352             8            no
+(IA)^3, unmerged           6,144             0            no
+(IA)^3, merged                 0             0            no
+LoRA, merged                   0             0            no
+
+(IA)^3 merge check, max |hooked - merged|: 1.33e-15   identical? <span class="ok">True</span></code></pre>
+
+  <p>
+    The adapter's 65,536 extra FLOPs are 4% of the block. Small. But they sit
+    <em>in</em> the residual path: the block can't finish until the adapter
+    does, a serial delay paid every layer, every token. That was Houlsby's
+    cost, and the gap <a href="../lora/">LoRA</a> closed: put the diff on the
+    weight matrix itself, W + BA, and merge it after training. Same idea, zero
+    serving cost. It has its own page; I won't re-explain it here.
+  </p>
+  <p>
+    Prefix and prompt tuning don't add a step, they widen one. But the prompt
+    row is 868,352 extra FLOPs, half the block again: 8 more tokens through
+    <em>every</em> matmul in <em>every</em> layer. Nothing is free; pick where.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no training — the forward pass with every
+  hook point marked, so you can put a breakpoint in <code>block()</code> and
+  watch which one fires. Every function under 20 lines.
+</p>
+<p>
+  <a href="peft_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 170 lines plus six runnable demos. Then:
+</p>
+<pre><code>python3 peft_from_scratch.py</code></pre>
+
+<pre><code>def adapter(h, A):
+    z = relu(h @ A["W_down"] + A["b_down"])          # (n, d) -&gt; (n, m)
+    return h + z @ A["W_up"] + A["b_up"]             # (n, m) -&gt; (n, d), + skip
+
+
+def block(W, X, hooks=None, return_weights=False):
+    h = hooks or {}
+    Q, K, V = X @ W["W_q"], X @ W["W_k"], X @ W["W_v"]
+    if "ia3_k" in h:
+        K, V = K * h["ia3_k"], V * h["ia3_v"]          # (IA)^3: scale K, V
+    if "prefix_k" in h:                                # prefix: p extra rows
+        K = np.concatenate([h["prefix_k"], K])         #   the queries can
+        V = np.concatenate([h["prefix_v"], V])         #   attend to
+    weights = softmax(Q @ K.T / np.sqrt(Q.shape[-1]))  # (n, n + p)
+    a = (weights @ V) @ W["W_o"]
+    if "adapter_attn" in h:
+        a = adapter(a, h["adapter_attn"])              # Houlsby hook 1
+    X = layernorm(X + a, W["ln1_g"], W["ln1_b"])
+    f = relu(X @ W["W_1"] + W["b_1"])
+    if "ia3_ff" in h:
+        f = f * h["ia3_ff"]                            # (IA)^3: scale hidden
+    f = f @ W["W_2"] + W["b_2"]
+    if "adapter_ffn" in h:
+        f = adapter(f, h["adapter_ffn"])               # Houlsby hook 2
+    X = layernorm(X + f, W["ln2_g"], W["ln2_b"])
+    return (X, weights) if return_weights else X
+
+
+def make_adapters(m, d=D, zero_up=True, seed=1):
+    """Houlsby: two bottleneck adapters per block, width m. Up-proj zeroed so
+    step 0 is the identity (the paper: 'near-identity initialisation')."""
+    rng = np.random.default_rng(seed)
+    def one():
+        up = np.zeros((m, d)) if zero_up else rng.normal(0, 0.1, (m, d))
+        return {"W_down": rng.normal(0, 0.1, (d, m)), "b_down": np.zeros(m),
+                "W_up": up, "b_up": np.zeros(d)}
+    return {"adapter_attn": one(), "adapter_ffn": one()}
+
+def make_prefix(p, d=D, zero=False, seed=2):
+    """Li &amp; Liang: p learned key rows and p learned value rows, per layer.
+    They never pass through W_k / W_v -- they ARE the keys and values."""
+    rng = np.random.default_rng(seed)
+    if zero:
+        return {"prefix_k": np.zeros((p, d)), "prefix_v": np.zeros((p, d))}
+    return {"prefix_k": rng.normal(0, 1, (p, d)),
+            "prefix_v": rng.normal(0, 1, (p, d))}
+
+def make_prompt(p, X, d=D, seed=3):
+    """Lester: p learned INPUT tokens. Not a hook in the block -- new rows
+    prepended to X. Init by sampling real token vectors (the paper's best)."""
+    rng = np.random.default_rng(seed)
+    return X[rng.integers(0, len(X), size=p)].copy()
+
+def make_ia3(d=D, d_ff=D_FF):
+    """Liu 2022: three scaling vectors, all ones at init -&gt; identity."""
+    return {"ia3_k": np.ones(d), "ia3_v": np.ones(d), "ia3_ff": np.ones(d_ff)}</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living; reverse-engineering from broken behaviour is your native mode.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In demo 2, change <code>make_adapters(8)</code> to <code>make_adapters(64)</code> — bottleneck = d</td><td>16,640 trainable, 33.46% of the block: more than the whole attention sublayer (16,384) you bolted them onto. No bottleneck, no method.</td></tr>
+    <tr><td>In demo 3, pass <code>zero_up=False</code> to <code>make_adapters</code></td><td>Step-0 drift goes from 0.000000 to 0.376937. You overwrote the pretrained behaviour before the first gradient.</td></tr>
+    <tr><td>In demo 4, keep <code>"prefix_k": np.zeros((p, D))</code> and only redraw <code>prefix_v</code></td><td>Every prefix column is identical per row (0.035 0.035 0.035 0.035) and the weights move by 0.0. The prefix can't be addressed.</td></tr>
+    <tr><td>In demo 5, read <code>out[0]</code> instead of <code>out[8:]</code></td><td>Your "answer" is prompt token 0's output. <code>out.shape</code> is (24, 64); the real tokens are the last 16 rows.</td></tr>
+    <tr><td>Count <code>n_params(hooks) + n_params(W)</code> — what forgetting <code>requires_grad = False</code> does in a framework</td><td>51,920 trainable, 104.41% of the block. Full fine-tuning with extra steps, and the checkpoint is the whole model again.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers — method sections only. Houlsby:
+  section 2 and its Figure 2, then the GLUE table. Lester: the figure that
+  plots prompt tuning against model size. Each is one row of the hook table.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There's less here than on the attention page. The family is matrix shapes
+  and one skip link. An adapter is two matmuls and an add. A prefix is a
+  <code>concatenate</code>; a prompt is a <code>concatenate</code> one call
+  earlier. (IA)³ is a multiply. Gradients are still <code>loss.backward()</code>.
+</p>
+<p>
+  What separates AI engineers here is knowing which hook merges, what each
+  does to the KV cache, and that prompt tuning's scale threshold is real.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you the family as one hook table, in code you can break.
+  These cover what I skipped: the history and the pictures.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1902.00751">
+      <span class="paper-title">Parameter-Efficient Transfer Learning for NLP</span>
+      <span class="paper-meta">Houlsby et al., 2019. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Section 2 and Figure 2 are <code>adapter()</code> with a diagram. Then
+      the parameter/performance trade-off section: my bottleneck sweep run on
+      real BERT, showing how far m shrinks before GLUE notices.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://magazine.sebastianraschka.com/p/understanding-parameter-efficient">
+      <span class="paper-title">Understanding Parameter-Efficient Finetuning of LLMs</span>
+      <span class="paper-meta">Sebastian Raschka. Diagrams and history.</span>
+    </a>
+    <p class="paper-pitch">
+      The family as a timeline — prefix tuning, adapters, LLaMA-Adapter — with
+      the block diagrams I replaced with a dict of hooks. See each hook drawn
+      onto a real transformer, and where newer methods fit.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/docs/peft/conceptual_guides/prompting">
+      <span class="paper-title">Soft prompts</span>
+      <span class="paper-meta">Hugging Face PEFT docs. Conceptual guide.</span>
+    </a>
+    <p class="paper-pitch">
+      Prompt tuning, prefix tuning and P-tuning side by side, with pictures. I
+      gave prompt tuning one demo and a caveat; this gives it Lester's scale
+      plot and the variants I didn't cover.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Raschka → Houlsby → soft prompts.
+  History, anchor paper, then the branch I treated briefly. If you only read
+  one, read Houlsby section 2 — it's <code>adapter()</code> with a picture.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

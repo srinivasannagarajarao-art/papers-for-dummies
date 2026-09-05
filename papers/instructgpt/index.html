@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InstructGPT — for programmers</title>
+<meta name="description" content="The InstructGPT paper explained as code. GPT-3 completes text; three training stages turn it into an assistant. A runnable toy pipeline in NumPy and PyTorch, six demos, each stage broken on purpose.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>InstructGPT: Training Language Models to Follow Instructions with Human Feedback</h1>
+    <p class="paper-meta">Ouyang et al., 2022</p>
+    <p class="lede">
+      The recipe that turned a text completer into an assistant, run end to end on a
+      toy small enough to break.
+    </p>
+    <p>
+      <a href="instructgpt_from_scratch.py" download>Download instructgpt_from_scratch.py</a>
+      — everything below runs from it. NumPy for the world, a few hundred steps of CPU
+      PyTorch for the three training loops. About two seconds.
+    </p>
+  </div>
+
+  <p>
+    I'd used GPT-3 through the API, and I'd used ChatGPT, and I could not have told you
+    what happened in between. This paper is the in-between. I expected the hard part to
+    be the RL. It isn't — the RL is one line. The hard part was seeing that there are
+    three <em>separate</em> problems, and each stage fixes one.
+  </p>
+
+  <h2>Onboarding a new hire</h2>
+
+  <p>
+    A new engineer joins. Smart, has read everything, and on day one still doesn't know
+    how <em>you</em> do things. So you show them a few worked examples. Then you review
+    their work — "this one, not that one" — until they pick up your taste. Then they
+    practise on real tickets, with a mentor nearby to say "you're drifting, come back"
+    the moment they refactor the codebase to fix a typo. That's the paper. Before it,
+    GPT-3 had one job:
+  </p>
+
+<pre><code>prompt = "Explain what a mutex is."
+gpt3(prompt)   # "what comes next in a document containing this line?"
+               # -&gt; "Explain what a semaphore is. Explain what a deadlock is."</code></pre>
+
+  <p>
+    Not stupid, not stubborn. A document containing "Explain what a mutex is." is
+    usually an exam paper, and the next line of an exam paper is the next question.
+    Every trick for making GPT-3 behave — few-shot examples, "Q: … A:" scaffolding —
+    was a way of forging a document in which the answer happens to come next.
+    InstructGPT is three stages on top of that:
+  </p>
+
+<pre><code>policy = base                                    # completes text, does not answer
+policy = fit(policy, demonstrations)             # 1. SFT: copy the worked examples
+reward = fit(comparisons(policy.samples()))      # 2. RM: learn their taste
+policy = argmax(reward(policy) - beta * KL(policy, sft))   # 3. RL, on a leash</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>New-hire analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Demonstration</strong></td><td>A human wrote the answer they wanted</td><td>The worked example on day one</td></tr>
+      <tr><td><strong>Comparison</strong></td><td>A human picked the better of two model outputs</td><td>Code review: "this one, not that one"</td></tr>
+      <tr><td><strong>Reward model</strong></td><td>A network trained to predict which output a human prefers</td><td>The reviewer's taste, compiled</td></tr>
+      <tr><td><strong>KL penalty</strong></td><td>A cost for drifting away from the SFT model</td><td>The mentor saying "come back"</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The headline: on real prompts people had sent to the API, labelers preferred the
+    1.3B InstructGPT to the 175B GPT-3, a model a hundred times bigger. The 175B
+    InstructGPT beat 175B GPT-3 85% of the time, and 71% of the time against GPT-3
+    with a carefully written few-shot prompt. That's the interview answer to "why
+    doesn't scaling fix this?": you cannot scale your way out of the wrong objective.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">objective(φ) = E<sub>(x,y)∼π<sub>φ</sub></sub>[ r<sub>θ</sub>(x, y) − β log(π<sub>φ</sub>(y|x) / π<sup>SFT</sup>(y|x)) ] + γ E<sub>x∼D<sub>pretrain</sub></sub>[ log π<sub>φ</sub>(x) ]</div>
+
+  <p>That's the stage-3 objective from the method section. Three things being traded off:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>y ∼ π<sub>φ</sub></code></td><td>samples</td><td>The policy answers its own prompts. PPO estimates the expectation by sampling; my toy has six candidates per prompt, so I compute it exactly</td></tr>
+      <tr><td><code>r<sub>θ</sub>(x, y)</code></td><td>scalar</td><td><strong>The reward model's score.</strong> "What a labeler would think", compiled into a network</td></tr>
+      <tr><td><code>β log(π<sub>φ</sub> / π<sup>SFT</sup>)</code></td><td>scalar, per token</td><td><strong>The leash.</strong> Averaged over samples it's KL(π<sub>φ</sub> ‖ π<sup>SFT</sup>): how far the policy has drifted from stage 1. β = 0.02 in the paper</td></tr>
+      <tr><td><code>γ E[log π<sub>φ</sub>(x)]</code></td><td>pretraining loss</td><td><strong>PPO-ptx.</strong> Keep doing the original job on pretraining data while you practise. γ = 27.8 in the paper; γ = 0 is plain PPO</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Drop the γ term and the objective has an exact answer:
+    π<sup>*</sup>(y|x) ∝ π<sup>SFT</sup>(y|x) · e<sup>r(x,y)/β</sup> — the SFT
+    distribution, re-weighted by the reward. β → ∞ is SFT; β → 0 is the reward model's
+    argmax. The script checks the trained policy lands there (max difference 0.0005).
+  </p>
+
+  <h2>Stage 0: GPT-3 completes; it does not answer</h2>
+
+  <p>
+    The toy world: four prompts, six candidate responses each, and a hidden helpfulness
+    score (0 to 10) that nothing in training ever reads — it only grades the pipeline
+    afterwards. A policy is a 4×6 table of logits; answering means softmax the row and
+    sample. Per prompt: three continuations, a terse answer, a good answer, a padded
+    "Great question!" essay. The base logits make a continuation e<sup>2</sup> ≈ 7×
+    more natural than a one-word answer, and an answer rarer the longer it gets:
+  </p>
+
+<pre><code>  prompt:    "Explain what a mutex is."
+  base says: "Explain what a semaphore is. Explain what a deadlock is."
+
+  base             mass on answers: <span class="hl">0.053</span>   true helpfulness: 0.79
+  base policy on prompt 0: continuations 0.965, terse 0.030,
+                           good 0.0044, padded 0.0005</code></pre>
+
+  <h2>Stage 1: SFT teaches the format</h2>
+
+  <p>
+    Labelers write the answer they want to see — about 13k prompts' worth. Then plain
+    supervised fine-tuning: cross-entropy on those answers, the same loss as
+    pretraining, 16 epochs. Nothing new in the loss; what's new is the data. Here it's
+    eight demonstrations: per prompt, the labeler wrote the terse answer once and the
+    good answer once.
+  </p>
+
+<pre><code>  base             mass on answers: 0.053   true helpfulness: 0.79
+  SFT              mass on answers: <span class="ok">0.876</span>   true helpfulness: 5.69
+
+  SFT policy on prompt 0, per response: [0.043 0.043 0.043 0.442 0.428 0.001]
+  (terse answer <span class="hl">0.44</span>, good answer 0.43, padded answer 0.0006)   ← a coin flip</code></pre>
+
+  <p>
+    Eight examples took it from 5% answering to 88%. That is what SFT is for: the
+    format. But look at the split. SFT copies what it was shown, and it was shown a
+    terse answer and a good one equally often, so it has no opinion about which is
+    better. To give it one you'd have to write down what "better" means. You can't.
+  </p>
+
+  <h2>Stage 2: a reward model captures what you can't write down</h2>
+
+  <p>
+    Labelers stop writing. They see several of the model's own outputs for a prompt
+    and rank them — 4 to 9 at a time in the paper, every pair from one ranking trained
+    as a single batch, about 33k prompts. I can't define a good answer, but I can tell
+    you which of two is better. Turning "a beat b" into a scalar is Bradley-Terry:
+    P(a beats b) = sigmoid(r(a) − r(b)), minimise −log of that. The
+    <a href="../rlhf/">RLHF page</a> derives it; here it's three lines. The paper's
+    reward model is a 6B transformer with a scalar head. Mine is a linear layer over
+    three numbers per response: does it answer, how long is it, that length squared.
+    Same loss, same lesson. The labelers are simulated and imperfect; I tuned their
+    noise until two of them agree about as often as the paper's real ones did, 72.6%.
+  </p>
+
+<pre><code>  comparisons collected on SFT outputs: 240
+  simulated inter-labeler agreement:    0.737   (paper: about 0.73)
+  padded answers that reached a labeler: 0 of 4
+
+  reward model vs hidden score, on responses labelers saw: corr = <span class="ok">0.979</span>
+  reward model vs hidden score, on ALL 24 responses:       corr = 0.708
+
+  prompt 0, learned reward vs hidden score:
+    reward  1.96   hidden 0.5   'Explain what a semaphore is. E'
+    reward  4.60   hidden 5.0   'A lock one thread holds at a t'
+    reward  6.12   hidden 8.0   'A lock one thread holds while '
+    reward  <span class="hl">7.86</span>   hidden 3.5   'Great question! A mutex, or mu'   &lt;- never seen</code></pre>
+
+  <p>
+    The reward model is near-perfect on what labelers actually saw: 0.979. And it is
+    guessing about what they never saw. The padded essay has 0.06% probability under
+    SFT, so no labeler was ever shown one. The RM learned "longer is better" from
+    terse-vs-good — <em>true</em> on that data — and extrapolated straight past the
+    good answer to the essay. Hold that thought.
+  </p>
+
+  <div class="note">
+    <strong>A reward model cannot be more consistent than the people it learned
+    from.</strong> The script reruns this with labelers who agree only 54% of the
+    time: the ranking survives (corr 0.973) but the good-minus-terse reward gap goes
+    from 1.52 to 0.09, and margins are what stage 3 trades against the leash. The
+    paper's 73% is a ceiling on the whole pipeline, which is why §3.4 spends so long
+    on who the labelers were.
+  </div>
+
+  <h2>Stage 3: practise against the reward model, on a leash</h2>
+
+  <p>
+    Now the policy answers prompts (about 31k), the reward model scores the answers,
+    and the policy is updated to score higher — with a per-token KL penalty against
+    the SFT model so it can't wander off. The paper uses PPO; the
+    <a href="../rlhf/">RLHF page</a> walks through the sampling and clipping and I'm
+    not re-deriving it. With six candidates per prompt I compute the expectation
+    exactly and let autograd do the rest.
+  </p>
+
+<pre><code>  prompt:    "Explain what a mutex is."
+  RLHF says: "A lock one thread holds while the rest wait; guards shared state."
+
+  stage          mass on answers   true helpfulness   KL to SFT
+  base                     0.053               0.79       1.795
+  sft                      0.876               5.69       0.000
+  rlhf                     0.999               <span class="ok">7.68</span>       0.539
+
+  ceiling (always the good answer): 8.12
+  RLHF policy on prompt 0: terse 0.10, good 0.88, padded 0.015
+  closed form pi_SFT * exp(r/beta): max |diff| from trained policy = 0.0005</code></pre>
+
+  <p>
+    RL did the one thing SFT couldn't: it moved the coin flip to 0.10 / 0.88, because
+    the reward model ranks the two. Helpfulness 0.79 → 5.69 → 7.68 against a ceiling
+    of 8.12. And the padded essay crept up to 1.5% — the RM over-rates it, the policy
+    leaned that way, and the leash is the only reason it stopped. Two experiments show
+    what the leash is for.
+  </p>
+
+  <h3>Point the leash at the wrong model</h3>
+
+  <p>
+    Skip SFT — start RL from the base model and leash it to the base model, because
+    that's the only model you have. Or do SFT, then point the KL at the base model.
+  </p>
+
+<pre><code>  steps until true helpfulness &gt;= 7.0, then the final numbers:
+
+  run                     steps   mass on answers   helpfulness
+  SFT -&gt; RL, KL to SFT       <span class="ok">7</span>             0.999          7.68
+  base -&gt; RL, KL to base never             0.892          <span class="hl">4.75</span>
+  SFT -&gt; RL, KL to base  never             0.892          4.75
+
+  helpfulness at step 10:  with SFT 7.41   without SFT 1.50</code></pre>
+
+  <p>
+    From the base model the good answer is a rounding error, so RL has almost nothing
+    to push on and crawls: 1.50 after ten steps against 7.41. And the leash pulls back
+    toward continuations the whole way, so it settles at 4.75 and never arrives. The
+    two bad rows end in the <em>same</em> place: the reference model decides the
+    destination, the start only decides the speed. (With real sampling, the start also
+    decides whether you ever see a good answer at all.)
+  </p>
+
+  <h3>Take the leash off</h3>
+
+<pre><code>  beta = 0 says: "Great question! A mutex, or mutual exclusion... [4 paragraphs]"
+  probability on the padded answer, prompt 0: 0.999
+  beta = 0.7       mass on answers: 0.999   true helpfulness: 7.68
+  beta = 0         mass on answers: 1.000   true helpfulness: <span class="hl">3.50</span>
+
+  + 240 comparisons on the drifted policy's own outputs, RM retrained:
+    corr with hidden score on ALL 24 responses: 0.979   (was 0.708)
+    RM on prompt 0: good 6.28  padded 4.04   (was good 6.12, padded 7.86)
+  retrained RM     mass on answers: 0.998   true helpfulness: <span class="ok">7.63</span></code></pre>
+
+  <p>
+    With β = 0 the policy runs straight to whatever the reward model over-rates: the
+    essay, 99.9% of the time, and true helpfulness drops from 7.68 to 3.50. That's
+    reward hacking, and the RM was never wrong on its own data — it was asked about
+    something it had never seen. The paper has two guards: the KL penalty, and
+    collecting comparisons on outputs from the models being trained, not only the SFT
+    model, then retraining the RM on all of it — so it's trained where the policy
+    actually lives. The bottom half of the block is that fix: 240 fresh comparisons on
+    the drifted policy's outputs, the RM learns the essay is worse than the good answer
+    (4.04 against 6.28), and the policy comes back.
+  </p>
+
+  <div class="note">
+    <strong>ChatGPT is this recipe.</strong> The same three stages, with the
+    demonstrations and comparisons written as dialogues instead of single turns. If
+    you can explain these stages and what each one buys, you can explain ChatGPT.
+  </div>
+
+  <h2>The alignment tax, and PPO-ptx</h2>
+
+  <p>
+    Stage 3 made the model better at what labelers wanted and worse at things nobody
+    was checking: after RLHF, scores dropped on public benchmarks like SQuAD, DROP,
+    HellaSwag and a French→English translation task. The paper calls this the
+    alignment tax. It's distribution shift again — practise on 31k API-style prompts
+    and you drift from what the pretraining corpus taught you, even on the leash. The
+    fix is the γ term: while running PPO, keep taking ordinary next-token gradient
+    steps on batches of pretraining data. They call it PPO-ptx, and it recovers most
+    of the lost benchmark performance at little cost in labeler preference. Programmer
+    version: keep the old regression suite running while you refactor. It's not in the
+    script because the toy has no pretraining corpus to mix in; it's one extra loss
+    term, added, and the interesting part is why it's there.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the toy world and every measurement. PyTorch, CPU only, for the three
+  training loops — each stage is a training objective, and hand-written backprop would
+  bury that. No function longer than 15 lines.
+</p>
+<p>
+  <a href="instructgpt_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 230 lines including the toy world, plus six runnable demos. Then:
+</p>
+<pre><code>python3 instructgpt_from_scratch.py</code></pre>
+
+<pre><code># STAGE 1 -- SFT (supervised fine-tuning). Section 3.5 of the paper.
+
+def sft(base_logits, demos, steps=60, lr=1.0):
+    """demos[p] = indices of the responses a labeler wrote for prompt p."""
+    theta = torch.tensor(base_logits, requires_grad=True)
+    opt = torch.optim.SGD([theta], lr=lr)
+    prompts = torch.tensor([p for p, ds in enumerate(demos) for _ in ds])
+    targets = torch.tensor([d for ds in demos for d in ds])
+    for _ in range(steps):
+        logp = torch.log_softmax(theta, dim=-1)
+        loss = -logp[prompts, targets].mean()      # cross-entropy on the demos
+        opt.zero_grad(); loss.backward(); opt.step()
+    return theta.detach().numpy()
+
+# STAGE 2 -- reward model from comparisons. Section 3.5 of the paper.
+
+def labeler(p, a, b, rng):
+    """One human, one pair. Returns (winner, loser). Not perfectly reliable."""
+    p_a_wins = 1 / (1 + np.exp(-(HIDDEN[p, a] - HIDDEN[p, b]) / LABELER_TEMP))
+    return (a, b) if rng.random() &lt; p_a_wins else (b, a)
+
+def collect_comparisons(sample_logits, n, rng):
+    """Sample two DISTINCT responses from the given policy, ask a labeler.
+    Which policy you sample from is the whole distribution-shift story."""
+    probs, out = softmax(sample_logits), []
+    for _ in range(n):
+        p = rng.integers(N_PROMPTS)
+        a, b = rng.choice(N_RESP, size=2, replace=False, p=probs[p])
+        out.append((p, *labeler(p, a, b, rng)))
+    return out
+
+def train_reward_model(comparisons, steps=400, lr=0.1):
+    """Linear reward on FEATURES. Returns a (prompt, response) reward table."""
+    F = torch.tensor(FEATURES)
+    w = torch.zeros(F.shape[-1], requires_grad=True)
+    b = torch.zeros(1, requires_grad=True)
+    opt = torch.optim.Adam([w, b], lr=lr)
+    ps, ws, ls = (torch.tensor(c) for c in zip(*comparisons))
+    for _ in range(steps):
+        r = F @ w + b                              # reward of every candidate
+        margin = r[ps, ws] - r[ps, ls]             # winner minus loser
+        loss = -torch.nn.functional.logsigmoid(margin).mean()   # Bradley-Terry
+        opt.zero_grad(); loss.backward(); opt.step()
+    return (F @ w + b).detach().numpy()
+
+# STAGE 3 -- RL against the reward model, on a KL leash. Section 3.5.
+
+def rlhf(init_logits, ref_logits, reward, beta, steps=300, lr=0.1):
+    """Returns the whole trajectory of logits, so demos can watch it move."""
+    theta = torch.tensor(init_logits, requires_grad=True)
+    ref_logp = torch.log_softmax(torch.tensor(ref_logits), dim=-1)
+    R = torch.tensor(reward)
+    opt = torch.optim.Adam([theta], lr=lr)
+    history = [init_logits.copy()]
+    for _ in range(steps):
+        logp = torch.log_softmax(theta, dim=-1)
+        p = logp.exp()
+        expected_reward = (p * R).sum(-1)              # what the RM thinks
+        leash = (p * (logp - ref_logp)).sum(-1)        # KL(pi || pi_ref)
+        objective = (expected_reward - beta * leash).mean()
+        opt.zero_grad(); (-objective).backward(); opt.step()
+        history.append(theta.detach().numpy().copy())
+    return np.stack(history)</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a
+  living — reverse-engineering from broken behaviour is your native mode. Every row is
+  a one-line change; the script already prints the before-and-after.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Skip SFT: in <code>demo_4</code>, call <code>rlhf(BASE_LOGITS, BASE_LOGITS, …)</code></td><td>RL starts from a completion engine. Helpfulness 1.50 at step 10 instead of 7.41, never reaches 7.0, settles at 4.75 instead of 7.68.</td></tr>
+    <tr><td>Wrong leash: <code>rlhf(STAGES["sft"], BASE_LOGITS, …)</code></td><td>Same 4.75 as skipping SFT. The leash pulls toward continuations; the reference model decides where you end up.</td></tr>
+    <tr><td>In <code>demo_6</code>, retrain the RM without the fresh comparisons: drop <code>+ fresh</code></td><td>The "was" and "now" numbers become identical — 0.708 and 0.708, padded still 7.86. An RM can't learn about outputs it never sees; that's why the paper collected comparisons on the policy's own samples.</td></tr>
+    <tr><td><code>beta=0.0</code> in <code>demo_4</code></td><td>Reward hacking. The policy puts 0.999 on the "Great question!" essay and helpfulness falls to 3.50. The <a href="../rlhf/">RLHF page</a> has the general case.</td></tr>
+    <tr><td><code>LABELER_TEMP = 8.0</code></td><td>Labelers agree 0.54 of the time. The good-minus-terse reward gap goes 1.52 → 0.09 and RL on that RM lands at 6.60 instead of 7.68. The paper's real labelers: about 73%.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §3.5 for the three models, §3.4 for
+  who the labelers were and the 72.6% figure, §4.1 for the preference results, §4.2
+  for the alignment tax. Skip the toxicity and bias tables and all of §5 on a first
+  pass. You'll find the paper is just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There are four objects in this paper and you've met all of them. Cross-entropy is
+  −log of the probability you gave the right answer. The Bradley-Terry loss is a
+  sigmoid of a difference. An expectation is a weighted average. KL divergence is the
+  expected log-ratio of two distributions — "how surprised would the SFT model be by
+  what the new policy says" — and it's zero when they're the same model.
+</p>
+<p>
+  What I skipped is PPO's clipped objective and the value function, because they're
+  machinery: they estimate the gradient of the formula above from a handful of samples
+  without blowing up. You don't derive them to use them, any more than you derive
+  Adam. The <a href="../rlhf/">RLHF page</a> goes through them; the
+  <a href="../gpt/">GPT page</a> is what stage 0 actually is. What an interview will
+  probe is the data: why comparisons instead of ratings, why you compare the policy's
+  own outputs, what the KL is for. All of that is in the six demos.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you three stages, each fixing one problem, on a toy you can break.
+  Two other people fill in what I skipped.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2203.02155">
+      <span class="paper-title">Training language models to follow instructions with human feedback</span>
+      <span class="paper-meta">Ouyang et al., 2022. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read §3.5 with the script open — SFT, RM and RL are one subsection each and map
+      onto the three functions above. Table 6 has the dataset sizes, Figure 1 the
+      1.3B-beats-175B result, §4.2 the alignment tax.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/rlhf">
+      <span class="paper-title">Illustrating Reinforcement Learning from Human Feedback</span>
+      <span class="paper-meta">Hugging Face. Diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      The three stages as pictures, and the PPO loop I replaced with an exact
+      expectation drawn as it actually runs: sample, score, penalise, update.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huyenchip.com/2023/05/02/rlhf.html">
+      <span class="paper-title">RLHF: Reinforcement Learning from Human Feedback</span>
+      <span class="paper-meta">Chip Huyen. The engineering view.</span>
+    </a>
+    <p class="paper-pitch">
+      What each stage costs in data and compute, why comparisons beat ratings, what
+      the labelers' instructions looked like — the paper as a data operation rather
+      than a training loop.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Hugging Face → Huyen → the paper. Pictures,
+  then the operational reality, then the source. If you only read one, read Huyen —
+  it's closest to the questions you'll actually get asked.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BERT: Pre-training of Deep Bidirectional Transformers — for programmers</title>
+<meta name="description" content="The BERT paper explained as code. Pre-training is a cloze test: hide 15% of the tokens, let every token see both sides, guess the blanks. Runnable NumPy plus a tiny PyTorch model that trains on CPU in under 30 seconds, then fails on purpose when you put the causal mask back.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>BERT: Pre-training of Deep Bidirectional Transformers</h1>
+    <p class="paper-meta">Devlin et al., 2018</p>
+    <p class="lede">
+      Fill-in-the-blank on the whole internet. The attention page ends with
+      "remove the mask, that's BERT". This is the rest of that sentence.
+    </p>
+    <p><a href="bert_from_scratch.py" download>Download bert_from_scratch.py</a>
+      — everything below runs from it. NumPy, plus a tiny CPU PyTorch model for
+      the training step.</p>
+  </div>
+
+  <p>
+    I'd fine-tuned BERT for a classifier before I understood what pre-training
+    had done to it. Load <code>bert-base-uncased</code>, add a head, train three
+    epochs, ship. What nobody told me is that the paper is one exam question I
+    sat at age nine, plus the <a href="../attention/">encoder you already
+    have</a> with one argument deleted.
+  </p>
+
+  <h2>Pre-training is a cloze test</h2>
+
+  <p>You did this at school:</p>
+
+<pre><code>sentence = "the cat sat on the mat"
+question = "the cat ___ on the mat"     # the blank
+answer   = "sat"                        # the teacher has the original</code></pre>
+
+  <p>
+    BERT is that, over 3.3 billion words, with a transformer encoder as the
+    pupil and the loss graded <em>only on the blanks</em>:
+  </p>
+
+<pre><code>for sentence in the_internet:
+    hidden, answers = hide_15_percent(sentence)   # blank some tokens
+    guess = encoder(hidden)                       # every token sees BOTH sides
+    loss  = cross_entropy(guess, answers)         # marked on the blanks only</code></pre>
+
+  <p>
+    That is pre-training: no task in mind, just what tends to sit between "the
+    cat" and "on the mat". Then, per task, bolt a small head on and train the
+    whole thing a little more. That is fine-tuning. Same library, a different
+    <code>main()</code> per task.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>MLM</strong></td><td>Masked language model: hide tokens, predict them</td><td>A cloze test</td></tr>
+      <tr><td><strong>Bidirectional</strong></td><td>Each token attends to its left <em>and</em> its right</td><td>No causal mask. Just <code>mask=None</code></td></tr>
+      <tr><td><strong>Pre-train / fine-tune</strong></td><td>Learn the language once; then add a head and train every parameter per task</td><td>One shared library, a different <code>main()</code> per task</td></tr>
+      <tr><td><strong>[CLS]</strong></td><td>An extra first token whose output stands for the whole input</td><td>A <code>reduce()</code> over the sequence into one struct</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why it beat GPT-1 and ELMo</h2>
+
+  <p>
+    A normal language model predicts token 5 from tokens 1–4, then 6 from 1–5.
+    Every token sees only its left. GPT-1 was exactly that. Fine for generating
+    text, but "bank" in "the bank of the river" has its best clue on the
+    <em>right</em>. So why not let every token see both sides? Because it
+    cheats: in a stacked encoder, token 5 in layer 2 reads token 6 from layer
+    1, which has already read token 5. The paper says each word could
+    "indirectly see itself". ELMo dodged this with one left-to-right LSTM and
+    one right-to-left, glued at the end: a "shallow concatenation". BERT's one
+    trick: if the token is <em>hidden</em>, there's nothing to leak. Replace it
+    with <code>[MASK]</code>, let everyone look everywhere, and the only way to
+    score is to infer it from both sides. The cloze test is not a cute
+    framing. It is what makes deep bidirectionality legal.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">L<sub>MLM</sub> = − Σ<sub>i ∈ M</sub> log p(x<sub>i</sub> | x̃)</div>
+
+  <p>x is the original tokens, x̃ the same sequence with 15% of it tampered
+    with, M the set of tampered positions. Read it as stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>x</code></td><td>(L,)</td><td>Token ids of one sequence. L is 512 in the paper, 17 in my script</td></tr>
+      <tr><td><code>x̃ = corrupt(x)</code></td><td>(L,)</td><td>Pick 15% of positions. Of those, 80% become <code>[MASK]</code>, 10% a random token, 10% untouched</td></tr>
+      <tr><td><code>encoder(x̃)</code></td><td>(L, d)</td><td>The attention stack from the attention page, <strong>with <code>mask=None</code></strong>. Every row sees every column</td></tr>
+      <tr><td><code>head</code></td><td>(L, V)</td><td>One linear layer to vocabulary logits: "which token was here?"</td></tr>
+      <tr><td><code>−log p</code> at i ∈ M</td><td>scalar</td><td>Cross-entropy, but only at the tampered positions. The other 85% are context, not questions</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The masking recipe: 15%, then 80/10/10</h2>
+
+  <p>
+    The odd part is the 80/10/10. Why not replace every picked token with
+    <code>[MASK]</code>? Because <code>[MASK]</code> never appears when you
+    fine-tune. The 10% random and 10% kept-as-is mean the model is sometimes
+    marked on a <em>visible</em> token, so it can never fully trust its input.
+    Train without them and accuracy on a visible token falls from 99.3% to
+    53.0%: a row in the break-it table, and an ablation in the paper's appendix.
+  </p>
+
+  <p><strong>The recipe in NumPy, one sentence and then ten thousand:</strong></p>
+
+<pre><code>original : [CLS] d D e E g G h H a A b B g G h H
+corrupted: [CLS] d D e _ g G _ H a A b B g G h _
+labels   :     . . . . E . . h . . . . . . . . H
+kind     :     . . . . M . . M . . . . . . . . M
+           (M = [MASK]  R = random token  K = kept as-is  . = no loss)
+
+over 10000 sentences (160000 real tokens):
+  [MASK]   12.0%   (recipe says 12.0%)
+  random    1.5%   (recipe says 1.5%)
+  kept      1.5%   (recipe says 1.5%)
+  picked   15.0%   (recipe says 15.0%) <span class="ok">✓</span></code></pre>
+
+  <p>
+    My toy corpus: a "sentence" is eight bracket pairs, an opener
+    (<code>a</code>–<code>h</code>) followed by its own closer
+    (<code>A</code>–<code>H</code>), openers chosen at random. So a closer is
+    predictable from its <em>left</em>, an opener only from its <em>right</em>.
+    Deliberate: half the blanks need right context.
+  </p>
+
+  <h2>Drop the mask and every token sees both sides</h2>
+
+  <p>
+    The attention page's <code>scaled_dot_product_attention</code>, same input,
+    one argument changed. Row = a token; column = how much of another it reads.
+  </p>
+
+<pre><code>no mask (BERT) -- each row = what that token can see:
+  b  [0.79 0.01 0.04 0.04 0.11]   sees 5 of 5
+  B  [0.02 0.86 0.04 0.03 0.05]   sees 5 of 5
+  e  [0.20 0.10 0.28 0.21 0.22]   sees 5 of 5 <span class="ok">← reads the E to its right</span>
+  E  [0.20 0.07 0.25 0.27 0.21]   sees 5 of 5
+  a  [0.39 0.09 0.17 0.13 0.23]   sees 5 of 5
+
+causal mask (GPT) -- each row = what that token can see:
+  b  [1.00 0.00 0.00 0.00 0.00]   <span class="hl">sees 1 of 5</span>
+  B  [0.03 0.97 0.00 0.00 0.00]   sees 2 of 5
+  e  [0.34 0.17 0.49 0.00 0.00]   sees 3 of 5 <span class="hl">← has no idea an E is coming</span>
+  E  [0.26 0.09 0.32 0.34 0.00]   sees 4 of 5
+  a  [0.39 0.09 0.17 0.13 0.23]   sees 5 of 5</code></pre>
+
+  <div class="note">
+    <strong>Same code, one argument.</strong> <code>mask=None</code> is BERT;
+    <code>mask=causal_mask(n)</code> is GPT. The last row is identical in
+    both: the final token always sees everything, which is why a causal model
+    is fine for generation. BERT wants every token to have that view.
+  </div>
+
+  <h2>Train it: loss falls, the blanks fill in</h2>
+
+  <p>
+    The encoder is two of the attention page's blocks in PyTorch, 32 wide, two
+    heads, 27k parameters. BERT-base is twelve blocks, 768 wide, twelve heads,
+    110M parameters, a million steps on BooksCorpus plus Wikipedia. Same shape,
+    smaller numbers. Six hundred steps on a laptop CPU:
+  </p>
+
+<pre><code>  step    1   loss 3.083   masked-token accuracy   5.3%
+  step  200   loss 0.289   masked-token accuracy  89.4%
+  step  400   loss 0.429   masked-token accuracy  89.6%
+  step  600   loss 0.407   masked-token accuracy  89.4% <span class="ok">✓</span>
+
+  partner visible and intact :  99.9%  (4172 targets)
+  partner hidden or corrupted:  18.3%  (613 targets, chance = 12.5%)</code></pre>
+
+  <p>
+    Why 89% and not 100%? The last two lines say why. Partner visible: near
+    perfect. Both halves of a pair picked: nothing left to infer from. That 11%
+    is the recipe, not the model.
+  </p>
+
+  <p><strong>A held-out sentence, blanks filled in by the model:</strong></p>
+
+<pre><code>  original : [CLS] a A e E h H a A g G g G c C f F
+  input    : [CLS] a A e E h H a _ g G g G c b f _
+  predicted: [CLS] a A e E h H a A g G g G c C f F   <span class="ok">✓✓✓</span></code></pre>
+
+  <p>
+    Two blanks filled. And the <code>b</code> after <code>c</code> was a random
+    replacement, not a blank; the model still corrected it. The 10% random rule.
+  </p>
+
+  <h2>Keep the mask and watch it fail</h2>
+
+  <p>
+    Now the paper's actual argument. Same model, same data stream, same seed,
+    same 600 steps. The only change is <code>causal=True</code>: the attention
+    page's lower-triangular mask, put back.
+  </p>
+
+<pre><code>                                  bidirectional    causal
+  all masked tokens                       89.4%     <span class="hl">55.5%</span>
+    closers (clue on the LEFT)            89.6%     89.7% <span class="ok">✓</span>
+    openers (clue on the RIGHT)           89.3%     <span class="hl">20.4%</span>
+  chance = 12.5%</code></pre>
+
+  <p>
+    Look at the split. The causal model closes brackets as well as BERT does;
+    the opener is on its left. It cannot guess an opener: the only evidence is
+    the closer on its <em>right</em>, and the mask hides it. 20%, barely above
+    random. Half of language has its clue on the right. That is the paper's
+    entire claim, in one row.
+  </p>
+
+  <div class="note">
+    <strong>The interview version.</strong> "Why can't you use BERT to
+    generate text?" Because it fills blanks using the right context, and at
+    generation time there is no right context yet. And it was never trained to
+    predict the <em>next</em> token, only hidden ones. That job went to the
+    <a href="../gpt/">GPT family</a>, which keeps the mask and pays the 20%.
+  </div>
+
+  <h2>[CLS], NSP, and a different main() per task</h2>
+
+  <p>
+    BERT prepends one extra token, <code>[CLS]</code>, to every input. No
+    meaning; a slot. Its output at the top of the stack is "the sentence":
+    encoder output (batch, 17, 32), row 0 is (batch, 32), one linear layer
+    gives (batch, 2). That's the whole classification head.
+  </p>
+
+  <p>
+    The paper's second pre-training task, <strong>next sentence
+    prediction</strong>, gives that slot a job. Take sentences A and B; half
+    the time B really followed A, half the time it's random. Feed
+    <code>[CLS] A [SEP] B [SEP]</code> plus a learned segment embedding, and
+    train the <code>[CLS]</code> output to say <em>IsNext</em> or
+    <em>NotNext</em>. The ablation in §5.1 says dropping it hurts QNLI, MNLI
+    and SQuAD. RoBERTa, a year later, trained without NSP on more data and
+    matched or beat BERT, so the field dropped it. I didn't implement it, and
+    you can see the cost: <code>[CLS]</code> has done nothing in pre-training.
+  </p>
+
+  <p>
+    Fine-tuning fixes that, but only if the gradients reach the encoder. Toy
+    task, a miniature CoLA: is this sentence grammatical? Half have one closer
+    swapped for a wrong one.
+  </p>
+
+<pre><code>  300 steps of fine-tuning        trainable params  accuracy
+  head only, encoder frozen                     66     <span class="hl">51.8%</span>
+  everything (the paper)                     27188     <span class="ok">99.2%</span>
+  everything, NO pre-training                27188     <span class="hl">50.1%</span>
+  chance = 50.0%</code></pre>
+
+  <p>
+    Three rows, both of the paper's claims. Freeze the encoder: chance.
+    Fine-tune everything: solved in 300 steps. Fine-tune everything from a
+    <em>random</em> encoder for the same 300 steps: chance again. Pre-training
+    makes fine-tuning cheap; fine-tuning all of it makes pre-training usable.
+    The paper does both, on all 110M parameters, at 2e-5 to 5e-5 for two to
+    four epochs. In my toy the frozen head gets nothing; in the paper's own
+    feature-based experiment on NER it gets most of the way, because twelve
+    layers of real features with NSP behind them beat my 32 numbers.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism: the masking recipe and the attention masks. A tiny
+  PyTorch model, CPU only, trains in under 30 seconds for the one part that
+  needs gradients. Every function under 20 lines. The new parts are below; the
+  NumPy attention is the attention page's, copied.
+</p>
+<p><a href="bert_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 200 lines of mechanism plus six runnable demos. Then:</p>
+<pre><code>python3 bert_from_scratch.py</code></pre>
+
+<pre><code>def mask_batch(ids, rng, p_pick=0.15, p_mask=0.8, p_random=0.1):
+    corrupted, labels = ids.copy(), np.full_like(ids, -1)
+    kind = np.zeros_like(ids)          # 0 untouched, 1 [MASK], 2 random, 3 kept
+    picked = (rng.random(ids.shape) &lt; p_pick) &amp; (ids != CLS)   # never pick [CLS]
+    labels[picked] = ids[picked]           # the answer key
+    roll = rng.random(ids.shape)
+    to_mask = picked &amp; (roll &lt; p_mask)
+    to_random = picked &amp; (roll &gt;= p_mask) &amp; (roll &lt; p_mask + p_random)
+    to_keep = picked &amp; ~to_mask &amp; ~to_random
+    corrupted[to_mask] = MASK
+    corrupted[to_random] = rng.integers(OPEN0, VOCAB, int(to_random.sum()))
+    kind[to_mask], kind[to_random], kind[to_keep] = 1, 2, 3
+    return corrupted, labels, kind
+
+
+class TinyBERT(nn.Module):
+    def __init__(self, causal=False, d=32, heads=2, layers=2):
+        super().__init__()
+        self.tok = nn.Embedding(VOCAB, d)
+        self.pos = nn.Embedding(L, d)         # BERT learns positions, not sines
+        self.blocks = nn.ModuleList(Block(d, heads) for _ in range(layers))
+        self.mlm_head = nn.Linear(d, VOCAB)   # "which token was here?"
+        # THE SWITCH. None = every token sees both sides (BERT).
+        # -inf above the diagonal = every token sees only its left (GPT).
+        self.attn_mask = (torch.triu(torch.full((L, L), float("-inf")), 1)
+                          if causal else None)
+
+    def encode(self, ids):                    # (batch, L) -&gt; (batch, L, d)
+        x = self.tok(ids) + self.pos(torch.arange(L))
+        for block in self.blocks:
+            x = block(x, self.attn_mask)
+        return x
+
+    def forward(self, ids):                   # (batch, L) -&gt; (batch, L, VOCAB)
+        return self.mlm_head(self.encode(ids))
+
+
+def mlm_loss(logits, labels):
+    labels = torch.from_numpy(labels)
+    if int((labels &gt;= 0).sum()) == 0:         # nothing picked -&gt; nothing to learn
+        return logits.sum() * 0.0
+    return F.cross_entropy(logits.reshape(-1, VOCAB), labels.reshape(-1),
+                           ignore_index=-1)</code></pre>
+
+<h2>Now break it</h2>
+<p>This is the part that actually makes it stick. Reading won't do it. Every
+  row here is one edit and one number the script will print back.</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>demo_3_train_bert</code>, change <code>TinyBERT(causal=False)</code> to <code>causal=True</code></td><td>Masked-token accuracy drops from 89.4% to 55.5%. Openers, whose only clue is on the right, fall to 20.4%. Right context is invisible.</td></tr>
+    <tr><td>Change the <code>mask_batch</code> defaults to <code>p_mask=1.0, p_random=0.0</code></td><td>Accuracy at kept-as-is positions goes from 99.3% to 53.0%. The model has never been marked on a visible token; fine-tuning will show it nothing else.</td></tr>
+    <tr><td>Change the default to <code>p_pick=0.5</code></td><td>On its own 50%-masked data it scores 64.2%: only 55% of blanks still have their partner visible. The rule is learned; the task became unanswerable.</td></tr>
+    <tr><td>Change the default to <code>p_pick=0.0</code></td><td>Loss prints 0.000 from step 1 and never moves. No blanks, no loss, no gradient. Accuracy 8.3%, below chance.</td></tr>
+    <tr><td>Freeze the encoder: <code>p.requires_grad_(False)</code> on every encoder parameter</td><td>66 trainable parameters, 51.8% on the grammar task. Chance. The paper fine-tunes all 110M for a reason.</td></tr>
+    <tr><td>Skip pre-training: <code>Classifier(TinyBERT())</code> instead of <code>Classifier(copy.deepcopy(bert))</code></td><td>Same 300 steps, all 27188 parameters trainable, 50.1%. Fine-tuning a random encoder is training from scratch, slowly.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §3, the method, and §5.1,
+  the ablation that removes NSP and then bidirectionality. Skip the GLUE and
+  SQuAD tables in §4; every number in them has been beaten since. You'll find
+  the paper is just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  New maths on this page, in full: cross-entropy is <code>−log</code> of the
+  probability the model put on the right answer, averaged over the blanks. A
+  log so a small probability becomes a big penalty. That's it. Everything else
+  is the attention page's maths, and you cleared that.
+</p>
+<p>
+  What actually bites in practice is not maths: WordPiece splitting a word you
+  care about into three pieces, the 512-token limit, which layer to take
+  features from, and whether three epochs of fine-tuning silently overfit.
+  Those are engineering, and they're what an interview will actually probe.
+</p>
+
+<h2>Where to go next</h2>
+<p>This page gave you one thing: BERT as a cloze test, with a model you can
+  break. That's deliberately narrow. These cover what I skipped.</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1810.04805">
+      <span class="paper-title">BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding</span>
+      <span class="paper-meta">Devlin, Chang, Lee, Toutanova, 2018. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      §3 is the method and is short. §5.1 is the ablation that proves what my
+      demo 4 shows, on real data. The appendix has the 80/10/10 ablation.
+      Everything else is results tables you can now read as "and it worked".
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jalammar.github.io/illustrated-bert/">
+      <span class="paper-title">The Illustrated BERT, ELMo, and co.</span>
+      <span class="paper-meta">Jay Alammar. Diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      The lineage I compressed into one section: ULM-FiT, ELMo, the OpenAI
+      transformer, and why each was a step toward BERT. Also the best picture
+      anywhere of what <code>[CLS]</code> and sentence-pair inputs look like.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jalammar.github.io/a-visual-guide-to-using-bert-for-the-first-time/">
+      <span class="paper-title">A Visual Guide to Using BERT for the First Time</span>
+      <span class="paper-meta">Jay Alammar. Code, Hugging Face.</span>
+    </a>
+    <p class="paper-pitch">
+      Real DistilBERT, real sentiment data, frozen features and a logistic
+      regression. The feature-based approach my frozen row scored 51.8% on,
+      done on a model whose <code>[CLS]</code> actually learned something.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Illustrated BERT → the paper's §3
+  and §5.1 → the first-time guide. Pictures, source, then hands on a real model.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>
