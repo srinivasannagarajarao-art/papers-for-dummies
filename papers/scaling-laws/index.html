@@ -1,0 +1,919 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chinchilla: how big a model should you train? — for programmers</title>
+<meta name="description" content="The Chinchilla scaling-laws paper as a budget allocation problem. C = 6ND, a constrained optimisation, and why 20 tokens per parameter. Runnable NumPy, seven demos, printed numbers.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Chinchilla: how big a model should you train?</h1>
+    <p class="paper-meta">Hoffmann et al., 2022</p>
+    <p class="lede"> A budget allocation problem, not a research result. This is the one paper on this site you can put in a funding request. </p>
+    <p> <a href="scaling_laws_from_scratch.py" download>Download scaling_laws_from_scratch.py</a> — everything below runs from it. NumPy only. </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
+  <p> I'm an AI Engineer. I've sized clusters, argued about instance types, and signed off on training runs — and for years I could not have told you, on paper, whether the money was better spent on a bigger model or on more data. I assumed someone upstairs had done the maths. Then I read this paper and found the maths is a two-term curve fit and an argmin over one variable. Twenty lines. The industry got it wrong for two years anyway. </p>
+
+  <h2>It's sizing infrastructure against a fixed monthly bill</h2>
+
+  <p>You've done this. Fixed budget, two things to buy:</p>
+
+<pre><code>budget = 10_000        # per month, and it is not going up
+# spend it on bigger instances, or on more of them?
+for n_instances in range(1, 100):
+    size = budget / n_instances
+    print(n_instances, size, throughput(n_instances, size))</code></pre>
+
+  <p> Chinchilla is that loop. The budget is FLOPs. The two things you buy are parameters (N) and training tokens (D). And there is one hard constraint tying them together, so picking one picks the other: </p>
+
+<pre><code>C = 6 * N * D                 # your whole training bill, in FLOPs
+for N in candidate_sizes:
+    D = C / (6 * N)           # tokens you can still afford at that size
+    print(N, D, loss(N, D))   # pick the row with the smallest loss</code></pre>
+
+  <p> That is the entire paper. Everything else is measuring <code>loss(N, D)</code> carefully enough that the argmin means something. </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>N</strong></td><td>Parameter count</td><td>Instance size. Bigger costs more per hour, forever.</td></tr>
+      <tr><td><strong>D</strong></td><td>Training tokens seen</td><td>How long you leave the job running.</td></tr>
+      <tr><td><strong>C</strong></td><td>Training FLOPs</td><td>The invoice. Fixed before you start.</td></tr>
+      <tr><td><strong>Compute-optimal</strong></td><td>The (N, D) with lowest loss at that C</td><td>The row your sweep picks.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why this overturned Kaplan</h2>
+
+  <p> Two years earlier, <a href="https://arxiv.org/abs/2001.08361">Kaplan et al.</a> ran the same experiment and got a different answer: spend almost everything on model size. Their fitted rule was N growing like C<sup>0.73</sup> against D like C<sup>0.27</sup> — ten times the compute means roughly five times the model and only two times the data. GPT-3 (175B parameters, 300B tokens) is that advice, executed. </p>
+
+  <p> Chinchilla redid it with over 400 runs and got N and D both growing like C<sup>0.5</sup>. Equal split. Grow them together. </p>
+
+  <p> Kaplan wasn't sloppy, it was set up differently, and two differences do most of the work. Kaplan used a single cosine learning-rate schedule length across runs of different lengths, which makes short runs look worse than they are; Chinchilla tuned the schedule to each run's actual token count. Kaplan also counted non-embedding parameters. If you want the argument in full, the Chinchilla paper's discussion section spells it out — I'm summarising, not adjudicating. </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">L(N, D) = E + A / N<sup>α</sup> + B / D<sup>β</sup>&nbsp;&nbsp;&nbsp;subject to&nbsp;&nbsp;C = 6ND</div>
+
+  <p>Read the loss as three bills added together:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>E</code></td><td>scalar</td><td>The floor. What no model in the fit gets below — call it the irreducible part.</td></tr>
+      <tr><td><code>A / N<sup>α</sup></code></td><td>scalar</td><td><strong>Too small.</strong> The penalty for not having enough parameters to represent the function.</td></tr>
+      <tr><td><code>B / D<sup>β</sup></code></td><td>scalar</td><td><strong>Too little data.</strong> The penalty for not having seen enough text.</td></tr>
+      <tr><td><code>6ND</code></td><td>scalar</td><td>The constraint. Fix C, and choosing N fixes D.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p> The two penalty terms pull opposite ways under the constraint, so the curve is a bowl and the bowl has a bottom. That bottom is the paper. </p>
+
+  <div class="note">
+    <strong>E, A, B, α and β are the paper's fitted values, not mine.</strong>
+    I did not derive a single one of them. The script hardcodes two published
+    sets and re-solves the optimisation they imply — that part is arithmetic
+    you can check.
+  </div>
+
+  <h2>Where the 6 comes from</h2>
+
+  <p> Per parameter, per token: 2 FLOPs forward (a multiply and an add), 4 backward (gradient with respect to the activations, gradient with respect to the weights). 2 + 4 = 6. That's the whole derivation. It ignores attention's own quadratic-in-sequence-length term, which stays small while the context is short relative to model width — true for every model in this paper, less true for long-context models today. </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>model          params   tokens  tok/param       FLOPs
+GPT-3          175.0B   300.0B        1.7    3.15e+23
+Gopher         280.0B   300.0B        1.1    5.04e+23
+Chinchilla      70.0B     1.4T       20.0    5.88e+23  <span class="ok">✓</span>
+LLaMA-7B         7.0B     1.0T      142.9    4.20e+22</code></pre>
+
+  <p> Gopher and Chinchilla cost about the same to train. One is four times the size of the other. That comparison is the paper's headline experiment, and you can compute both sides of it with a pocket calculator. </p>
+
+  <h2>Sweep the split, find the bottom</h2>
+
+  <p> Fix C at Chinchilla's own training budget, walk N from 1B to 2T, and let the constraint hand you D. Then just read the loss column. </p>
+
+<pre><code>budget C = 5.76e+23 FLOPs (roughly what Chinchilla spent)
+
+  N (params)  D (tokens)  tok/param  predicted loss
+        1.0B       96.0T    96000.0          2.1904
+        5.0B       19.2T     3840.0          2.0501
+       20.0B        4.8T      240.0          1.9911
+       50.0B        1.9T       38.4          1.9758
+       72.0B        1.3T       18.5          <span class="ok">1.9744  ← bottom</span>
+      100.0B      960.0B        9.6          1.9755
+      200.0B      480.0B        2.4          1.9850
+      500.0B      192.0B        0.4          2.0138
+        2.0T       48.0B        0.0          <span class="hl">2.1008  ← all size, no data</span>
+
+argmin over 20000 candidate splits (REFIT coefficients):
+  N* = 72.3B params
+  D* = 1.3T tokens
+  D*/N* = 18.4 tokens per parameter
+  loss  = 1.9744 nats/token
+  Chinchilla as actually built: 70.0B params, 1.4T tokens, 20.0 tok/param</code></pre>
+
+  <p> 72.3B against the 70B they built. That is the paper predicting its own model from a curve fit, and it is the moment the whole thing stopped feeling like numerology to me. </p>
+
+  <h2>An honest wrinkle: which coefficients</h2>
+
+  <p> Here is the part I nearly got wrong. Chinchilla used three methods — a training-curve envelope, an IsoFLOP sweep, and the parametric fit above — and reported that all three agreed on roughly twenty tokens per parameter. But if you type the parametric fit's <em>printed</em> coefficients into the optimisation, you don't get twenty. You get about ninety. </p>
+
+  <p> That's not me making an arithmetic error; it's a known discrepancy, and a 2024 replication refitted the same data and reported coefficients that do reproduce the headline. My script carries both sets and prints them side by side, because "the published numbers don't quite reproduce the published conclusion" is exactly the kind of thing a page like this should say out loud rather than quietly paper over. </p>
+
+<pre><code>same sweep, ratio only, across five budgets:
+  budget C  REFIT tok/param  PAPER tok/param
+     1e+21             21.6             50.1
+     1e+22             20.4             62.6
+     1e+23             19.2             78.1
+     6e+23             <span class="ok">18.4</span>             <span class="hl">92.6</span>
+     1e+25             17.1            122.0</code></pre>
+
+  <div class="note">
+    <strong>Everything below uses the refitted coefficients.</strong> They
+    reproduce the paper's own headline and its own model; the printed ones
+    don't. The takeaway that survives either way: N and D should grow
+    together, and the ratio is a small two-digit number, not one.
+  </div>
+
+  <h2>Kaplan vs Chinchilla on the same money</h2>
+
+  <p> Kaplan gives an exponent, not a constant, so to draw their curve I anchor it on a real model built under that advice — GPT-3, 175B on 300B tokens. The exponent is theirs; the anchor is mine, and it is the weakest assumption on this page. </p>
+
+<pre><code>  budget C   Kaplan N  Kaplan D    t/p     loss   Chin. N   Chin. D    t/p     loss
+     1e+21       2.6B     63.5B   24.2   2.3056      2.8B     60.0B   21.6   2.3055
+     1e+22      14.1B    118.2B    8.4   2.1452      9.0B    184.2B   20.4   2.1411
+     1e+23      75.7B    220.1B    2.9   2.0444     29.5B    565.8B   19.2   2.0321
+     6e+23     271.9B    353.1B    1.3   <span class="hl">1.9925</span>     72.3B      1.3T   18.4   <span class="ok">1.9744</span>
+     1e+24     406.7B    409.8B    1.0   1.9792     95.9B      1.7T   18.1   1.9597
+     1e+25       2.2T    763.1B    0.3   1.9357    312.1B      5.3T   17.1   1.9117
+
+at C = 5.76e+23:
+  Kaplan wants a model 3.8x bigger, fed 3.8x fewer tokens
+  and pays 0.0180 nats/token for it</code></pre>
+
+  <p> Look at the <code>t/p</code> column under Kaplan. It falls below one. At a big enough budget, Kaplan's rule recommends a model with more parameters than training tokens — parameters you cannot afford to train. That is the failure mode, stated as a number. </p>
+
+  <div class="note">
+    <strong>Same spend, worse model.</strong> The interview question here is
+    "why was GPT-3 undertrained?", and the answer is not "they were careless"
+    — it is "the scaling law they were following put the money in the wrong
+    place, and it took 400 runs to show it."
+  </div>
+
+  <h2>Chinchilla against Gopher</h2>
+
+  <p> The paper's proof is one head-to-head. Same lab, same data pipeline, roughly the same training bill, radically different split. </p>
+
+<pre><code>Gopher       N= 280.0B  D= 300.0B  tok/param=   1.1  C=5.040e+23  loss=1.9996
+Chinchilla   N=  70.0B  D=   1.4T  tok/param=  20.0  C=5.880e+23  loss=1.9739
+
+compute ratio Chinchilla/Gopher = 1.167  (i.e. the same training bill)
+predicted loss gap = +0.0257 nats/token in Chinchilla's favour</code></pre>
+
+  <p> Chinchilla is a quarter the size and beat Gopher across the paper's benchmark suite. The loss numbers above are what <em>this fit</em> predicts, not measured benchmark scores — don't quote them as the paper's results. The compute ratio is the load-bearing number: 1.167, near enough the same money. </p>
+
+  <h2>Why LLaMA ignored all of this</h2>
+
+  <p> Chinchilla optimises the <strong>training</strong> bill. You also pay to serve the thing, roughly 2 FLOPs per parameter per generated token, no backward pass, every day, forever. Put that in the constraint and the answer moves: </p>
+
+<pre><code>C_total = 6*N*D_train + 2*N*D_inference</code></pre>
+
+<pre><code>total budget (train + serve) = 5.76e+23 FLOPs
+
+ inference tokens       N*   D* train  tok/param  train loss
+             none    72.3B       1.3T       18.4      <span class="ok">1.9744</span>
+           100.0B    69.0B       1.4T       19.7      1.9751
+             1.0T    50.1B       1.6T       31.6      1.9806
+            10.0T    15.8B       2.7T      174.1      2.0128
+            50.0T     4.4B       5.0T     1140.2      2.0772
+           100.0T     2.4B       6.8T     2822.3      <span class="hl">2.1231</span></code></pre>
+
+  <p> Read it top to bottom. The more tokens you expect to serve, the smaller the model you should train and the longer you should train it. The training loss column gets worse — that is the point. You are deliberately accepting a worse-trained model because you will pay for it a billion times at inference. </p>
+
+  <div class="note">
+    <strong>Chinchilla answers "best model I can train". LLaMA answered "best
+    model I can run".</strong> LLaMA-7B saw about a trillion tokens — roughly
+    143 per parameter, seven times past compute-optimal. Not a contradiction
+    of this paper; a different objective. That argument is worked through on
+    <a href="../llama/">the LLaMA page</a>.
+  </div>
+
+  <h2>Where the fit stops being trustworthy</h2>
+
+  <p> The paper's runs covered roughly 70M to 16B parameters and 5B to 400B tokens. The formula does not know that. Ask it about a model a million times larger and it answers with four decimal places and total composure. </p>
+
+<pre><code>         N         D  tok/param  predicted loss
+     70.0M      1.4B       20.0          3.6587
+     70.0B      1.4T       20.0          <span class="ok">1.9739</span>
+     10.0T    200.0T       20.0          1.8440
+   1.0e+16   2.0e+17       20.0          1.8195
+   1.0e+19   2.0e+20       20.0          <span class="hl">1.8174</span>
+      1.0K     20.0K       20.0        <span class="hl">101.1373</span>
+
+the fit's floor is E = 1.8172: at infinite N and D the formula
+says loss -> 1.8172 nats/token and never lower.
+loss(1e19 params, 2e20 tokens) - E = 1.97e-04</code></pre>
+
+  <p> Two things in that block are nonsense and the formula flags neither. A thousand-parameter model does not have a loss of 101. And E is a <em>fitted constant</em>, not a measured entropy of language — it is wherever the curve happened to flatten inside one box of runs, and treating it as a law of nature is how scaling-law arguments go wrong on slide four. Outside the box you fitted, this is arithmetic, not evidence. </p>
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p> நான் ஒரு AI Engineer. Clusters-ஐ size செய்திருக்கிறேன், instance types பற்றி வாதாடியிருக்கிறேன், training runs-க்கு ஒப்புதல் கையெழுத்திட்டிருக்கிறேன் — இருந்தும் பல வருடங்களாக, பணத்தை ஒரு பெரிய model-க்கு செலவழிப்பதா அல்லது அதிக data-வுக்கு செலவழிப்பதா என்பதை காகிதத்தில் என்னால் நிரூபிக்க முடிந்திருக்காது. மேலே யாரோ ஒருவர் இந்தக் கணக்கைப் போட்டிருப்பார் என்று நினைத்துக்கொண்டிருந்தேன். பிறகு இந்தக் கட்டுரையைப் படித்தேன் — அந்தக் கணக்கு என்பது இரண்டு term கொண்ட ஒரு curve fit, மற்றும் ஒரே ஒரு variable மீதான argmin. இருபது வரிகள். இருந்தும் இந்தத் தொழிற்துறை இரண்டு வருடங்கள் இதைத் தவறாகவே செய்தது. </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (compute, budget, tokens
+    per parameter, loss, coefficients, compute-optimal, inference,
+    extrapolation…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற
+    papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>நிலையான மாதாந்திர பில்-க்கு infrastructure size செய்வது போலத்தான்</h2>
+
+  <p>இதை நீங்கள் செய்திருக்கிறீர்கள். நிலையான budget, வாங்க இரண்டு விஷயங்கள்:</p>
+
+<pre><code>budget = 10_000        # மாதம் ஒன்றுக்கு, இது கூடப் போவதில்லை
+# பெரிய instances-க்கா, இல்லை அதிக எண்ணிக்கைக்கா?
+for n_instances in range(1, 100):
+    size = budget / n_instances
+    print(n_instances, size, throughput(n_instances, size))</code></pre>
+
+  <p> Chinchilla என்பது அந்த loop-தான். Budget என்பது FLOPs. வாங்கும் இரண்டு விஷயங்கள் parameters (N) மற்றும் training tokens (D). இரண்டையும் இணைக்கும் ஒரே ஒரு கடினமான constraint இருக்கிறது — எனவே ஒன்றைத் தேர்வு செய்தால் மற்றொன்று தானாகவே முடிவாகிவிடும்: </p>
+
+<pre><code>C = 6 * N * D                 # முழு training பில், FLOPs-ல்
+for N in candidate_sizes:
+    D = C / (6 * N)           # அந்த size-ல் வாங்கக்கூடிய tokens
+    print(N, D, loss(N, D))   # குறைந்த loss உள்ள வரியை எடு</code></pre>
+
+  <p> கட்டுரை முழுவதும் அவ்வளவுதான். மீதி எல்லாம், அந்த argmin-க்கு அர்த்தம் இருக்கும் அளவுக்கு <code>loss(N, D)</code>-ஐக் கவனமாக அளப்பதுதான். </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-ன் ஒப்புமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>N</strong></td><td>Parameter எண்ணிக்கை</td><td>Instance size. பெரியது என்றால் மணிக்கு அதிகச் செலவு, என்றென்றும்.</td></tr>
+      <tr><td><strong>D</strong></td><td>பார்த்த training tokens</td><td>Job-ஐ எவ்வளவு நேரம் ஓடவிடுகிறீர்கள்.</td></tr>
+      <tr><td><strong>C</strong></td><td>Training FLOPs</td><td>Invoice. தொடங்கும் முன்பே நிர்ணயிக்கப்பட்டது.</td></tr>
+      <tr><td><strong>Compute-optimal</strong></td><td>அந்த C-யில் குறைந்த loss தரும் (N, D)</td><td>உங்கள் sweep தேர்ந்தெடுக்கும் வரி.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>இது ஏன் Kaplan-ஐத் தலைகீழாக்கியது</h2>
+
+  <p> இரண்டு வருடங்கள் முன்பு, <a href="https://arxiv.org/abs/2001.08361">Kaplan et al.</a> இதே சோதனையைச் செய்து வேறு பதிலைப் பெற்றார்கள்: கிட்டத்தட்ட எல்லாவற்றையும் model size-க்கே செலவழி. அவர்களின் fit செய்யப்பட்ட விதி — N வளர்வது C<sup>0.73</sup> போல, D வளர்வது C<sup>0.27</sup> போல. அதாவது compute பத்து மடங்கு ஆனால், model ஏறக்குறைய ஐந்து மடங்கு, data இரண்டே மடங்கு. GPT-3 (175B parameters, 300B tokens) என்பது அந்த ஆலோசனையை அப்படியே செயல்படுத்தியது. </p>
+
+  <p> Chinchilla இதை 400-க்கும் மேற்பட்ட runs வைத்து மீண்டும் செய்து, N மற்றும் D இரண்டுமே C<sup>0.5</sup> போல வளர வேண்டும் என்று கண்டறிந்தது. சம பங்கு. இரண்டையும் சேர்த்தே வளர்க்க வேண்டும். </p>
+
+  <p> Kaplan கவனக்குறைவாக இருக்கவில்லை — அமைப்பு வேறாக இருந்தது, அதில் இரண்டு வேறுபாடுகள்தான் பெரும்பாலான வேலையைச் செய்கின்றன. வெவ்வேறு நீளமுள்ள runs-க்கு Kaplan ஒரே cosine learning-rate schedule நீளத்தைப் பயன்படுத்தினார்; இது குறுகிய runs-ஐ உண்மையை விட மோசமாகக் காட்டுகிறது. Chinchilla ஒவ்வொரு run-ன் உண்மையான token எண்ணிக்கைக்கு ஏற்ப schedule-ஐ tune செய்தது. மேலும் Kaplan non-embedding parameters-ஐ மட்டுமே எண்ணினார். முழு வாதமும் வேண்டுமானால், Chinchilla கட்டுரையின் discussion பகுதி அதை விவரிக்கிறது — நான் சுருக்கிச் சொல்கிறேன், தீர்ப்பு சொல்லவில்லை. </p>
+
+  <p class="thanglish">
+    Fixed budget C = 6ND. Oru variable dhaan free: N-a choose panna, D constraint-la
+    irundhu vandhurum. Kaplan sonnadhu "size-kku selavu pannu"; Chinchilla 400 runs
+    vechu paathu "N-um D-um sernthu valara vendum" nu solludhu.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">L(N, D) = E + A / N<sup>α</sup> + B / D<sup>β</sup>&nbsp;&nbsp;&nbsp;subject to&nbsp;&nbsp;C = 6ND</div>
+
+  <p>Loss-ஐ மூன்று பில்கள் கூட்டப்பட்டது போலப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>வடிவம்</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>E</code></td><td>scalar</td><td>தரை. Fit-ல் உள்ள எந்த model-ம் இதற்குக் கீழே போவதில்லை — குறைக்க முடியாத பகுதி.</td></tr>
+      <tr><td><code>A / N<sup>α</sup></code></td><td>scalar</td><td><strong>ரொம்பச் சிறியது.</strong> Function-ஐக் குறிக்கப் போதிய parameters இல்லாததற்கான தண்டனை.</td></tr>
+      <tr><td><code>B / D<sup>β</sup></code></td><td>scalar</td><td><strong>Data போதவில்லை.</strong> போதிய text பார்க்காததற்கான தண்டனை.</td></tr>
+      <tr><td><code>6ND</code></td><td>scalar</td><td>Constraint. C-ஐ நிர்ணயித்தால், N-ஐத் தேர்ந்தெடுப்பது D-ஐயும் நிர்ணயிக்கிறது.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p> Constraint-ன் கீழ் அந்த இரண்டு தண்டனை terms எதிரெதிர் திசையில் இழுக்கின்றன — எனவே curve ஒரு கிண்ணம், அந்தக் கிண்ணத்திற்கு ஒரு அடிப்பகுதி உண்டு. அந்த அடிப்பகுதிதான் இந்தக் கட்டுரை. </p>
+
+  <div class="note">
+    <strong>E, A, B, α மற்றும் β என்பவை கட்டுரையின் fit செய்யப்பட்ட
+    மதிப்புகள், என்னுடையவை அல்ல.</strong> இவற்றில் ஒன்றைக்கூட நான்
+    கண்டுபிடிக்கவில்லை. Script இரண்டு வெளியிடப்பட்ட sets-ஐ hardcode செய்து,
+    அவை உணர்த்தும் optimisation-ஐ மீண்டும் தீர்க்கிறது — அந்தப் பகுதி
+    நீங்கள் சரிபார்க்கக்கூடிய எளிய கணக்குதான்.
+  </div>
+
+  <h2>அந்த 6 எங்கிருந்து வருகிறது</h2>
+
+  <p> ஒரு parameter-க்கு, ஒரு token-க்கு: forward-ல் 2 FLOPs (ஒரு பெருக்கல், ஒரு கூட்டல்), backward-ல் 4 (activations மீதான gradient, weights மீதான gradient). 2 + 4 = 6. இதுதான் முழு derivation. Attention-ன் sequence length-ல் quadratic ஆன term-ஐ இது கணக்கில் கொள்வதில்லை; model width-ஐ ஒப்பிடும்போது context குறுகியதாக இருக்கும் வரை அது சிறியதாகவே இருக்கும் — இந்தக் கட்டுரையின் எல்லா models-க்கும் அது உண்மை, இன்றைய long-context models-க்கு அவ்வளவு உண்மை இல்லை. </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>model          params   tokens  tok/param       FLOPs
+GPT-3          175.0B   300.0B        1.7    3.15e+23
+Gopher         280.0B   300.0B        1.1    5.04e+23
+Chinchilla      70.0B     1.4T       20.0    5.88e+23  <span class="ok">✓</span>
+LLaMA-7B         7.0B     1.0T      142.9    4.20e+22</code></pre>
+
+  <p> Gopher-ம் Chinchilla-வும் train செய்ய ஏறக்குறைய ஒரே செலவுதான். ஒன்று மற்றொன்றை விட நான்கு மடங்கு பெரியது. அந்த ஒப்பீடுதான் கட்டுரையின் தலைப்புச் சோதனை — இரு பக்கத்தையும் ஒரு pocket calculator-ல் நீங்களே கணக்கிடலாம். </p>
+
+  <h2>Split-ஐ sweep செய்து அடிப்பகுதியைக் கண்டுபிடி</h2>
+
+  <p> C-ஐ Chinchilla-வின் சொந்த training budget-ல் நிறுத்தி, N-ஐ 1B-லிருந்து 2T வரை நடத்திப் பாருங்கள் — D-ஐ constraint தானே தந்துவிடும். பிறகு loss column-ஐப் படியுங்கள். </p>
+
+<pre><code>budget C = 5.76e+23 FLOPs (roughly what Chinchilla spent)
+
+  N (params)  D (tokens)  tok/param  predicted loss
+        1.0B       96.0T    96000.0          2.1904
+        5.0B       19.2T     3840.0          2.0501
+       20.0B        4.8T      240.0          1.9911
+       50.0B        1.9T       38.4          1.9758
+       72.0B        1.3T       18.5          <span class="ok">1.9744  ← bottom</span>
+      100.0B      960.0B        9.6          1.9755
+      200.0B      480.0B        2.4          1.9850
+      500.0B      192.0B        0.4          2.0138
+        2.0T       48.0B        0.0          <span class="hl">2.1008  ← all size, no data</span>
+
+argmin over 20000 candidate splits (REFIT coefficients):
+  N* = 72.3B params
+  D* = 1.3T tokens
+  D*/N* = 18.4 tokens per parameter
+  loss  = 1.9744 nats/token
+  Chinchilla as actually built: 70.0B params, 1.4T tokens, 20.0 tok/param</code></pre>
+
+  <p> அவர்கள் கட்டிய 70B-க்கு எதிராக 72.3B. ஒரு curve fit-லிருந்து கட்டுரை தன்னுடைய சொந்த model-ஐயே கணித்திருக்கிறது — இதுதான் இந்த முழு விஷயமும் எனக்கு எண் ஜோதிடம் போலத் தோன்றுவதை நிறுத்திய தருணம். </p>
+
+  <h2>ஒரு நேர்மையான சிக்கல்: எந்த coefficients</h2>
+
+  <p> இதோ நான் கிட்டத்தட்ட தவறாகப் புரிந்துகொண்ட பகுதி. Chinchilla மூன்று முறைகளைப் பயன்படுத்தியது — training-curve envelope, IsoFLOP sweep, மற்றும் மேலே உள்ள parametric fit — மூன்றுமே ஏறக்குறைய இருபது tokens per parameter என்பதில் ஒத்துப்போவதாகச் சொன்னது. ஆனால் அந்த parametric fit-ன் <em>அச்சிடப்பட்ட</em> coefficients-ஐ optimisation-ல் போட்டால், இருபது கிடைக்காது. ஏறக்குறைய தொண்ணூறு கிடைக்கிறது. </p>
+
+  <p> இது நான் செய்யும் கணக்குப் பிழை அல்ல; இது அறியப்பட்ட ஒரு முரண்பாடு. 2024-ல் வெளியான ஒரு replication அதே data-வை மீண்டும் fit செய்து, தலைப்பு முடிவை உண்மையிலேயே மீட்டுத்தரும் coefficients-ஐ வெளியிட்டது. என் script இரண்டு sets-ஐயும் வைத்திருந்து அவற்றை அருகருகே அச்சிடுகிறது. ஏனென்றால் "வெளியிடப்பட்ட எண்கள், வெளியிடப்பட்ட முடிவை அப்படியே மீட்டுத் தருவதில்லை" என்பது, இது போன்ற ஒரு பக்கம் அமைதியாக மூடி மறைக்காமல் வெளிப்படையாகச் சொல்ல வேண்டிய வகையான விஷயம். </p>
+
+<pre><code>same sweep, ratio only, across five budgets:
+  budget C  REFIT tok/param  PAPER tok/param
+     1e+21             21.6             50.1
+     1e+22             20.4             62.6
+     1e+23             19.2             78.1
+     6e+23             <span class="ok">18.4</span>             <span class="hl">92.6</span>
+     1e+25             17.1            122.0</code></pre>
+
+  <div class="note">
+    <strong>கீழே உள்ள அனைத்தும் மீண்டும் fit செய்யப்பட்ட coefficients-ஐப்
+    பயன்படுத்துகின்றன.</strong> அவைதான் கட்டுரையின் சொந்தத் தலைப்பு முடிவையும்
+    அதன் சொந்த model-ஐயும் மீட்டுத் தருகின்றன; அச்சிடப்பட்டவை தருவதில்லை.
+    இரண்டு வழியிலும் தப்பிப் பிழைக்கும் பாடம்: N-ம் D-ம் சேர்ந்து வளர
+    வேண்டும், அந்த விகிதம் ஒன்று அல்ல — இரண்டு இலக்கக் குறைந்த எண்.
+  </div>
+
+  <p class="thanglish">
+    Paper-la print aana coefficients-a optimisation-la potta 20 varala, 90 varudhu.
+    2024 replication adhe data-va refit panni sari seydhadhu. Naan REFIT set-a dhaan
+    default-a use panren, rendayum side by side print panren.
+  </p>
+
+  <h2>ஒரே பணத்தில் Kaplan vs Chinchilla</h2>
+
+  <p> Kaplan ஒரு exponent-ஐத் தருகிறார், ஒரு constant-ஐ அல்ல. எனவே அவர்களின் curve-ஐ வரைய, அந்த ஆலோசனையின் கீழ் கட்டப்பட்ட ஒரு உண்மையான model-ல் நான் அதை நங்கூரமிடுகிறேன் — GPT-3, 300B tokens மீது 175B. Exponent அவர்களுடையது; anchor என்னுடையது, அதுதான் இந்தப் பக்கத்தின் மிகவும் பலவீனமான அனுமானம். </p>
+
+<pre><code>  budget C   Kaplan N  Kaplan D    t/p     loss   Chin. N   Chin. D    t/p     loss
+     1e+21       2.6B     63.5B   24.2   2.3056      2.8B     60.0B   21.6   2.3055
+     1e+22      14.1B    118.2B    8.4   2.1452      9.0B    184.2B   20.4   2.1411
+     1e+23      75.7B    220.1B    2.9   2.0444     29.5B    565.8B   19.2   2.0321
+     6e+23     271.9B    353.1B    1.3   <span class="hl">1.9925</span>     72.3B      1.3T   18.4   <span class="ok">1.9744</span>
+     1e+24     406.7B    409.8B    1.0   1.9792     95.9B      1.7T   18.1   1.9597
+     1e+25       2.2T    763.1B    0.3   1.9357    312.1B      5.3T   17.1   1.9117
+
+at C = 5.76e+23:
+  Kaplan wants a model 3.8x bigger, fed 3.8x fewer tokens
+  and pays 0.0180 nats/token for it</code></pre>
+
+  <p> Kaplan-ன் கீழ் உள்ள <code>t/p</code> column-ஐப் பாருங்கள். அது ஒன்றுக்குக் கீழே இறங்குகிறது. போதுமான அளவு பெரிய budget-ல், training tokens-ஐ விட அதிக parameters உள்ள ஒரு model-ஐ Kaplan-ன் விதி பரிந்துரைக்கிறது — நீங்கள் train செய்யவே முடியாத parameters. அதுதான் failure mode, ஒரு எண்ணாகச் சொல்லப்பட்டது. </p>
+
+  <div class="note">
+    <strong>ஒரே செலவு, மோசமான model.</strong> இங்கே interview கேள்வி "GPT-3
+    ஏன் undertrained ஆக இருந்தது?" என்பதுதான். பதில் "அவர்கள் கவனக்குறைவாக
+    இருந்தார்கள்" அல்ல — "அவர்கள் பின்பற்றிய scaling law பணத்தைத் தவறான
+    இடத்தில் போட்டது, அதைக் காட்ட 400 runs தேவைப்பட்டன" என்பதுதான்.
+  </div>
+
+  <h2>Gopher-க்கு எதிராக Chinchilla</h2>
+
+  <p> கட்டுரையின் நிரூபணம் ஒரே ஒரு நேரடி ஒப்பீடுதான். ஒரே ஆய்வகம், ஒரே data pipeline, ஏறக்குறைய ஒரே training பில், முற்றிலும் வேறுபட்ட split. </p>
+
+<pre><code>Gopher       N= 280.0B  D= 300.0B  tok/param=   1.1  C=5.040e+23  loss=1.9996
+Chinchilla   N=  70.0B  D=   1.4T  tok/param=  20.0  C=5.880e+23  loss=1.9739
+
+compute ratio Chinchilla/Gopher = 1.167  (i.e. the same training bill)
+predicted loss gap = +0.0257 nats/token in Chinchilla's favour</code></pre>
+
+  <p> Chinchilla கால் அளவு பெரியது, ஆனாலும் கட்டுரையின் benchmark தொகுப்பு முழுவதிலும் Gopher-ஐ வென்றது. மேலே உள்ள loss எண்கள் <em>இந்த fit</em> கணிப்பவை, அளக்கப்பட்ட benchmark scores அல்ல — அவற்றைக் கட்டுரையின் முடிவுகளாக மேற்கோள் காட்டாதீர்கள். சுமை தாங்கும் எண் compute ratio: 1.167, ஏறக்குறைய ஒரே பணம். </p>
+
+  <h2>LLaMA ஏன் இதையெல்லாம் புறக்கணித்தது</h2>
+
+  <p> Chinchilla <strong>training</strong> பில்-ஐ optimise செய்கிறது. அந்த model-ஐ serve செய்யவும் நீங்கள் பணம் கட்ட வேண்டும் — உருவாக்கப்படும் ஒவ்வொரு token-க்கும், ஒவ்வொரு parameter-க்கும் ஏறக்குறைய 2 FLOPs, backward pass இல்லை, தினமும், என்றென்றும். அதை constraint-ல் சேர்த்தால் பதில் நகர்கிறது: </p>
+
+<pre><code>C_total = 6*N*D_train + 2*N*D_inference</code></pre>
+
+<pre><code>total budget (train + serve) = 5.76e+23 FLOPs
+
+ inference tokens       N*   D* train  tok/param  train loss
+             none    72.3B       1.3T       18.4      <span class="ok">1.9744</span>
+           100.0B    69.0B       1.4T       19.7      1.9751
+             1.0T    50.1B       1.6T       31.6      1.9806
+            10.0T    15.8B       2.7T      174.1      2.0128
+            50.0T     4.4B       5.0T     1140.2      2.0772
+           100.0T     2.4B       6.8T     2822.3      <span class="hl">2.1231</span></code></pre>
+
+  <p> மேலிருந்து கீழாகப் படியுங்கள். எவ்வளவு அதிக tokens serve செய்யப் போகிறீர்களோ, அவ்வளவு சிறிய model-ஐ train செய்ய வேண்டும், அவ்வளவு நீண்ட நேரம் train செய்ய வேண்டும். Training loss column மோசமாகிறது — அதுதான் நோக்கம். மோசமாக train செய்யப்பட்ட ஒரு model-ஐ நீங்கள் வேண்டுமென்றே ஏற்றுக்கொள்கிறீர்கள், ஏனெனில் inference-ல் அதற்கு நூறு கோடி முறை பணம் கட்டப் போகிறீர்கள். </p>
+
+  <div class="note">
+    <strong>Chinchilla "நான் train செய்யக்கூடிய சிறந்த model" என்பதற்குப்
+    பதில் சொல்கிறது. LLaMA "நான் ஓட்டக்கூடிய சிறந்த model" என்பதற்குப் பதில்
+    சொன்னது.</strong> LLaMA-7B ஏறக்குறைய ஒரு டிரில்லியன் tokens பார்த்தது —
+    parameter ஒன்றுக்கு ஏறக்குறைய 143, compute-optimal-ஐ விட ஏழு மடங்கு
+    தாண்டி. இது இந்தக் கட்டுரைக்கு முரண் அல்ல; வேறு ஒரு objective. அந்த வாதம்
+    <a href="../llama/">LLaMA பக்கத்தில்</a> முழுமையாக விவாதிக்கப்படுகிறது.
+  </div>
+
+  <h2>இந்த fit எங்கே நம்பகத்தன்மையை இழக்கிறது</h2>
+
+  <p> கட்டுரையின் runs ஏறக்குறைய 70M முதல் 16B parameters வரையிலும், 5B முதல் 400B tokens வரையிலும் இருந்தன. சூத்திரத்திற்கு அது தெரியாது. அதைவிட பத்து லட்சம் மடங்கு பெரிய model பற்றிக் கேளுங்கள் — நான்கு தசம இடங்களுடன், முழுமையான நிதானத்துடன் பதில் சொல்லும். </p>
+
+<pre><code>         N         D  tok/param  predicted loss
+     70.0M      1.4B       20.0          3.6587
+     70.0B      1.4T       20.0          <span class="ok">1.9739</span>
+     10.0T    200.0T       20.0          1.8440
+   1.0e+16   2.0e+17       20.0          1.8195
+   1.0e+19   2.0e+20       20.0          <span class="hl">1.8174</span>
+      1.0K     20.0K       20.0        <span class="hl">101.1373</span>
+
+the fit's floor is E = 1.8172: at infinite N and D the formula
+says loss -> 1.8172 nats/token and never lower.
+loss(1e19 params, 2e20 tokens) - E = 1.97e-04</code></pre>
+
+  <p> அந்த block-ல் இரண்டு விஷயங்கள் அபத்தமானவை, சூத்திரம் இரண்டையுமே சுட்டிக்காட்டவில்லை. ஆயிரம் parameters உள்ள ஒரு model-ன் loss 101 ஆக இருக்காது. மேலும் E என்பது ஒரு <em>fit செய்யப்பட்ட constant</em>, மொழியின் அளக்கப்பட்ட entropy அல்ல — ஒரு குறிப்பிட்ட runs தொகுப்பிற்குள் curve எங்கே தட்டையானதோ அதுதான் E. அதை இயற்கையின் விதியாகக் கருதுவதுதான், scaling-law வாதங்கள் நான்காவது slide-லேயே தவறாகப் போகும் வழி. நீங்கள் fit செய்த எல்லைக்கு வெளியே, இது extrapolation — சான்று அல்ல, வெறும் கணக்கு. </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p> मैं एक AI Engineer हूँ। मैंने clusters size किए हैं, instance types पर बहस की है, और training runs पर हस्ताक्षर किए हैं — फिर भी सालों तक मैं काग़ज़ पर यह नहीं बता पाता कि पैसा बड़े model पर लगाना बेहतर है या ज़्यादा data पर। मैं मान लेता था कि ऊपर किसी ने यह गणित कर रखा होगा। फिर मैंने यह paper पढ़ा और पाया कि गणित सिर्फ़ दो term वाला एक curve fit है और एक ही variable पर argmin। बीस लाइनें। फिर भी पूरी industry दो साल तक इसे ग़लत करती रही। </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (compute, budget, tokens
+    per parameter, loss, coefficients, compute-optimal, inference,
+    extrapolation…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में
+    आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>यह एक तय मासिक बिल के हिसाब से infrastructure size करना है</h2>
+
+  <p>यह आपने किया है। तय budget, और ख़रीदने को दो चीज़ें:</p>
+
+<pre><code>budget = 10_000        # हर महीने, और यह बढ़ने वाला नहीं है
+# बड़े instances पर ख़र्च करें, या ज़्यादा instances पर?
+for n_instances in range(1, 100):
+    size = budget / n_instances
+    print(n_instances, size, throughput(n_instances, size))</code></pre>
+
+  <p> Chinchilla वही loop है। Budget है FLOPs। ख़रीदने की दो चीज़ें हैं parameters (N) और training tokens (D)। और एक सख़्त constraint दोनों को बाँधता है, इसलिए एक चुनना दूसरे को भी तय कर देता है: </p>
+
+<pre><code>C = 6 * N * D                 # पूरा training बिल, FLOPs में
+for N in candidate_sizes:
+    D = C / (6 * N)           # उस size पर जितने tokens ख़रीद सकते हैं
+    print(N, D, loss(N, D))   # सबसे कम loss वाली पंक्ति चुनें</code></pre>
+
+  <p> पूरा paper बस यही है। बाक़ी सब कुछ <code>loss(N, D)</code> को इतनी सावधानी से मापना है कि argmin का कोई मतलब बने। </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>N</strong></td><td>Parameter की संख्या</td><td>Instance size. बड़ा है तो हर घंटे ज़्यादा ख़र्च, हमेशा के लिए।</td></tr>
+      <tr><td><strong>D</strong></td><td>देखे गए training tokens</td><td>आप job को कितनी देर चलने देते हैं।</td></tr>
+      <tr><td><strong>C</strong></td><td>Training FLOPs</td><td>Invoice। शुरू करने से पहले ही तय।</td></tr>
+      <tr><td><strong>Compute-optimal</strong></td><td>उस C पर सबसे कम loss वाला (N, D)</td><td>वह पंक्ति जो आपका sweep चुनता है।</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>इसने Kaplan को क्यों पलट दिया</h2>
+
+  <p> दो साल पहले <a href="https://arxiv.org/abs/2001.08361">Kaplan et al.</a> ने यही प्रयोग किया और अलग जवाब पाया: लगभग सब कुछ model size पर ख़र्च करो। उनका fit किया हुआ नियम था — N बढ़ता है C<sup>0.73</sup> की तरह और D बढ़ता है C<sup>0.27</sup> की तरह। यानी दस गुना compute का मतलब लगभग पाँच गुना बड़ा model और सिर्फ़ दो गुना data। GPT-3 (175B parameters, 300B tokens) उसी सलाह पर बना है। </p>
+
+  <p> Chinchilla ने इसे 400 से ज़्यादा runs के साथ दोबारा किया और पाया कि N और D दोनों C<sup>0.5</sup> की तरह बढ़ने चाहिए। बराबर बँटवारा। दोनों को साथ बढ़ाओ। </p>
+
+  <p> Kaplan लापरवाह नहीं थे — setup अलग था, और दो अंतर ही ज़्यादातर काम करते हैं। Kaplan ने अलग-अलग लंबाई के runs पर एक ही cosine learning-rate schedule की लंबाई इस्तेमाल की, जिससे छोटे runs असल से ज़्यादा ख़राब दिखते हैं; Chinchilla ने हर run के असली token count के हिसाब से schedule tune किया। Kaplan ने non-embedding parameters गिने। पूरी बहस चाहिए तो Chinchilla के discussion section में यह विस्तार से है — मैं सारांश दे रहा हूँ, फ़ैसला नहीं सुना रहा। </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">L(N, D) = E + A / N<sup>α</sup> + B / D<sup>β</sup>&nbsp;&nbsp;&nbsp;subject to&nbsp;&nbsp;C = 6ND</div>
+
+  <p>Loss को तीन बिलों के जोड़ की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>रूप</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>E</code></td><td>scalar</td><td>फ़र्श। Fit का कोई model इससे नीचे नहीं जाता — यही न घटने वाला हिस्सा है।</td></tr>
+      <tr><td><code>A / N<sup>α</sup></code></td><td>scalar</td><td><strong>बहुत छोटा।</strong> Function को दर्शाने लायक़ parameters न होने का दंड।</td></tr>
+      <tr><td><code>B / D<sup>β</sup></code></td><td>scalar</td><td><strong>Data कम।</strong> पर्याप्त text न देखने का दंड।</td></tr>
+      <tr><td><code>6ND</code></td><td>scalar</td><td>Constraint। C तय करो, और N चुनना D को तय कर देता है।</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p> Constraint के नीचे दोनों दंड-terms उलटी दिशाओं में खींचते हैं, इसलिए curve एक कटोरा है और कटोरे का एक तल है। वही तल यह पूरा paper है। </p>
+
+  <div class="note">
+    <strong>E, A, B, α और β paper के fit किए हुए मान हैं, मेरे नहीं।</strong>
+    इनमें से एक भी मैंने नहीं निकाला। Script दो प्रकाशित sets hardcode करती है
+    और उनसे बनने वाले optimisation को दोबारा हल करती है — वह हिस्सा साधारण
+    गणित है, जिसे आप ख़ुद जाँच सकते हैं।
+  </div>
+
+  <h2>वह 6 कहाँ से आता है</h2>
+
+  <p> प्रति parameter, प्रति token: forward में 2 FLOPs (एक गुणा, एक जोड़), backward में 4 (activations के सापेक्ष gradient, weights के सापेक्ष gradient)। 2 + 4 = 6। यही पूरा derivation है। इसमें attention का अपना sequence-length में quadratic term नहीं गिना जाता, जो तब तक छोटा रहता है जब तक context, model width के मुक़ाबले छोटा हो — इस paper के हर model के लिए यह सच था, आज के long-context models के लिए उतना नहीं। </p>
+
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। यह रहा असली output:</strong></p>
+
+<pre><code>model          params   tokens  tok/param       FLOPs
+GPT-3          175.0B   300.0B        1.7    3.15e+23
+Gopher         280.0B   300.0B        1.1    5.04e+23
+Chinchilla      70.0B     1.4T       20.0    5.88e+23  <span class="ok">✓</span>
+LLaMA-7B         7.0B     1.0T      142.9    4.20e+22</code></pre>
+
+  <p> Gopher और Chinchilla को train करने का ख़र्च लगभग बराबर है। एक दूसरे से चार गुना बड़ा है। यही तुलना paper का मुख्य प्रयोग है, और इसके दोनों पक्ष आप एक साधारण calculator से निकाल सकते हैं। </p>
+
+  <h2>Split को sweep कीजिए, तल ढूँढ़िए</h2>
+
+  <p> C को Chinchilla के अपने training budget पर तय कीजिए, N को 1B से 2T तक चलाइए, और D को constraint से आने दीजिए। फिर बस loss column पढ़िए। </p>
+
+<pre><code>budget C = 5.76e+23 FLOPs (roughly what Chinchilla spent)
+
+  N (params)  D (tokens)  tok/param  predicted loss
+        1.0B       96.0T    96000.0          2.1904
+        5.0B       19.2T     3840.0          2.0501
+       20.0B        4.8T      240.0          1.9911
+       50.0B        1.9T       38.4          1.9758
+       72.0B        1.3T       18.5          <span class="ok">1.9744  ← bottom</span>
+      100.0B      960.0B        9.6          1.9755
+      200.0B      480.0B        2.4          1.9850
+      500.0B      192.0B        0.4          2.0138
+        2.0T       48.0B        0.0          <span class="hl">2.1008  ← all size, no data</span>
+
+argmin over 20000 candidate splits (REFIT coefficients):
+  N* = 72.3B params
+  D* = 1.3T tokens
+  D*/N* = 18.4 tokens per parameter
+  loss  = 1.9744 nats/token
+  Chinchilla as actually built: 70.0B params, 1.4T tokens, 20.0 tok/param</code></pre>
+
+  <p> उनके बनाए 70B के मुक़ाबले 72.3B। यह paper का अपने ही model को एक curve fit से predict कर लेना है, और यही वह क्षण था जब मुझे यह पूरा मामला अंकज्योतिष जैसा लगना बंद हुआ। </p>
+
+  <h2>एक ईमानदार पेच: कौन से coefficients</h2>
+
+  <p> यह वह हिस्सा है जिसे मैं लगभग ग़लत समझ बैठा था। Chinchilla ने तीन तरीक़े इस्तेमाल किए — training-curve envelope, IsoFLOP sweep, और ऊपर वाला parametric fit — और बताया कि तीनों लगभग बीस tokens per parameter पर सहमत हैं। लेकिन अगर आप उस parametric fit के <em>छपे हुए</em> coefficients optimisation में डालें, तो बीस नहीं आता। लगभग नब्बे आता है। </p>
+
+  <p> यह मेरी गणना की ग़लती नहीं है; यह एक जानी-मानी विसंगति है, और 2024 के एक replication ने उसी data को दोबारा fit करके ऐसे coefficients बताए जो सचमुच उस मुख्य नतीजे को दोहराते हैं। मेरी script दोनों sets रखती है और उन्हें अग़ल-बग़ल छापती है, क्योंकि "छपे हुए आँकड़े छपे हुए निष्कर्ष को ठीक-ठीक दोहराते नहीं हैं" — यह ठीक वैसी बात है जिसे इस तरह के पन्ने को चुपचाप ढकने के बजाय खुलकर कहना चाहिए। </p>
+
+<pre><code>same sweep, ratio only, across five budgets:
+  budget C  REFIT tok/param  PAPER tok/param
+     1e+21             21.6             50.1
+     1e+22             20.4             62.6
+     1e+23             19.2             78.1
+     6e+23             <span class="ok">18.4</span>             <span class="hl">92.6</span>
+     1e+25             17.1            122.0</code></pre>
+
+  <div class="note">
+    <strong>नीचे सब कुछ refit किए गए coefficients इस्तेमाल करता है।</strong>
+    वही paper के अपने मुख्य नतीजे और उसके अपने model को दोहराते हैं; छपे हुए
+    नहीं दोहराते। दोनों हाल में जो सबक़ बचता है: N और D साथ-साथ बढ़ने चाहिए,
+    और वह अनुपात एक नहीं, दो अंकों वाली छोटी संख्या है।
+  </div>
+
+  <h2>एक ही पैसे में Kaplan बनाम Chinchilla</h2>
+
+  <p> Kaplan एक exponent देते हैं, कोई constant नहीं। इसलिए उनका curve खींचने के लिए मैं उसे उसी सलाह पर बने एक असली model पर टिकाता हूँ — GPT-3, 300B tokens पर 175B। Exponent उनका है; anchor मेरा है, और यही इस पन्ने की सबसे कमज़ोर धारणा है। </p>
+
+<pre><code>  budget C   Kaplan N  Kaplan D    t/p     loss   Chin. N   Chin. D    t/p     loss
+     1e+21       2.6B     63.5B   24.2   2.3056      2.8B     60.0B   21.6   2.3055
+     1e+22      14.1B    118.2B    8.4   2.1452      9.0B    184.2B   20.4   2.1411
+     1e+23      75.7B    220.1B    2.9   2.0444     29.5B    565.8B   19.2   2.0321
+     6e+23     271.9B    353.1B    1.3   <span class="hl">1.9925</span>     72.3B      1.3T   18.4   <span class="ok">1.9744</span>
+     1e+24     406.7B    409.8B    1.0   1.9792     95.9B      1.7T   18.1   1.9597
+     1e+25       2.2T    763.1B    0.3   1.9357    312.1B      5.3T   17.1   1.9117
+
+at C = 5.76e+23:
+  Kaplan wants a model 3.8x bigger, fed 3.8x fewer tokens
+  and pays 0.0180 nats/token for it</code></pre>
+
+  <p> Kaplan वाले <code>t/p</code> column को देखिए। वह एक से नीचे गिर जाता है। काफ़ी बड़े budget पर Kaplan का नियम ऐसा model सुझाता है जिसमें training tokens से ज़्यादा parameters हैं — ऐसे parameters जिन्हें train करने का ख़र्च आप उठा ही नहीं सकते। यही failure mode है, एक संख्या के रूप में। </p>
+
+  <div class="note">
+    <strong>वही ख़र्च, ख़राब model।</strong> यहाँ interview का सवाल है "GPT-3
+    undertrained क्यों था?", और जवाब "वे लापरवाह थे" नहीं है — जवाब है "जिस
+    scaling law को वे मान रहे थे उसने पैसा ग़लत जगह लगवाया, और यह दिखाने में
+    400 runs लगे।"
+  </div>
+
+  <h2>Gopher के मुक़ाबले Chinchilla</h2>
+
+  <p> Paper का सबूत एक ही आमने-सामने की तुलना है। वही lab, वही data pipeline, लगभग वही training बिल, बिलकुल अलग split। </p>
+
+<pre><code>Gopher       N= 280.0B  D= 300.0B  tok/param=   1.1  C=5.040e+23  loss=1.9996
+Chinchilla   N=  70.0B  D=   1.4T  tok/param=  20.0  C=5.880e+23  loss=1.9739
+
+compute ratio Chinchilla/Gopher = 1.167  (i.e. the same training bill)
+predicted loss gap = +0.0257 nats/token in Chinchilla's favour</code></pre>
+
+  <p> Chinchilla चौथाई आकार का है और paper की पूरी benchmark suite में Gopher से बेहतर रहा। ऊपर के loss आँकड़े वही हैं जो <em>यह fit</em> predict करता है, मापे गए benchmark scores नहीं — इन्हें paper के नतीजों की तरह मत उद्धृत कीजिए। असली भार उठाने वाली संख्या compute ratio है: 1.167, यानी लगभग वही पैसा। </p>
+
+  <h2>LLaMA ने यह सब क्यों नज़रअंदाज़ किया</h2>
+
+  <p> Chinchilla <strong>training</strong> बिल को optimise करता है। उस चीज़ को serve करने का भी पैसा लगता है — हर generate किए गए token पर, हर parameter के लिए लगभग 2 FLOPs, कोई backward pass नहीं, हर दिन, हमेशा। इसे constraint में डालिए और जवाब बदल जाता है: </p>
+
+<pre><code>C_total = 6*N*D_train + 2*N*D_inference</code></pre>
+
+<pre><code>total budget (train + serve) = 5.76e+23 FLOPs
+
+ inference tokens       N*   D* train  tok/param  train loss
+             none    72.3B       1.3T       18.4      <span class="ok">1.9744</span>
+           100.0B    69.0B       1.4T       19.7      1.9751
+             1.0T    50.1B       1.6T       31.6      1.9806
+            10.0T    15.8B       2.7T      174.1      2.0128
+            50.0T     4.4B       5.0T     1140.2      2.0772
+           100.0T     2.4B       6.8T     2822.3      <span class="hl">2.1231</span></code></pre>
+
+  <p> इसे ऊपर से नीचे पढ़िए। आप जितने ज़्यादा tokens serve करने की उम्मीद रखते हैं, model उतना ही छोटा train कीजिए और उतनी ही देर तक। Training loss column बिगड़ता जाता है — यही मक़सद है। आप जानबूझकर एक कमतर train किया हुआ model स्वीकार कर रहे हैं, क्योंकि inference पर उसका दाम आप अरबों बार चुकाएँगे। </p>
+
+  <div class="note">
+    <strong>Chinchilla "सबसे बेहतर model जो मैं train कर सकता हूँ" का जवाब
+    देता है। LLaMA ने "सबसे बेहतर model जो मैं चला सकता हूँ" का जवाब
+    दिया।</strong> LLaMA-7B ने लगभग एक ट्रिलियन tokens देखे — प्रति parameter
+    क़रीब 143, compute-optimal से सात गुना आगे। यह इस paper का खंडन नहीं है;
+    यह एक अलग objective है। वह पूरी बहस <a href="../llama/">LLaMA वाले
+    पन्ने</a> पर की गई है।
+  </div>
+
+  <h2>यह fit कहाँ भरोसेमंद रहना बंद कर देता है</h2>
+
+  <p> Paper के runs लगभग 70M से 16B parameters और 5B से 400B tokens तक थे। सूत्र को यह पता नहीं है। उससे दस लाख गुना बड़े model के बारे में पूछिए और वह पूरी शांति से, चार दशमलव स्थानों तक जवाब देगा। </p>
+
+<pre><code>         N         D  tok/param  predicted loss
+     70.0M      1.4B       20.0          3.6587
+     70.0B      1.4T       20.0          <span class="ok">1.9739</span>
+     10.0T    200.0T       20.0          1.8440
+   1.0e+16   2.0e+17       20.0          1.8195
+   1.0e+19   2.0e+20       20.0          <span class="hl">1.8174</span>
+      1.0K     20.0K       20.0        <span class="hl">101.1373</span>
+
+the fit's floor is E = 1.8172: at infinite N and D the formula
+says loss -> 1.8172 nats/token and never lower.
+loss(1e19 params, 2e20 tokens) - E = 1.97e-04</code></pre>
+
+  <p> उस block में दो बातें बेतुकी हैं और सूत्र किसी को भी flag नहीं करता। हज़ार parameters वाले model का loss 101 नहीं होता। और E एक <em>fit किया हुआ constant</em> है, भाषा की मापी गई entropy नहीं — वह बस वहाँ है जहाँ runs के एक डिब्बे के भीतर curve समतल हो गया, और उसे प्रकृति का नियम मान लेना ही वह तरीक़ा है जिससे scaling-law की बहसें चौथी slide पर ही पटरी से उतर जाती हैं। जिस दायरे में आपने fit किया है उसके बाहर यह extrapolation है — सबूत नहीं, बस गणित। </p>
+
+</section>
+
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted"> Pure NumPy. No torch, no training, nothing to wait for — the paper is a curve fit and an argmin, and both are a few lines. Every function under 15 lines. </p>
+<p> <a href="scaling_laws_from_scratch.py" download><strong>Download the full script</strong></a> — about 75 lines of core code plus seven runnable demos. It finishes in well under a second. Then: </p>
+<pre><code>python3 scaling_laws_from_scratch.py</code></pre>
+
+<pre><code>import numpy as np
+
+def compute_flops(N, D):
+    """Training FLOPs for N parameters over D tokens."""
+    # 2 FLOPs forward + 4 backward, per parameter per token. That is the
+    # whole derivation of the 6. It ignores attention's own quadratic term,
+    # which is small while context is short relative to model width.
+    return 6.0 * N * D
+
+
+def tokens_for_budget(N, C):
+    """Invert C = 6ND: how many tokens does budget C buy at size N?"""
+    return C / (6.0 * N)
+
+
+# Two coefficient sets, BOTH published, NEITHER derived here.
+#   PAPER -- Hoffmann et al. 2022, the "Approach 3" parametric fit as printed.
+#   REFIT -- Besiroglu et al. 2024 replication, which refitted the same data
+#            because the printed coefficients do not reproduce the paper's
+#            own headline. Demo 2 shows the gap. REFIT is the default.
+#
+#   L(N, D) = E + A/N^alpha + B/D^beta
+#     E            an irreducible floor: no model in the fit beats it
+#     A/N^alpha    the penalty for being too small
+#     B/D^beta     the penalty for not having seen enough text
+PAPER = dict(E=1.69,   A=406.4,  B=410.7,   alpha=0.34,   beta=0.28)
+REFIT = dict(E=1.8172, A=482.01, B=2085.43, alpha=0.3478, beta=0.3658)
+
+
+def loss(N, D, coef=REFIT):
+    """Predicted loss in nats per token for N params trained on D tokens."""
+    return (coef["E"] + coef["A"] / N ** coef["alpha"]
+            + coef["B"] / D ** coef["beta"])
+
+
+def optimal_split(C, coef=REFIT, n_lo=1e6, n_hi=1e15, steps=20000):
+    """Return (N*, D*, loss*) minimising loss under budget C = 6ND."""
+    # THE WHOLE PAPER: minimise L(N, D) subject to 6ND = C.
+    # One budget, one free variable: pick N, and D falls out of the
+    # constraint. So sweep N and take the argmin. No calculus needed.
+    Ns = np.logspace(np.log10(n_lo), np.log10(n_hi), steps)
+    Ds = tokens_for_budget(Ns, C)
+    Ls = loss(Ns, Ds, coef)
+    i = int(np.argmin(Ls))
+    return Ns[i], Ds[i], Ls[i]
+
+
+# The correction the paper deliberately did NOT make. Serving costs about
+# 2 FLOPs per parameter per generated token, no backward pass. If you expect
+# to serve D_inf tokens, the budget you really control is
+#     C_total = 6*N*D_train + 2*N*D_inf
+# Same minimisation, different constraint. This is the LLaMA argument.
+def optimal_split_with_inference(C_total, D_inf, n_lo=1e6, n_hi=1e15,
+                                 steps=20000):
+    """Minimise loss subject to 6*N*D_train + 2*N*D_inf = C_total."""
+    Ns = np.logspace(np.log10(n_lo), np.log10(n_hi), steps)
+    Ds = (C_total - 2.0 * Ns * D_inf) / (6.0 * Ns)   # may go negative
+    ok = Ds &gt; 0
+    Ls = np.where(ok, loss(Ns, np.where(ok, Ds, 1.0)), np.inf)
+    i = int(np.argmin(Ls))
+    return Ns[i], Ds[i], Ls[i]
+
+
+# Kaplan et al. (2020) fitted N_opt ~ C^0.73: spend it on size. Their paper
+# gives an exponent, not a constant, so anchor on a model built under that
+# advice -- GPT-3. The exponent is theirs; the anchor is mine.
+KAPLAN_EXPONENT = 0.73
+ANCHOR_N, ANCHOR_D = 175e9, 300e9
+ANCHOR_C = compute_flops(ANCHOR_N, ANCHOR_D)
+
+
+def kaplan_split(C):
+    """Kaplan-style (N, D) for budget C, anchored on GPT-3."""
+    N = ANCHOR_N * (C / ANCHOR_C) ** KAPLAN_EXPONENT
+    return N, tokens_for_budget(N, C)
+</code></pre>
+
+<h2>Now break it</h2>
+<p> This is the part that actually makes it stick. Reading won't do it. You debug for a living — reverse-engineering from broken behaviour is your native mode, and this script is fast enough that you can break it fifty times in a coffee break. </p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>demo_2</code>, replace <code>optimal_split(C)</code> with the Kaplan split at the same C</td><td>N jumps 72.3B → 271.9B, D collapses 1.3T → 353.1B, loss goes 1.9744 → 1.9925. Same invoice, worse model.</td></tr>
+    <tr><td>In <code>demo_5</code>, set every <code>D_inf</code> to <code>0.0</code></td><td>Every row returns 72.3B / 18.4 tok/param. You've silently optimised the training bill for a model you'll serve 100T tokens through.</td></tr>
+    <tr><td>Add <code>(1e19, 2e20)</code> to <code>demo_6</code>'s list — it's already there, delete the READ THIS and believe the number</td><td><code>1.8174</code>, four decimals, two orders of magnitude past any run in the fit. <code>1e3</code> params reports a loss of <code>101.1373</code>.</td></tr>
+    <tr><td>In <code>demo_7(b)</code>, pass total parameters to <code>compute_flops</code> instead of active ones</td><td>C reads <code>2.820e+23</code> instead of <code>7.800e+22</code> — a 3.6x overstatement. See <a href="../moe/">the MoE page</a> for why only the active experts do work.</td></tr>
+    <tr><td>In <code>demo_7(c)</code>, pin <code>D_fixed</code> and grow N alone</td><td>10B → 10T params moves the loss 2.1096 → 1.9638 and it never gets below 1.9493. The B/D term does not care how big your model is.</td></tr>
+    <tr><td>Swap <code>REFIT</code> for <code>PAPER</code> as the default in <code>loss()</code></td><td>The optimum ratio goes from 18.4 to 92.6 tokens per parameter, and the fit no longer predicts the model the paper built.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — the three estimation approaches and
+  the table that predicts optimal N and D for a given budget. Skip the full
+  benchmark appendix unless you need a specific score; it's a leaderboard, not
+  an argument. You'll find the paper is mostly the comments you've already
+  read, plus the enormous amount of GPU time it took to earn them.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p> This paper needs less maths than any other on this site. A power law (<code>A / N**alpha</code> — a thing that shrinks as N grows, quickly at first, then slowly). An argmin (find the smallest row). Multiplication. That's it. There is no gradient anywhere in my script. </p>
+<p> The one genuinely mathematical move is <em>curve fitting</em>: they ran 400+ models, wrote down a functional form with five unknowns, and used an optimiser to pick the five numbers that best explain the observations. If you've ever fitted a latency curve to decide an autoscaling threshold, that's the same act at the same level of rigour. </p>
+<p> What this paper actually demands is judgement, not algebra: knowing that a fit is only valid inside the range it was fitted on, and that compute-optimal training is not the same objective as cheap serving. Both of those are engineering instincts you already have from capacity planning. </p>
+
+<h2>Where to go next</h2>
+<p> This page gave you the optimisation and the budget arithmetic, and skipped almost everything about how the three estimation approaches were actually run. These fill that in. </p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2203.15556">
+      <span class="paper-title">Training Compute-Optimal Large Language Models</span>
+      <span class="paper-meta">Hoffmann et al., 2022. The original.</span>
+    </a>
+    <p class="paper-pitch"> Read the three approaches and the IsoFLOP plots, which are the visual version of my demo 2 sweep and far more convincing than my table. Then the estimated-optimal table, which is the thing you'd actually cite in a planning doc. </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2001.08361">
+      <span class="paper-title">Scaling Laws for Neural Language Models</span>
+      <span class="paper-meta">Kaplan et al., 2020. The paper this overturned.</span>
+    </a>
+    <p class="paper-pitch"> Worth reading second, not first, and read for its method rather than its recommendation. Almost everything it says about power-law behaviour still holds; the conclusion about how to spend a budget is the part Chinchilla replaced. </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://epoch.ai/blog/chinchilla-scaling-a-replication-attempt">
+      <span class="paper-title">Chinchilla Scaling: A Replication Attempt</span>
+      <span class="paper-meta">Besiroglu et al., Epoch AI. Where the refitted coefficients come from.</span>
+    </a>
+    <p class="paper-pitch"> The honest wrinkle section on this page, done properly. They extract the paper's own data, refit it, and show why the printed coefficients don't reproduce the printed conclusion. This is what checking someone's arithmetic looks like when it's done in public. </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://www.harmdevries.com/post/model-size-vs-compute-overhead/">
+      <span class="paper-title">Go smol or go home</span>
+      <span class="paper-meta">Harm de Vries. The inference-aware version, with the algebra.</span>
+    </a>
+    <p class="paper-pitch"> My demo 5 is a sweep; this is the closed-form treatment of the same question — how much extra training compute you accept to get a smaller model, and what that buys you at serving time. The best single thing to read before arguing about model size in a design review. </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Chinchilla → de Vries → the
+  replication → Kaplan. Chinchilla gives you the rule, de Vries tells you when
+  to break it, the replication tells you how much precision the rule really
+  has, and Kaplan is history you only need once you care why anyone believed
+  otherwise.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

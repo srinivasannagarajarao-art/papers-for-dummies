@@ -1,0 +1,1017 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Byte-Pair Encoding — for programmers</title>
+<meta name="description" content="BPE explained as code. A tokeniser is a compression algorithm someone else trained and froze into your model. Runnable Python, seven demos, real printed token counts.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Byte-Pair Encoding: the tokeniser you inherited</h1>
+    <p class="paper-meta">Sennrich, Haddow &amp; Birch, 2015</p>
+    <p class="lede">
+      The one component of your model that nobody trained and everybody blames.
+    </p>
+    <p>
+      <a href="tokenization_from_scratch.py" download>Download tokenization_from_scratch.py</a> —
+      everything below runs from it. Pure Python and NumPy.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
+  <p>
+    On the <a href="../attention/">attention page</a> I said what actually separates AI engineers
+    isn't research maths — it's tokenisation edge cases, KV-cache maths, eval design. This is the
+    tokenisation page. I owed it to you.
+  </p>
+
+  <p>
+    The thing I wish someone had told me earlier: the tokeniser is not part of the model. It's a
+    lookup table fitted once on somebody else's corpus, then frozen and shipped alongside the
+    weights — you cannot swap it without retraining. And almost every baffling LLM behaviour you've
+    filed a ticket about traces straight back to it.
+  </p>
+  <h2>A lossy codec you did not choose</h2>
+
+  <p>
+    You already ship codecs. You know what happens when one sits in the middle of a pipeline:
+    everything downstream inherits its assumptions.
+  </p>
+<pre><code>raw_bytes = open("photo.jpg", "rb").read()
+# the JPEG encoder already decided what detail was worth keeping.
+# your image pipeline doesn't get a vote. it gets the artefacts.</code></pre>
+  <p>
+    A tokeniser is that, for text — tuned to compress mostly English web text, and everything else
+    pays for the mismatch:
+  </p>
+<pre><code>ids = tokeniser.encode(prompt)   # your string is gone now
+out = model(ids)                 # the model has never seen a character
+text = tokeniser.decode(out)     # and back, through the same frozen table</code></pre>
+  <p>
+    The model lives entirely on the right-hand side of that first line. It has no access to your
+    letters. It has integers.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Merge list</strong></td><td>Ordered rules: glue this pair into one symbol</td><td>A migration file. Order is the schema.</td></tr>
+      <tr><td><strong>Vocabulary</strong></td><td>Symbol → integer id</td><td>A frozen dict, shipped with the weights</td></tr>
+      <tr><td><strong>Token</strong></td><td>One entry in that dict</td><td>A file handle. Opaque contents.</td></tr>
+      <tr><td><strong>Pre-tokenisation</strong></td><td>Where merges are forbidden to cross</td><td>Record boundaries before you compress</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h2>It came from translation, not from language models</h2>
+
+  <p>
+    Worth getting right, because it's an interview question. BPE was a 1994 <em>compression</em>
+    algorithm. Sennrich, Haddow and Birch pointed it at words in 2015 to solve a machine-translation
+    problem: a fixed vocabulary means an unseen word becomes <code>&lt;unk&gt;</code>, and you
+    cannot translate <code>&lt;unk&gt;</code>. Their title says it — "Neural Machine Translation of
+    <em>Rare Words</em> with Subword Units".
+  </p>
+
+  <p>
+    The fix is the one you'd reach for: if you can't store every word, store frequent
+    <em>pieces</em> and spell the rest out. Open vocabulary. GPT inherited it years later because it
+    happened to be the right tool.
+  </p>
+  <h2>The one formula, which is a for loop</h2>
+
+  <div class="formula">merges = argmax<sub>(a,b)</sub> count(a,b) &nbsp;→&nbsp; merge &nbsp;→&nbsp; repeat n times</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Data</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>pre_tokenise</code></td><td>text → chunks</td><td>Split into units merges may not cross. Space stays glued to the word.</td></tr>
+      <tr><td><code>to_symbols</code></td><td>chunk → tuple</td><td>Start from single bytes. 256 of them, so nothing is unencodable.</td></tr>
+      <tr><td><code>count_pairs</code></td><td>corpus → Counter</td><td>Every adjacent pair, weighted by word frequency.</td></tr>
+      <tr><td><code>merge_pair</code></td><td>most common pair</td><td>Glue it everywhere. One new symbol, one new id.</td></tr>
+      <tr><td>repeat</td><td>n times</td><td>n is your vocab-size budget minus 256. That's the only hyperparameter.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    That's the paper: <code>Counter.most_common(1)</code> in a loop. No gradient, no objective
+    function, no training in the sense you mean it.
+  </p>
+  <h2>Watch the vocabulary grow</h2>
+
+  <p>
+    The script trains on the toy corpus from the paper's own worked example, and prints every merge
+    in order. Read it top to bottom: characters become fragments, fragments become stems, stems
+    become whole words.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+<pre><code>starting vocabulary: 11 characters -&gt; ' deilnorstw'
+
+merges, in the order they were learned:
+  merge  1: 'e' + 's' -&gt; 'es'       seen  9x, vocab 12
+  merge  2: 'es' + 't' -&gt; 'est'      seen  9x, vocab 13
+  merge  3: 'l' + 'o' -&gt; 'lo'       seen  7x, vocab 14
+  merge  4: 'lo' + 'w' -&gt; 'low'      seen  7x, vocab 15
+  merge  5: ' ' + 'low' -&gt; ' low'     seen  6x, vocab 16
+  merge  6: ' ' + 'n' -&gt; ' n'       seen  6x, vocab 17
+  merge  7: ' n' + 'e' -&gt; ' ne'      seen  6x, vocab 18
+  merge  8: ' ne' + 'w' -&gt; ' new'     seen  6x, vocab 19
+  merge  9: ' new' + 'est' -&gt; ' newest'  seen  6x, vocab 20  <span class="ok">← a whole word</span>
+  merge 10: ' ' + 'w' -&gt; ' w'       seen  3x, vocab 21
+  merge 11: ' w' + 'i' -&gt; ' wi'      seen  3x, vocab 22
+  merge 12: ' wi' + 'd' -&gt; ' wid'     seen  3x, vocab 23   <span class="ok">✓</span></code></pre>
+  <p>
+    Now encode with those 12 rules. Frequency decides everything: how often a string appeared during
+    <em>tokeniser</em> training is exactly how cheap it is for you at inference time, forever.
+  </p>
+<pre><code>        word  tokens                             count
+------------  ---------------------------------- -----
+         low  _low                               1
+       lower  _low|e|r                           3
+      newest  _newest                            1
+      widest  _wid|est                           2
+      lowest  _low|est                           2      <span class="ok">← never seen, still 2</span>
+    slowness  _|s|low|n|es|s                     6
+  kubernetes  _|k|u|b|e|r|n|e|t|es               <span class="hl">10</span>     <span class="hl">← falls apart</span></code></pre>
+  <p>
+    <code>lowest</code> never appeared in the corpus. It still costs 2 tokens, because <code>'
+    low'</code> and <code>'est'</code> both did. That is the 2015 paper's entire contribution,
+    printed. <code>kubernetes</code> shares almost nothing with the corpus and degrades to
+    characters — correct, just expensive. Your domain jargon is <code>kubernetes</code>.
+  </p>
+  <h2>Why it cannot count the r's in strawberry</h2>
+
+  <p>
+    The famous one. Here is the honest mechanical explanation, with the byte-level tokeniser the
+    script trains on a slightly bigger English corpus:
+  </p>
+<pre><code>  strawberry: _strawberry
+         ids: <span class="hl">[361]</span>
+     letters: 10 characters -&gt; 1 token
+
+the model is asked 'how many r in strawberry'. What it received:
+   [361]</code></pre>
+  <p>
+    One integer. There is no <code>r</code> in what the model received, the same way there's no
+    filename inside a file descriptor. Asking it to count letters is asking it to introspect a
+    symbol it only ever saw as an opaque id. Compare it to a task it's good at — reasoning about the
+    <em>meaning</em> of token 361 — and the asymmetry stops being mysterious.
+  </p>
+
+  <div class="note">
+    <strong>Be careful with this claim in an interview.</strong> Tokenisation is the main mechanical
+    reason letter-counting is hard, not a proof that it's impossible. Spelling is discussed in the
+    training text, so the mapping from token 361 to its letters can be memorised, and models often
+    do get it right. "The model can't see letters" is right; "therefore it can never count them" is
+    not.
+  </div>
+  <h2>The multilingual tax</h2>
+
+  <p>
+    This one costs money, and it will cost <em>you</em> money if your users write Tamil or Hindi.
+    The same sentence, the same tokeniser, trained mostly on English:
+  </p>
+<pre><code> language  chars  tokens   ratio
+  English     45      21   1.00x  <span class="ok">✓</span>
+    Tamil     40     107   <span class="hl">5.10x</span>
+    Hindi     39     101   <span class="hl">4.81x</span>
+
+  English: 0.60 tokens per character
+    Tamil: 3.06 tokens per character
+    Hindi: 3.26 tokens per character</code></pre>
+  <p>
+    Every Tamil and Devanagari character is 3 UTF-8 bytes, and no merge ever learned to glue them,
+    so each character costs roughly 3 tokens. Say that plainly: <strong>the same sentence in Tamil
+    costs about five times as much and fits in a fifth of the context window.</strong> Not because
+    Tamil is verbose. Because the codec was fitted on English.
+  </p>
+
+  <p>
+    My ratios are extreme — a toy tokeniser with 376 ids. Production tokenisers have merges for
+    common Devanagari sequences and land closer to 2–3x. The direction is real and it's on your
+    invoice.
+  </p>
+  <h2>The leading space is part of the token</h2>
+
+  <p>
+    Pre-tokenisation glues the space onto the <em>following</em> word. GPT-2 did this, everyone
+    copied it, and it's the source of a whole family of "why did my prompt do that" bugs:
+  </p>
+<pre><code>  'the' -&gt; the          ids <span class="hl">[375]</span>
+ ' the' -&gt; _the         ids <span class="ok">[260]</span>
+
+same tokens? False</code></pre>
+  <p>
+    Two different integers for the same three letters. The model saw <code>' the'</code> constantly
+    (mid-sentence) and <code>'the'</code> rarely (start of a line). End your prompt with a trailing
+    space and you've handed it a token boundary it almost never trained on — then the next token it
+    predicts has to be a word with <em>no</em> leading space, which is the rare branch. That's the
+    whole trailing-space folklore, and it's just this.
+  </p>
+  <h2>Byte-level: the fallback that cannot fail</h2>
+
+  <p>
+    GPT-2's contribution here was small and enormous. Start from <em>bytes</em>, not characters.
+    There are exactly 256 of them, so every possible input has an encoding and there is no
+    <code>&lt;unk&gt;</code> token, ever — for any script, any emoji, any corrupted binary you
+    accidentally pasted in.
+  </p>
+<pre><code>           '🍓' -&gt;  4 utf-8 bytes,  4 tokens, unknown ids: 0
+    round trip -&gt; '🍓'
+     'வணக்கம்' -&gt; 21 utf-8 bytes, 21 tokens, unknown ids: 0
+    round trip -&gt; 'வணக்கம்' <span class="ok">✓</span>
+
+one strawberry emoji = 4 tokens: <span class="hl">[172, 253, 235, 241]</span></code></pre>
+  <p>
+    Lossless round trip on all three. But look at the price: one emoji is four tokens, and to
+    produce that one character the model must emit four correct ids <em>in a row</em>. Get one wrong
+    and you have an invalid UTF-8 sequence in the middle of your JSON. That is why a single emoji
+    breaks a schema you thought was safe — not a parser bug, a four-in-a-row bet.
+  </p>
+
+  <div class="note">
+    <strong>SentencePiece solves a different half of this.</strong> Kudo and Richardson's system
+    treats the input as a raw stream <em>including spaces</em>, writing the space as an ordinary
+    symbol rather than applying language-specific whitespace rules first. So it needs no
+    pre-tokeniser, it detokenises exactly, and it works for Japanese and Thai, which don't put
+    spaces between words. It's a container for BPE and unigram, not a third algorithm.
+  </div>
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    <a href="../attention/">Attention பக்கத்தில்</a> நான் சொன்னேன்: AI engineers-ஐ
+    உண்மையில் வேறுபடுத்துவது research கணிதம் அல்ல — tokenisation edge cases, KV-cache
+    கணக்கு, eval design. இது அந்த tokenisation பக்கம். இதை உங்களுக்கு நான் கடனாக
+    வைத்திருந்தேன்.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (tokeniser, BPE, merge,
+    vocabulary, byte-level, subword, id, encode, decode…) அப்படியே வைத்திருக்கிறேன்.
+    ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>
+    யாராவது முன்பே எனக்குச் சொல்லியிருக்க வேண்டியது: tokeniser என்பது model-ன் ஒரு
+    பகுதி அல்ல. அது வேறு யாரோ ஒருவரின் corpus-ல் ஒரே ஒரு முறை பொருத்தப்பட்ட ஒரு lookup
+    table — பிறகு freeze செய்யப்பட்டு weights-உடன் சேர்த்து அனுப்பப்படுகிறது. மீண்டும்
+    train செய்யாமல் அதை மாற்ற முடியாது. நீங்கள் ticket போட்ட, புரியாத LLM நடத்தைகள்
+    கிட்டத்தட்ட எல்லாமே நேராக இதற்குத்தான் வந்து சேரும்.
+  </p>
+
+  <h2>நீங்கள் தேர்ந்தெடுக்காத ஒரு lossy codec</h2>
+
+  <p>
+    நீங்கள் ஏற்கனவே codec-களை ship செய்கிறீர்கள். ஒன்று pipeline-ன் நடுவில்
+    உட்கார்ந்தால் என்ன ஆகும் என்று உங்களுக்குத் தெரியும்: அதற்குக் கீழே உள்ள எல்லாமே
+    அதன் அனுமானங்களை வாரிசாகப் பெறுகிறது.
+  </p>
+<pre><code>raw_bytes = open("photo.jpg", "rb").read()
+# எந்த விவரம் தேவை என்று JPEG encoder ஏற்கனவே முடிவு செய்துவிட்டது.
+# உங்கள் image pipeline-க்கு வாக்கு இல்லை. artefacts மட்டும்தான் கிடைக்கும்.</code></pre>
+  <p>
+    Tokeniser என்பது text-க்கான அதே விஷயம் — பெரும்பாலும் English web text-ஐ compress
+    செய்ய tune செய்யப்பட்டது, மற்ற எல்லாமே அந்தப் பொருத்தமின்மைக்கு விலை கொடுக்கின்றன:
+  </p>
+<pre><code>ids = tokeniser.encode(prompt)   # உங்கள் string இப்போது போய்விட்டது
+out = model(ids)                 # model ஒரு எழுத்தையும் பார்த்ததில்லை
+text = tokeniser.decode(out)     # அதே frozen table வழியாக மீண்டும் திரும்ப</code></pre>
+  <p>
+    Model முழுக்க முழுக்க அந்த முதல் வரியின் வலப்பக்கத்தில்தான் வாழ்கிறது. உங்கள்
+    எழுத்துகளை அது அணுக முடியாது. அதனிடம் integers மட்டும்தான் இருக்கின்றன.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-ன் உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Merge list</strong></td><td>வரிசைப்படுத்தப்பட்ட விதிகள்: இந்த இணையை ஒரே symbol-ஆக ஒட்டு</td><td>ஒரு migration file. வரிசையே schema.</td></tr>
+      <tr><td><strong>Vocabulary</strong></td><td>Symbol → integer id</td><td>Weights-உடன் அனுப்பப்படும் ஒரு frozen dict</td></tr>
+      <tr><td><strong>Token</strong></td><td>அந்த dict-ல் ஒரு entry</td><td>ஒரு file handle. உள்ளடக்கம் தெரியாது.</td></tr>
+      <tr><td><strong>Pre-tokenisation</strong></td><td>Merges கடக்கத் தடை விதிக்கப்பட்ட எல்லைகள்</td><td>Compress செய்வதற்கு முன் record எல்லைகள்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>இது translation-ல் இருந்து வந்தது, language models-ல் இருந்து அல்ல</h2>
+
+  <p>
+    இதைச் சரியாகத் தெரிந்துகொள்ளுங்கள், ஏனெனில் இது ஒரு interview கேள்வி. BPE 1994-ல்
+    ஒரு <em>compression</em> algorithm. Sennrich, Haddow, Birch மூவரும் 2015-ல் அதை
+    வார்த்தைகளின் மேல் திருப்பி ஒரு machine-translation பிரச்சனையைத் தீர்த்தார்கள்:
+    நிலையான vocabulary என்றால் பார்க்காத ஒரு வார்த்தை <code>&lt;unk&gt;</code> ஆகிவிடும்,
+    <code>&lt;unk&gt;</code>-ஐ மொழிபெயர்க்க முடியாது. அவர்களின் தலைப்பே சொல்கிறது —
+    "Neural Machine Translation of <em>Rare Words</em> with Subword Units".
+  </p>
+
+  <p>
+    தீர்வு நீங்களே யோசித்திருப்பீர்கள்: ஒவ்வொரு வார்த்தையையும் சேமிக்க முடியாவிட்டால்,
+    அடிக்கடி வரும் <em>துண்டுகளை</em> சேமித்து, மீதியை எழுத்துக்கூட்டி எழுதுங்கள். Open
+    vocabulary. வருடங்கள் கழித்து GPT இதை வாரிசாகப் பெற்றது, ஏனெனில் இதுதான் சரியான
+    கருவியாக இருந்தது.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம், அது ஒரு for loop</h2>
+
+  <div class="formula">merges = argmax<sub>(a,b)</sub> count(a,b) &nbsp;→&nbsp; merge &nbsp;→&nbsp; n முறை மீண்டும்</div>
+
+  <p>இதை pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Data</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>pre_tokenise</code></td><td>text → chunks</td><td>Merges கடக்கக் கூடாத அலகுகளாகப் பிரி. Space வார்த்தையுடன் ஒட்டியே இருக்கும்.</td></tr>
+      <tr><td><code>to_symbols</code></td><td>chunk → tuple</td><td>ஒற்றை bytes-ல் இருந்து தொடங்கு. 256 உள்ளன, எனவே எதுவும் encode செய்ய முடியாமல் போகாது.</td></tr>
+      <tr><td><code>count_pairs</code></td><td>corpus → Counter</td><td>அருகருகே உள்ள ஒவ்வொரு இணையும், வார்த்தை அடிக்கடி வருவதற்கேற்ப எடையிடப்படுகிறது.</td></tr>
+      <tr><td><code>merge_pair</code></td><td>அதிகம் வரும் இணை</td><td>எல்லா இடத்திலும் ஒட்டு. ஒரு புதிய symbol, ஒரு புதிய id.</td></tr>
+      <tr><td>மீண்டும்</td><td>n முறை</td><td>n என்பது உங்கள் vocab-size பட்ஜெட் கழித்தல் 256. அதுவே ஒரே hyperparameter.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Paper இவ்வளவுதான்: ஒரு loop-க்குள் <code>Counter.most_common(1)</code>. Gradient
+    இல்லை, objective function இல்லை, நீங்கள் நினைக்கும் அர்த்தத்தில் training இல்லை.
+  </p>
+
+  <h2>Vocabulary வளர்வதைப் பாருங்கள்</h2>
+
+  <p>
+    Paper-ன் சொந்த உதாரணத்தில் உள்ள சிறிய corpus-ல் script train செய்து, ஒவ்வொரு merge-ஐயும்
+    வரிசையாக அச்சிடுகிறது. மேலிருந்து கீழாகப் படியுங்கள்: எழுத்துகள் துண்டுகளாகின்றன,
+    துண்டுகள் அடிச்சொற்களாகின்றன, அடிச்சொற்கள் முழு வார்த்தைகளாகின்றன.
+  </p>
+
+  <p><strong>என் சொல்லை நம்பாதீர்கள். இதோ உண்மையான output:</strong></p>
+<pre><code>starting vocabulary: 11 characters -&gt; ' deilnorstw'
+
+merges, in the order they were learned:
+  merge  1: 'e' + 's' -&gt; 'es'       seen  9x, vocab 12
+  merge  2: 'es' + 't' -&gt; 'est'      seen  9x, vocab 13
+  merge  3: 'l' + 'o' -&gt; 'lo'       seen  7x, vocab 14
+  merge  4: 'lo' + 'w' -&gt; 'low'      seen  7x, vocab 15
+  merge  5: ' ' + 'low' -&gt; ' low'     seen  6x, vocab 16
+  merge  6: ' ' + 'n' -&gt; ' n'       seen  6x, vocab 17
+  merge  7: ' n' + 'e' -&gt; ' ne'      seen  6x, vocab 18
+  merge  8: ' ne' + 'w' -&gt; ' new'     seen  6x, vocab 19
+  merge  9: ' new' + 'est' -&gt; ' newest'  seen  6x, vocab 20  <span class="ok">← ஒரு முழு வார்த்தை</span>
+  merge 10: ' ' + 'w' -&gt; ' w'       seen  3x, vocab 21
+  merge 11: ' w' + 'i' -&gt; ' wi'      seen  3x, vocab 22
+  merge 12: ' wi' + 'd' -&gt; ' wid'     seen  3x, vocab 23   <span class="ok">✓</span></code></pre>
+  <p>
+    இப்போது அந்த 12 விதிகளுடன் encode செய்யுங்கள். எல்லாவற்றையும் அதிர்வெண்தான்
+    முடிவு செய்கிறது: <em>tokeniser</em> training-ன் போது ஒரு string எத்தனை முறை
+    வந்ததோ, அதுவே inference நேரத்தில் உங்களுக்கு அது எவ்வளவு மலிவு என்பதை என்றென்றும்
+    தீர்மானிக்கிறது.
+  </p>
+<pre><code>        word  tokens                             count
+------------  ---------------------------------- -----
+         low  _low                               1
+       lower  _low|e|r                           3
+      newest  _newest                            1
+      widest  _wid|est                           2
+      lowest  _low|est                           2      <span class="ok">← வரவே இல்லை, இருந்தும் 2</span>
+    slowness  _|s|low|n|es|s                     6
+  kubernetes  _|k|u|b|e|r|n|e|t|es               <span class="hl">10</span>     <span class="hl">← சிதறிப் போகிறது</span></code></pre>
+  <p>
+    <code>lowest</code> corpus-ல் ஒருபோதும் வரவில்லை. இருந்தும் அது 2 tokens மட்டுமே,
+    ஏனெனில் <code>' low'</code>-ம் <code>'est'</code>-ம் இரண்டுமே வந்தன. 2015 paper-ன்
+    முழுப் பங்களிப்பும் இதுதான், அச்சிடப்பட்டு. <code>kubernetes</code> corpus-உடன்
+    கிட்டத்தட்ட எதையும் பகிர்ந்துகொள்ளவில்லை, எனவே எழுத்துகளாகச் சிதைகிறது — சரிதான்,
+    ஆனால் விலை அதிகம். உங்கள் துறைச் சொற்கள்தான் <code>kubernetes</code>.
+  </p>
+
+  <p class="thanglish">
+    Frequency dhaan ellaathaiyum decide pannudhu: training-la eppadi paathadho,
+    adhu dhaan inference-la unga vilai. Ungaloda domain jargon dhaan kubernetes.
+  </p>
+
+  <h2>Strawberry-ல் r எத்தனை என்று ஏன் எண்ண முடியவில்லை</h2>
+
+  <p>
+    அந்தப் பிரபலமான கேள்வி. இதோ நேர்மையான இயந்திர விளக்கம் — script சற்றுப் பெரிய
+    English corpus-ல் train செய்யும் byte-level tokeniser-உடன்:
+  </p>
+<pre><code>  strawberry: _strawberry
+         ids: <span class="hl">[361]</span>
+     letters: 10 characters -&gt; 1 token
+
+the model is asked 'how many r in strawberry'. What it received:
+   [361]</code></pre>
+  <p>
+    ஒரே ஒரு integer. Model பெற்றதில் <code>r</code> என்பதே இல்லை — ஒரு file
+    descriptor-ன் உள்ளே filename இல்லாதது போலவே. எழுத்துகளை எண்ணச் சொல்வது என்பது,
+    ஒரு opaque id-ஆக மட்டுமே பார்த்த symbol-ஐ உள்நோக்கிப் பார்க்கச் சொல்வது. அது
+    நன்றாகச் செய்யும் வேலையுடன் ஒப்பிடுங்கள் — token 361-ன் <em>பொருள்</em> பற்றி
+    சிந்திப்பது — அப்போது இந்த ஏற்றத்தாழ்வு மர்மமாக இருக்காது.
+  </p>
+
+  <div class="note">
+    <strong>Interview-ல் இந்த வாதத்தைக் கவனமாகச் சொல்லுங்கள்.</strong> எழுத்து எண்ணுவது
+    கடினமாக இருப்பதற்கு முக்கியமான இயந்திரக் காரணம் tokenisation-தான், ஆனால் அது
+    சாத்தியமே இல்லை என்பதற்கு இது நிரூபணம் அல்ல. Training text-ல் spelling பற்றிப்
+    பேசப்படுகிறது, எனவே token 361-ல் இருந்து அதன் எழுத்துகளுக்கான mapping-ஐ மனப்பாடம்
+    செய்ய முடியும், models பல நேரங்களில் சரியாகவே சொல்கின்றன. "Model-ஆல் எழுத்துகளைப்
+    பார்க்க முடியாது" சரி; "எனவே அதனால் ஒருபோதும் எண்ண முடியாது" தவறு.
+  </div>
+
+  <h2>பன்மொழி வரி</h2>
+
+  <p>
+    இது பணச் செலவு, உங்கள் users தமிழிலோ இந்தியிலோ எழுதினால் இது <em>உங்களுக்கு</em>
+    பணச் செலவு. அதே வாக்கியம், அதே tokeniser, பெரும்பாலும் English-ல் train
+    செய்யப்பட்டது:
+  </p>
+<pre><code> language  chars  tokens   ratio
+  English     45      21   1.00x  <span class="ok">✓</span>
+    Tamil     40     107   <span class="hl">5.10x</span>
+    Hindi     39     101   <span class="hl">4.81x</span>
+
+  English: 0.60 tokens per character
+    Tamil: 3.06 tokens per character
+    Hindi: 3.26 tokens per character</code></pre>
+  <p>
+    ஒவ்வொரு தமிழ் மற்றும் தேவநாகரி எழுத்தும் 3 UTF-8 bytes, அவற்றை ஒட்ட எந்த merge-ம்
+    கற்றுக்கொள்ளவில்லை, எனவே ஒவ்வொரு எழுத்துக்கும் தோராயமாக 3 tokens விலை. இதை
+    வெளிப்படையாகச் சொல்கிறேன்: <strong>அதே வாக்கியம் தமிழில் சுமார் ஐந்து மடங்கு
+    செலவாகிறது, context window-ல் ஐந்தில் ஒரு பங்கு மட்டுமே பிடிக்கிறது.</strong> தமிழ்
+    நீளமான மொழி என்பதால் அல்ல. Codec English-ல் பொருத்தப்பட்டதால்.
+  </p>
+
+  <p>
+    என் விகிதங்கள் மிகைப்படுத்தப்பட்டவை — 376 ids கொண்ட ஒரு சிறு tokeniser. Production
+    tokenisers-ல் அடிக்கடி வரும் தேவநாகரி வரிசைகளுக்கு merges உண்டு, அவை 2–3x
+    அளவுக்கு வந்துவிடும். ஆனால் திசை உண்மையானது, அது உங்கள் invoice-ல் இருக்கிறது.
+  </p>
+
+  <p class="thanglish">
+    Ovvoru Tamil eluthum 3 UTF-8 bytes, merge edhuvum adha ottala — adhanaala
+    ore vaakkiyam Tamil-la anju madangu selavu, context-um anjil onnu dhaan.
+  </p>
+
+  <h2>முன்னால் உள்ள space token-ன் ஒரு பகுதி</h2>
+
+  <p>
+    Pre-tokenisation space-ஐ <em>அடுத்து வரும்</em> வார்த்தையுடன் ஒட்டுகிறது. GPT-2
+    இதைச் செய்தது, எல்லோரும் நகல் எடுத்தார்கள், "என் prompt ஏன் அப்படிச் செய்தது"
+    என்ற bug-களின் ஒரு முழுக் குடும்பமே இதிலிருந்துதான் வருகிறது:
+  </p>
+<pre><code>  'the' -&gt; the          ids <span class="hl">[375]</span>
+ ' the' -&gt; _the         ids <span class="ok">[260]</span>
+
+same tokens? False</code></pre>
+  <p>
+    ஒரே மூன்று எழுத்துகளுக்கு இரண்டு வெவ்வேறு integers. Model <code>' the'</code>-ஐ
+    தொடர்ந்து பார்த்தது (வாக்கியத்தின் நடுவில்), <code>'the'</code>-ஐ அரிதாகவே
+    (வரியின் தொடக்கத்தில்). உங்கள் prompt-ஐ ஒரு space-உடன் முடித்தால், அது கிட்டத்தட்ட
+    train ஆகாத ஒரு token எல்லையை நீங்கள் அதனிடம் கொடுத்திருக்கிறீர்கள் — பிறகு அது
+    கணிக்கும் அடுத்த token, முன்னால் space <em>இல்லாத</em> வார்த்தையாக இருக்க வேண்டும்,
+    அதுவே அரிதான கிளை. முடிவில் உள்ள space பற்றிய எல்லா நாட்டுப்புறக் கதைகளும் இதுதான்.
+  </p>
+
+  <h2>Byte-level: தோற்கவே முடியாத fallback</h2>
+
+  <p>
+    GPT-2-ன் பங்களிப்பு இங்கே சிறியது, ஆனால் மகத்தானது. எழுத்துகளில் அல்ல,
+    <em>bytes</em>-ல் இருந்து தொடங்குங்கள். சரியாக 256 உள்ளன, எனவே சாத்தியமான ஒவ்வொரு
+    input-க்கும் ஒரு encoding உண்டு, <code>&lt;unk&gt;</code> token என்பதே எப்போதும்
+    இல்லை — எந்த எழுத்துமுறைக்கும், எந்த emoji-க்கும், நீங்கள் தவறுதலாக ஒட்டிய எந்தச்
+    சிதைந்த binary-க்கும்.
+  </p>
+<pre><code>           '🍓' -&gt;  4 utf-8 bytes,  4 tokens, unknown ids: 0
+    round trip -&gt; '🍓'
+     'வணக்கம்' -&gt; 21 utf-8 bytes, 21 tokens, unknown ids: 0
+    round trip -&gt; 'வணக்கம்' <span class="ok">✓</span>
+
+one strawberry emoji = 4 tokens: <span class="hl">[172, 253, 235, 241]</span></code></pre>
+  <p>
+    மூன்றிலும் இழப்பில்லாத round trip. ஆனால் விலையைப் பாருங்கள்: ஒரு emoji நான்கு
+    tokens, அந்த ஒரு எழுத்தை உருவாக்க model நான்கு சரியான ids-ஐ <em>வரிசையாக</em>
+    வெளியிட வேண்டும். ஒன்று தவறினால் உங்கள் JSON-ன் நடுவில் ஒரு செல்லாத UTF-8 வரிசை
+    கிடைக்கும். பாதுகாப்பானது என்று நீங்கள் நினைத்த ஒரு schema-வை ஒரு emoji ஏன்
+    உடைக்கிறது என்பதற்கு இதுதான் காரணம் — parser bug அல்ல, வரிசையாக நான்கு சரி வர
+    வேண்டிய ஒரு சூது.
+  </p>
+
+  <div class="note">
+    <strong>SentencePiece இதன் வேறொரு பாதியைத் தீர்க்கிறது.</strong> Kudo மற்றும்
+    Richardson-ன் system, input-ஐ <em>spaces உட்பட</em> ஒரு raw stream-ஆகக் கருதுகிறது;
+    முதலில் மொழி சார்ந்த whitespace விதிகளைப் பயன்படுத்தாமல், space-ஐ ஒரு சாதாரண
+    symbol-ஆக எழுதுகிறது. எனவே இதற்கு pre-tokeniser தேவையில்லை, detokenise சரியாகச்
+    செய்கிறது, வார்த்தைகளுக்கு இடையே space போடாத ஜப்பானிய மற்றும் தாய் மொழிகளுக்கும்
+    வேலை செய்கிறது. இது BPE-க்கும் unigram-க்கும் ஒரு container, மூன்றாவது algorithm
+    அல்ல.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    <a href="../attention/">Attention वाले पेज</a> पर मैंने कहा था कि AI engineers को
+    असल में अलग करती है research गणित नहीं — tokenisation के edge cases, KV-cache का
+    हिसाब, eval design. यह वही tokenisation वाला पेज है। यह मुझ पर आपका उधार था।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (tokeniser, BPE, merge,
+    vocabulary, byte-level, subword, id, encode, decode…) मैंने वैसे ही रखे हैं।
+    क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    जो बात कोई पहले बता देता तो अच्छा होता: tokeniser model का हिस्सा नहीं है। यह एक
+    lookup table है जो किसी और के corpus पर एक बार fit किया गया, फिर freeze करके
+    weights के साथ भेज दिया गया — दोबारा training के बिना आप इसे बदल नहीं सकते। और
+    LLM का लगभग हर उलझाने वाला व्यवहार, जिस पर आपने ticket खोला है, सीधे यहीं तक
+    पहुँचता है।
+  </p>
+
+  <h2>एक lossy codec जो आपने चुना ही नहीं</h2>
+
+  <p>
+    आप पहले से codecs ship करते हैं। आप जानते हैं कि जब कोई codec pipeline के बीच में
+    बैठ जाता है तो क्या होता है: उसके आगे का सब कुछ उसकी मान्यताएँ विरासत में पा जाता है।
+  </p>
+<pre><code>raw_bytes = open("photo.jpg", "rb").read()
+# JPEG encoder पहले ही तय कर चुका कि कौन-सी बारीकी रखनी है।
+# आपकी image pipeline का वोट नहीं है। उसे artefacts मिलते हैं।</code></pre>
+  <p>
+    Tokeniser text के लिए बिलकुल यही है — ज़्यादातर English web text को compress करने
+    के लिए tune किया गया, और बाक़ी सब इस बेमेल की क़ीमत चुकाते हैं:
+  </p>
+<pre><code>ids = tokeniser.encode(prompt)   # आपकी string अब ख़त्म
+out = model(ids)                 # model ने कभी कोई अक्षर देखा ही नहीं
+text = tokeniser.decode(out)     # और उसी frozen table से वापस</code></pre>
+  <p>
+    Model पूरी तरह उस पहली लाइन के दाईं ओर रहता है। आपके अक्षरों तक उसकी पहुँच नहीं है।
+    उसके पास integers हैं।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Merge list</strong></td><td>क्रम में लिखे नियम: इस जोड़ी को एक symbol में चिपकाओ</td><td>एक migration file. क्रम ही schema है।</td></tr>
+      <tr><td><strong>Vocabulary</strong></td><td>Symbol → integer id</td><td>Weights के साथ भेजी गई एक frozen dict</td></tr>
+      <tr><td><strong>Token</strong></td><td>उस dict की एक entry</td><td>एक file handle. अंदर क्या है, पता नहीं।</td></tr>
+      <tr><td><strong>Pre-tokenisation</strong></td><td>वे सीमाएँ जिन्हें merges पार नहीं कर सकतीं</td><td>Compress करने से पहले record की सीमाएँ</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>यह translation से आया है, language models से नहीं</h2>
+
+  <p>
+    इसे ठीक से जान लीजिए, क्योंकि यह interview का सवाल है। BPE 1994 का एक
+    <em>compression</em> algorithm था। Sennrich, Haddow और Birch ने 2015 में इसे शब्दों
+    पर लगाकर एक machine-translation समस्या हल की: तय vocabulary का मतलब है कि कोई
+    अनदेखा शब्द <code>&lt;unk&gt;</code> बन जाता है, और <code>&lt;unk&gt;</code> का
+    अनुवाद नहीं हो सकता। उनका शीर्षक ही कह देता है — "Neural Machine Translation of
+    <em>Rare Words</em> with Subword Units".
+  </p>
+
+  <p>
+    हल वही है जो आप भी सोचते: अगर हर शब्द नहीं रख सकते, तो बार-बार आने वाले
+    <em>टुकड़े</em> रखो और बाक़ी को अक्षर-अक्षर लिखो। Open vocabulary. सालों बाद GPT को
+    यही विरासत में मिला, क्योंकि यही सही औज़ार था।
+  </p>
+
+  <h2>वह इकलौता सूत्र, जो असल में एक for loop है</h2>
+
+  <div class="formula">merges = argmax<sub>(a,b)</sub> count(a,b) &nbsp;→&nbsp; merge &nbsp;→&nbsp; n बार दोहराओ</div>
+
+  <p>इसे pipeline के चरणों की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Data</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>pre_tokenise</code></td><td>text → chunks</td><td>ऐसी इकाइयों में बाँटो जिन्हें merges पार न कर सकें। Space शब्द से चिपका रहता है।</td></tr>
+      <tr><td><code>to_symbols</code></td><td>chunk → tuple</td><td>अकेले bytes से शुरू करो। कुल 256, इसलिए कुछ भी encode से बाहर नहीं।</td></tr>
+      <tr><td><code>count_pairs</code></td><td>corpus → Counter</td><td>हर अगल-बग़ल की जोड़ी, शब्द की आवृत्ति के हिसाब से भारित।</td></tr>
+      <tr><td><code>merge_pair</code></td><td>सबसे आम जोड़ी</td><td>हर जगह चिपका दो। एक नया symbol, एक नई id.</td></tr>
+      <tr><td>दोहराओ</td><td>n बार</td><td>n यानी आपका vocab-size बजट घटा 256. यही इकलौता hyperparameter है।</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    पूरा paper इतना ही है: एक loop के अंदर <code>Counter.most_common(1)</code>. कोई
+    gradient नहीं, कोई objective function नहीं, और training भी नहीं — कम से कम उस अर्थ
+    में नहीं जिस अर्थ में आप सोचते हैं।
+  </p>
+
+  <h2>Vocabulary को बढ़ते हुए देखिए</h2>
+
+  <p>
+    Script उसी छोटे corpus पर train करती है जो paper के अपने उदाहरण में है, और हर merge
+    को क्रम से छापती है। ऊपर से नीचे पढ़िए: अक्षर टुकड़े बनते हैं, टुकड़े मूल शब्दांश
+    बनते हैं, और मूल शब्दांश पूरे शब्द बन जाते हैं।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+<pre><code>starting vocabulary: 11 characters -&gt; ' deilnorstw'
+
+merges, in the order they were learned:
+  merge  1: 'e' + 's' -&gt; 'es'       seen  9x, vocab 12
+  merge  2: 'es' + 't' -&gt; 'est'      seen  9x, vocab 13
+  merge  3: 'l' + 'o' -&gt; 'lo'       seen  7x, vocab 14
+  merge  4: 'lo' + 'w' -&gt; 'low'      seen  7x, vocab 15
+  merge  5: ' ' + 'low' -&gt; ' low'     seen  6x, vocab 16
+  merge  6: ' ' + 'n' -&gt; ' n'       seen  6x, vocab 17
+  merge  7: ' n' + 'e' -&gt; ' ne'      seen  6x, vocab 18
+  merge  8: ' ne' + 'w' -&gt; ' new'     seen  6x, vocab 19
+  merge  9: ' new' + 'est' -&gt; ' newest'  seen  6x, vocab 20  <span class="ok">← एक पूरा शब्द</span>
+  merge 10: ' ' + 'w' -&gt; ' w'       seen  3x, vocab 21
+  merge 11: ' w' + 'i' -&gt; ' wi'      seen  3x, vocab 22
+  merge 12: ' wi' + 'd' -&gt; ' wid'     seen  3x, vocab 23   <span class="ok">✓</span></code></pre>
+  <p>
+    अब उन्हीं 12 नियमों से encode कीजिए। सब कुछ आवृत्ति तय करती है: <em>tokeniser</em>
+    की training के दौरान कोई string कितनी बार आई, ठीक यही तय करता है कि inference के
+    वक़्त वह आपके लिए कितनी सस्ती है — हमेशा के लिए।
+  </p>
+<pre><code>        word  tokens                             count
+------------  ---------------------------------- -----
+         low  _low                               1
+       lower  _low|e|r                           3
+      newest  _newest                            1
+      widest  _wid|est                           2
+      lowest  _low|est                           2      <span class="ok">← कभी देखा नहीं, फिर भी 2</span>
+    slowness  _|s|low|n|es|s                     6
+  kubernetes  _|k|u|b|e|r|n|e|t|es               <span class="hl">10</span>     <span class="hl">← बिखर जाता है</span></code></pre>
+  <p>
+    <code>lowest</code> corpus में कभी आया ही नहीं। फिर भी उसकी क़ीमत 2 tokens है,
+    क्योंकि <code>' low'</code> और <code>'est'</code> दोनों आए थे। 2015 के paper का पूरा
+    योगदान यही है, छपा हुआ। <code>kubernetes</code> corpus के साथ लगभग कुछ भी साझा नहीं
+    करता, इसलिए अक्षरों में बिखर जाता है — सही है, बस महँगा है। आपकी domain की शब्दावली
+    ही <code>kubernetes</code> है।
+  </p>
+
+  <h2>यह strawberry में r क्यों नहीं गिन पाता</h2>
+
+  <p>
+    वही मशहूर सवाल। यह रही ईमानदार यांत्रिक व्याख्या, उस byte-level tokeniser के साथ
+    जिसे script थोड़े बड़े English corpus पर train करती है:
+  </p>
+<pre><code>  strawberry: _strawberry
+         ids: <span class="hl">[361]</span>
+     letters: 10 characters -&gt; 1 token
+
+the model is asked 'how many r in strawberry'. What it received:
+   [361]</code></pre>
+  <p>
+    एक अकेला integer. Model को जो मिला उसमें कोई <code>r</code> है ही नहीं — ठीक वैसे
+    ही जैसे file descriptor के अंदर filename नहीं होता। उससे अक्षर गिनने को कहना यानी
+    उससे कहना कि वह एक ऐसे symbol के भीतर झाँके जिसे उसने हमेशा एक अपारदर्शी id की तरह
+    ही देखा है। जिस काम में वह अच्छा है उससे तुलना कीजिए — token 361 के <em>अर्थ</em>
+    पर सोचना — और यह असंतुलन रहस्य नहीं रह जाता।
+  </p>
+
+  <div class="note">
+    <strong>Interview में यह दावा सँभालकर कीजिए।</strong> अक्षर गिनना कठिन होने की मुख्य
+    यांत्रिक वजह tokenisation है, पर यह प्रमाण नहीं कि ऐसा करना असंभव है। Training text
+    में spelling की चर्चा होती है, इसलिए token 361 से उसके अक्षरों तक की mapping याद की
+    जा सकती है, और models अक्सर सही जवाब देते भी हैं। "Model अक्षर नहीं देख सकता" सही
+    है; "इसलिए वह कभी गिन ही नहीं सकता" ग़लत है।
+  </div>
+
+  <h2>बहुभाषी टैक्स</h2>
+
+  <p>
+    इसकी क़ीमत पैसों में है, और अगर आपके users तमिल या हिंदी लिखते हैं तो यह
+    <em>आपकी</em> जेब से जाएगी। वही वाक्य, वही tokeniser, जो ज़्यादातर English पर train
+    हुआ है:
+  </p>
+<pre><code> language  chars  tokens   ratio
+  English     45      21   1.00x  <span class="ok">✓</span>
+    Tamil     40     107   <span class="hl">5.10x</span>
+    Hindi     39     101   <span class="hl">4.81x</span>
+
+  English: 0.60 tokens per character
+    Tamil: 3.06 tokens per character
+    Hindi: 3.26 tokens per character</code></pre>
+  <p>
+    हर तमिल और देवनागरी अक्षर 3 UTF-8 bytes का है, और किसी merge ने उन्हें चिपकाना सीखा
+    ही नहीं, इसलिए हर अक्षर की क़ीमत क़रीब 3 tokens है। साफ़ शब्दों में:
+    <strong>वही वाक्य हिंदी में लगभग पाँच गुना महँगा पड़ता है और context window के
+    पाँचवें हिस्से में ही समा पाता है।</strong> इसलिए नहीं कि हिंदी लंबी भाषा है।
+    इसलिए कि codec English पर fit किया गया था।
+  </p>
+
+  <p>
+    मेरे अनुपात चरम हैं — 376 ids वाला एक खिलौना tokeniser। Production tokenisers में
+    आम देवनागरी अनुक्रमों के लिए merges होते हैं और वे 2–3x के आसपास आ जाते हैं। पर
+    दिशा असली है, और वह आपके invoice पर दिखती है।
+  </p>
+
+  <h2>आगे लगा space token का ही हिस्सा है</h2>
+
+  <p>
+    Pre-tokenisation space को <em>अगले</em> शब्द के साथ चिपका देता है। GPT-2 ने ऐसा
+    किया, सबने नक़ल की, और "मेरे prompt ने ऐसा क्यों किया" वाले bugs का पूरा कुनबा यहीं
+    से निकलता है:
+  </p>
+<pre><code>  'the' -&gt; the          ids <span class="hl">[375]</span>
+ ' the' -&gt; _the         ids <span class="ok">[260]</span>
+
+same tokens? False</code></pre>
+  <p>
+    एक ही तीन अक्षरों के लिए दो अलग integers. Model ने <code>' the'</code> लगातार देखा
+    (वाक्य के बीच में) और <code>'the'</code> बहुत कम (पंक्ति की शुरुआत में)। अपने prompt
+    के अंत में space छोड़ दीजिए और आपने उसे एक ऐसी token सीमा थमा दी जिस पर उसने लगभग
+    training ही नहीं की — फिर उसे जो अगला token चुनना है वह ऐसा शब्द होगा जिसके आगे
+    space <em>नहीं</em> है, यानी दुर्लभ शाखा। trailing-space की सारी लोककथा बस इतनी ही
+    है।
+  </p>
+
+  <h2>Byte-level: वह fallback जो नाकाम हो ही नहीं सकता</h2>
+
+  <p>
+    GPT-2 का योगदान यहाँ छोटा भी था और बहुत बड़ा भी। अक्षरों से नहीं, <em>bytes</em> से
+    शुरू कीजिए। वे ठीक 256 हैं, इसलिए हर संभव input की एक encoding है और
+    <code>&lt;unk&gt;</code> token कभी होता ही नहीं — किसी भी लिपि, किसी भी emoji, और
+    ग़लती से चिपकाई गई किसी भी टूटी binary के लिए।
+  </p>
+<pre><code>           '🍓' -&gt;  4 utf-8 bytes,  4 tokens, unknown ids: 0
+    round trip -&gt; '🍓'
+     'வணக்கம்' -&gt; 21 utf-8 bytes, 21 tokens, unknown ids: 0
+    round trip -&gt; 'வணக்கம்' <span class="ok">✓</span>
+
+one strawberry emoji = 4 tokens: <span class="hl">[172, 253, 235, 241]</span></code></pre>
+  <p>
+    तीनों पर बिना नुक़सान का round trip. पर क़ीमत देखिए: एक emoji चार tokens है, और उस
+    एक अक्षर को बनाने के लिए model को चार सही ids <em>लगातार</em> निकालनी होंगी। एक भी
+    ग़लत हुई और आपके JSON के बीचोंबीच एक अमान्य UTF-8 अनुक्रम बैठ जाएगा। इसीलिए एक अकेला
+    emoji उस schema को तोड़ देता है जिसे आप सुरक्षित मान रहे थे — parser का bug नहीं,
+    लगातार चार सही निकलने का दाँव।
+  </p>
+
+  <div class="note">
+    <strong>SentencePiece इसका दूसरा आधा हिस्सा हल करता है।</strong> Kudo और Richardson
+    का system input को एक raw stream मानता है — <em>spaces समेत</em> — और पहले
+    भाषा-विशिष्ट whitespace नियम लगाने के बजाय space को एक साधारण symbol की तरह लिखता
+    है। इसलिए उसे pre-tokeniser चाहिए ही नहीं, वह ठीक-ठीक detokenise करता है, और जापानी
+    तथा थाई के लिए भी काम करता है, जहाँ शब्दों के बीच space नहीं होता। यह BPE और unigram
+    के लिए एक container है, कोई तीसरा algorithm नहीं।
+  </div>
+
+</section>
+
+
+<hr>
+<h2>The code</h2>
+<p class="muted">
+  Pure Python (NumPy is imported only to pin the seed). No torch, no downloads — a tokeniser is
+  small enough to write completely, so this file <em>is</em> the tokeniser. Every function under
+  20 lines.
+</p>
+<p>
+  <a href="tokenization_from_scratch.py" download><strong>Download the full script</strong></a> —
+  436 lines including seven runnable demos. Then:
+</p>
+<pre><code>python3 tokenization_from_scratch.py</code></pre>
+<pre><code>def to_symbols(word, byte_level=True):
+    """A word -&gt; the tuple of starting symbols BPE will merge."""
+    if byte_level:
+        return tuple(BYTE_TO_CHAR[b] for b in word.encode("utf-8"))
+    return tuple(word)          # character-level: one symbol per character
+
+def pre_tokenise(text):
+    return re.findall(r" ?[^\s]+|\s+", text)
+
+def count_pairs(freqs):
+    pairs = Counter()
+    for symbols, n in freqs.items():
+        for a, b in zip(symbols, symbols[1:]):
+            pairs[(a, b)] += n            # weighted by how often the word occurs
+    return pairs
+
+def merge_pair(symbols, pair):
+    """Glue every occurrence of `pair` in one word into a single symbol."""
+    out, i = [], 0
+    while i &lt; len(symbols):
+        if i &lt; len(symbols) - 1 and (symbols[i], symbols[i + 1]) == pair:
+            out.append(symbols[i] + symbols[i + 1])
+            i += 2
+        else:
+            out.append(symbols[i])
+            i += 1
+    return tuple(out)
+
+def train_bpe(freqs, n_merges, trace=0, base_size=0):
+    """Return the ordered merge list. Order IS the model -- rank matters."""
+    merges = []
+    for step in range(n_merges):
+        pairs = count_pairs(freqs)
+        if not pairs:
+            break
+        # ties broken by the pair itself, so two runs give identical output
+        best_count = max(pairs.values())
+        best = min(p for p, c in pairs.items() if c == best_count)
+        freqs = {merge_pair(w, best): n for w, n in freqs.items()}
+        merges.append(best)
+    return merges
+
+def encode_word(word, merges, byte_level=True):
+    ranks = {pair: i for i, pair in enumerate(merges)}
+    symbols = to_symbols(word, byte_level)
+    while len(symbols) &gt; 1:
+        candidates = [(ranks[p], p) for p in zip(symbols, symbols[1:])
+                      if p in ranks]
+        if not candidates:
+            break
+        symbols = merge_pair(symbols, min(candidates)[1])   # lowest rank first
+    return list(symbols)</code></pre>
+<p class="muted">
+  <code>BYTE_TO_CHAR</code> (the 256-entry byte alphabet) and the <code>trace</code> printing
+  inside <code>train_bpe</code> are elided here. Both are in the file.
+</p>
+<h2>Now break it</h2>
+<p>
+  Demo 7 runs most of these and prints the broken version next to the working one. Do them by hand
+  anyway — reverse-engineering from broken behaviour is faster than re-reading a method section.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Train with <code>train_bpe(freqs, 0)</code> instead of 400</td><td>A 32-character sentence goes from 6 tokens to 32. Everything is bytes again. You pay that on every request, forever.</td></tr>
+    <tr><td>Pass <code>byte_level=False</code>, then encode Tamil</td><td>All 4 symbols of <code>பூனை</code> have no id at all. Byte-level: 12 tokens, 0 unknown.</td></tr>
+    <tr><td>Train with <code>word_freqs(ENGLISH, pretokenise=False)</code></td><td>168 merges contain a space; 138 tokens span two words, e.g. <code>_the_model</code>. One id now means "the model".</td></tr>
+    <tr><td>Encode English with <code>tamil_merges</code></td><td>6 tokens becomes 32. No error, no warning, valid ids throughout — silently worse.</td></tr>
+    <tr><td>Drop the leading space: <code>encode("continues…")</code></td><td>First id flips from 220 to 66 and the whole sequence differs from the one the model trained on.</td></tr>
+    <tr><td>In <code>encode_word</code>, use <code>max(candidates)</code></td><td>Merges apply in reverse rank order. Splits stop matching the training-time splits, still with no error.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers — Sennrich's method section and its worked <code>low /
+  lower / newest</code> example, which is the corpus in demo 1. Skip the BLEU tables. For
+  SentencePiece, read the design section on treating input as a raw stream; skip the benchmarks.
+</div>
+<h2>On the maths anxiety</h2>
+<p>
+  There isn't any. This is the paper on the site with the least maths in it: counting pairs,
+  taking the most frequent, and a dictionary from string to integer. If you can write a
+  <code>Counter</code>, you can write a tokeniser, and you just read one.
+</p>
+<p>
+  The only quantity worth internalising is the ratio: tokens per character for your users' actual
+  languages. That's arithmetic, and it's the number that turns into your bill and your context
+  budget.
+</p>
+<p>
+  Skipped here: the unigram tokeniser (SentencePiece's other algorithm, which scores candidate
+  segmentations probabilistically instead of replaying merges), BPE-dropout, the exact GPT-2
+  regex, how special tokens like <code>&lt;|endoftext|&gt;</code> get injected outside the merge
+  process, and whether tokenisation should exist at all.
+</p>
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: BPE as a merge list you trained yourself and can break. Here's
+  where the parts I skipped live.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1508.07909">
+      <span class="paper-title">Neural Machine Translation of Rare Words with Subword Units</span>
+      <span class="paper-meta">Sennrich, Haddow &amp; Birch, 2015. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Short, and it will now read as the comments you've already seen. Read the method section — its
+      worked example is demo 1's corpus — and the analysis of which words got split. Skip the 2015
+      BLEU tables.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1808.06226">
+      <span class="paper-title">SentencePiece</span>
+      <span class="paper-meta">Kudo &amp; Richardson, 2018. A system paper, not a maths paper.</span>
+    </a>
+    <p class="paper-pitch">
+      The half I compressed into one callout: why the raw stream as input removes language-specific
+      pre-tokenisation, how lossless detokenisation is guaranteed, and what the unigram alternative
+      optimises. This is the library you're actually using in production.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://www.youtube.com/watch?v=zduSFxRajkE">
+      <span class="paper-title">Let's build the GPT Tokenizer</span>
+      <span class="paper-meta">Andrej Karpathy. Two hours, live-coded.</span>
+    </a>
+    <p class="paper-pitch">
+      The definitive version of this topic. He builds the same thing I did, then goes where I stopped:
+      the real GPT-2 regex, special tokens, why SolidGoldMagikarp broke GPT-2, and why LLMs are bad at
+      arithmetic. Watch this if you watch one thing.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://tiktokenizer.vercel.app/">
+      <span class="paper-title">Tiktokenizer</span>
+      <span class="paper-meta">Interactive. Paste text, see tokens.</span>
+    </a>
+    <p class="paper-pitch">
+      Not an explainer — a debugger. Every claim on this page checks against a real production
+      tokeniser in ten seconds. Paste your Tamil sentence, your JSON with an emoji in it, a prompt
+      with a trailing space. Believe the tool, not me.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Tiktokenizer first, for five minutes, to see it's real
+  → Karpathy → then the two papers, which will feel short. Then <a href="../gpt/">the GPT page</a>
+  for what happens to those ids downstream, and <a href="../attention/">attention</a> if you
+  haven't.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

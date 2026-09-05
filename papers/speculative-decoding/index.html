@@ -1,0 +1,1432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speculative decoding: guess, then check — for programmers</title>
+<meta name="description" content="Speculative decoding explained as branch prediction: a cheap model guesses several tokens, the big model verifies them all in one pass, and an acceptance rule keeps the output distribution exactly the target's. Runnable NumPy with printed proof.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Speculative decoding: guess, then check</h1>
+    <p class="paper-meta">Leviathan, Kalman &amp; Matias, 2022</p>
+    <p class="lede">
+      Free speed with no change to the output, which sounds like a lie until
+      you print the distribution yourself.
+    </p>
+    <p>
+      <a href="speculative_decoding_from_scratch.py" download>Download speculative_decoding_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
+
+  <p>
+    The <a href="../kv-cache/">KV-cache page</a> ended on an uncomfortable
+    finding: decoding is memory-bound. Every token you generate drags all
+    twelve-and-a-half gigabytes of weights across the memory bus to do about
+    five billion multiply-accumulates, and the chip finishes that arithmetic
+    while it is still waiting for the next chunk of weights. The arithmetic
+    units idle. The compute is, for practical purposes, <em>free</em>.
+  </p>
+  <p>
+    This paper spends it. That's the entire idea. I ignored it for a year
+    because "speculative" sounded like it meant "approximate", and I don't ship
+    approximate. It doesn't. The output distribution is provably, exactly the
+    big model's — and that guarantee is four lines of code you can verify by
+    counting.
+  </p>
+
+  <h2>It's branch prediction</h2>
+
+  <p>
+    Your CPU does this on every conditional. It doesn't wait to know whether
+    the branch is taken. It guesses, runs ahead speculatively, and when the
+    real answer lands it either keeps the work or throws it away. You never
+    get a wrong result. You only ever get wasted work.
+  </p>
+
+<pre><code># what decoding does today: one expensive call, one token
+for _ in range(n):
+    token = big_model(context)     # 12.5 GiB of weights read, 1 token out
+    context.append(token)</code></pre>
+
+  <p>
+    Now guess ahead. A small cheap model drafts <code>k</code> tokens. Then the
+    big model checks all of them <em>in one call</em>, because a forward pass
+    over k+1 positions costs about the same as a forward pass over one — you
+    read the weights once either way.
+  </p>
+
+<pre><code># speculative: k cheap calls, then ONE expensive call that checks them all
+guesses = [small_model(context + guesses) for _ in range(k)]   # cheap, serial
+p = big_model(context + guesses)      # k+1 distributions, one pass
+keep = accept(guesses, p)             # a coin flip per token, then STOP
+context.extend(keep)                  # 1 to k+1 tokens for one big call</code></pre>
+
+  <p>
+    The clever part is not the drafting. Anyone would think of the drafting.
+    The clever part is <code>accept</code>, which is rigged so that the tokens
+    coming out the other end are distributed <em>exactly</em> as if the big
+    model had generated them alone. Not approximately. Exactly.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Target model</strong></td><td>The big one whose answers you promised your users</td><td>The real branch outcome</td></tr>
+      <tr><td><strong>Draft model</strong></td><td>A small cheap model, same tokeniser</td><td>The branch predictor</td></tr>
+      <tr><td><strong>p, q</strong></td><td>Target's and draft's probability for the same next token</td><td>Two dicts you compare key by key</td></tr>
+      <tr><td><strong>Accept</strong></td><td>Keep the guess, with a probability that corrects for the draft's bias</td><td>Prediction hit — commit the work</td></tr>
+      <tr><td><strong>Reject</strong></td><td>Throw away this guess and everything after it</td><td>Pipeline flush</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <p>Two lines, and the second is the one everybody forgets.</p>
+
+  <div class="formula">accept x with probability min(1, p(x) / q(x))<br>
+  on rejection, sample from p′(x) = norm( max(0, p(x) − q(x)) )</div>
+
+  <p>Read it as a pipeline:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Cost</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>draft k tokens</code></td><td>k cheap serial calls</td><td>Guess ahead. Each guess conditioned on the previous guess</td></tr>
+      <tr><td><code>one target call</code></td><td>1 expensive call</td><td>Returns k+1 distributions — one per prefix, all at once</td></tr>
+      <tr><td><code>min(1, p/q)</code></td><td>a coin flip</td><td>The draft over-proposed x? Keep only p/q of them. Under-proposed? Keep all</td></tr>
+      <tr><td><code>norm(max(0, p−q))</code></td><td>one sample</td><td><strong>The residual.</strong> Exactly the mass the accept step failed to deliver</td></tr>
+      <tr><td><code>stop</code></td><td>free</td><td>Everything after a rejection was conditioned on a token that no longer exists</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Accept plus residual add back up to p. That's the proof — an identity you
+    can check with a calculator, not a limit argument.
+  </p>
+
+  <h2>The rule on one token</h2>
+
+  <p>
+    My models here are not neural nets. They are 6×6 probability tables — a
+    row per current token, the row being the next-token distribution. That's
+    deliberate. The paper's claim is about <em>distributions</em>, and a table
+    is the only model whose true distribution I can print and compare against.
+    A 70B target and a 6×6 table obey the same acceptance rule.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>  context token          : 'a'
+  target  p(.|ctx)       : [0.0943 0.31   0.0908 0.0015 0.3821 0.1213]
+  draft   q(.|ctx)       : [0.0823 0.2638 0.0777 0.0013 0.4479 0.127 ]
+
+  draft proposes 'b'
+    q[b] = 0.2638, p[b] = 0.3100
+    accept with min(1, p/q) = min(1, 0.3100/0.2638) = <span class="ok">1.0000 ✓</span>
+    draft under-proposes it -&gt; always accept
+
+  draft proposes 'e'
+    q[e] = 0.4479, p[e] = 0.3821
+    accept with min(1, p/q) = min(1, 0.3821/0.4479) = 0.8532
+    draft over-proposes it -&gt; reject 14.7% of the time
+
+  on rejection, resample from residual = norm(max(0, p - q)):
+    p - q          : [ 0.0119  0.0461  0.0131  0.0002 -0.0657 -0.0057]
+    residual       : [0.1673 0.6457 0.1838 0.0032 0.     0.    ]</code></pre>
+
+  <p>
+    Follow it by hand. The draft says "e" too often, so 14.7% of the time we
+    throw that guess away. But then we can't just resample from p — those
+    rejections are not spread evenly across the vocabulary, they're
+    concentrated on exactly the tokens the draft over-proposed. So we sample
+    from what's <em>missing</em>: p minus q, negatives clipped to zero,
+    renormalised. Notice "e" and "f" have probability 0 in the residual. The
+    draft already delivered enough of those.
+  </p>
+
+  <h2>The correctness guarantee, counted</h2>
+
+  <p>
+    This is the section that matters. Everything else is performance
+    engineering; this is the reason you're allowed to turn it on in
+    production. I run the whole scheme 60,000 times from a fixed context, keep
+    the first two emitted tokens, and compare the empirical joint against the
+    target model's true joint. Then I break the rule three ways and measure
+    how far the distribution drifts.
+  </p>
+
+  <p>
+    The measure is total variation distance: half the sum of absolute
+    differences. It's the largest probability two distributions can disagree
+    about on any event. Zero means identical.
+  </p>
+
+<pre><code>  60000 rounds, k=4 drafted tokens per round, first two tokens kept
+
+  first-token marginal, target vs speculative decoding:
+    token      target   speculative    diff
+      a       0.0943      0.0905      -0.0038
+      b       0.3100      0.3155      +0.0056
+      c       0.0908      0.0920      +0.0012
+      d       0.0015      0.0015      -0.0001
+      e       0.3821      0.3801      -0.0020
+      f       0.1213      0.1204      -0.0010
+
+  total variation distance on the two-token joint:
+    correct rule                     : <span class="ok">0.0079 ✓</span>
+    BROKEN: accept on argmax agreement     : <span class="hl">0.2735</span>
+    BROKEN: resample from p, not residual  : 0.0349
+    BROKEN: keep drafts after a rejection   : 0.0333
+
+  sampling-error floor (target model sampled directly): 0.0059</code></pre>
+
+  <p>
+    Read the last line first. If I sample 60,000 pairs from the target model
+    itself and compare that to the target model, I get 0.0059 — that's pure
+    counting noise, the price of a finite sample. Speculative decoding with
+    the correct rule sits at 0.0079. Same floor. It is not "close to" the
+    target model; it <em>is</em> the target model, and the residue is my
+    sample size.
+  </p>
+
+  <p>
+    The three broken rules sit four to thirty times above that floor. That is
+    a different model answering your users, and no eval you own will tell you
+    which one it was.
+  </p>
+
+  <div class="note">
+    <strong>The greedy shortcut is the tempting one.</strong> "Just accept the
+    draft whenever the target agrees on the argmax" — it's faster, it needs no
+    random number, and it feels safe. It scores 0.2735. You have silently
+    replaced sampling with something close to greedy decoding, which is a
+    different product.
+  </div>
+
+  <h2>Acceptance rate is the whole game</h2>
+
+  <p>
+    Two numbers decide whether this pays: how often the draft is accepted, and
+    how much the draft costs. Nothing else. I sweep the draft from a perfect
+    copy of the target down to junk, with the draft priced at 10% of a target
+    call per token, drafting 4 tokens a round:
+  </p>
+
+<pre><code>  k=4 drafted tokens per round, draft cost c=0.10 of a target call
+
+  draft quality      accept rate   tokens/target call   speedup
+  alpha=1.00 (perfect)   1.0000        5.0000            <span class="ok">3.571x ✓</span>
+  alpha=0.95             0.9204        4.6814            3.344x
+  alpha=0.85             0.7769        4.1076            2.934x
+  alpha=0.60             0.4964        2.9856            2.133x
+  alpha=0.30             0.2698        2.0792            1.485x
+  alpha=0.00 (junk)      0.1316        1.5265            <span class="hl">1.090x</span>
+
+  temperature mismatch (same model, wrong sampling temperature):
+    draft T=1.0 vs target T=1.0 : accept 1.0000, tokens/call 5.0000, 3.571x
+    draft T=1.3 vs target T=1.0 : accept 0.8625, tokens/call 4.4501, 3.179x
+    draft T=2.0 vs target T=1.0 : accept 0.6658, tokens/call 3.6631, 2.617x
+    draft T=0.5 vs target T=1.0 : accept 0.6743, tokens/call 3.6970, 2.641x</code></pre>
+
+  <p>
+    A perfect draft never gets rejected, so you emit all 4 drafted tokens plus
+    the free bonus token the target already computed at the last position:
+    5 tokens for one target call. A junk draft emits 1.5 and, after paying for
+    the drafting, buys you 9%. These are my toy model's numbers, not the
+    paper's; the shape is what transfers, not the magnitudes.
+  </p>
+
+  <p>
+    The temperature rows are the ones I'd put on an incident postmortem.
+    Nothing is wrong with either model. The draft is the target, exactly, just
+    sampled at a different temperature — and acceptance falls from 1.00 to
+    0.67. Acceptance rate is a property of the <em>pair</em>, not of either
+    model. It's also why the draft must share the target's tokeniser: without
+    that, p and q aren't distributions over the same set and the ratio p/q is
+    meaningless.
+  </p>
+
+  <h2>How far ahead to guess</h2>
+
+  <p>
+    Draft one token and you've barely used the free compute. Draft sixteen and
+    you're paying for fifteen guesses that get flushed the moment the first one
+    is rejected. There is an optimum, and it moves with acceptance rate:
+  </p>
+
+<pre><code>  middling draft (alpha=0.55), draft cost c=0.10
+
+   k   accept rate   tokens/target call   cost 1+k*c   speedup
+   1      0.7078        1.7078           1.10        1.553x
+   2      0.5997        2.1995           1.20        1.833x
+   3      0.5194        2.5583           1.30        1.968x
+   4      0.4494        2.7974           1.40        1.998x
+   5      0.4002        3.0009           1.50        <span class="ok">2.001x ✓</span>
+   6      0.3490        3.0937           1.60        1.934x
+   8      0.2829        3.2634           1.80        1.813x
+  12      0.1987        3.3845           2.20        1.538x
+  16      0.1486        3.3774           2.60        <span class="hl">1.299x</span>
+
+  best k here: 5 at 2.001x</code></pre>
+
+  <p>
+    Watch the two middle columns pull against each other. Tokens per call
+    saturates — going from k=8 to k=16 buys 0.11 of a token, because the run
+    almost never survives eight acceptances. Meanwhile the cost column keeps
+    climbing linearly, 0.10 per extra draft, whether the token survives or
+    not. That's the whole shape of the curve: a saturating numerator over a
+    linear denominator.
+  </p>
+
+  <div class="note">
+    <strong>The interview question is "why not draft 50?"</strong> Because
+    acceptance compounds. If each token is accepted with probability r, the
+    chance all k survive is r<sup>k</sup>. At r = 0.7 that's 3% by k = 10. You
+    are buying lottery tickets at a fixed price.
+  </div>
+
+  <h2>When the draft model makes you slower</h2>
+
+  <p>
+    The cost model is one line. A round costs one target call plus k draft
+    calls, where c is the draft's cost per token as a fraction of a target
+    call. So speedup = tokens per round ÷ (1 + k·c), and you break even when
+    c = (tokens per round − 1) / k.
+  </p>
+
+<pre><code>  middling draft, k=4, tokens per target call = 2.8064
+  break-even draft cost c* = (tokens - 1)/k = 0.4516
+  i.e. the draft model must cost less than 45.2% of the target per token.
+
+  draft cost c    1 + k*c    speedup
+      0.0100      1.0400     2.698x
+      0.0500      1.2000     2.339x
+      0.1000      1.4000     <span class="ok">2.005x ✓</span>
+      0.4516      2.8064     1.000x  &lt;-- break-even
+      0.6000      3.4000     0.825x  SLOWER than no speculation
+      1.0000      5.0000     0.561x  SLOWER than no speculation
+
+  a 'draft' that is a quarter of the target (c=0.25) and only
+  as good as our poor draft:
+    tokens/call 1.5523, speedup <span class="hl">0.776x</span></code></pre>
+
+  <p>
+    That last block is the failure mode people actually ship. You reach for a
+    bigger draft model because it gets accepted more often — and a draft at a
+    quarter of the target's cost, with a poor acceptance rate, lands at
+    0.776x. You made inference slower and the output distribution is still
+    perfectly correct, so nothing alerts. The only symptom is the p50 latency
+    graph.
+  </p>
+
+  <p>
+    In practice c is a ratio of parameter counts, roughly: a 7B drafting for a
+    70B is around 0.1. A model drafting for itself is c = 1 and can never win.
+  </p>
+
+  <h2>Where the free compute comes from</h2>
+
+  <p>
+    Back to the KV-cache finding, but spent instead of merely observed. The
+    weights you drag off memory for a forward pass are the same weights
+    whether that pass covers one token or sixteen. Only the arithmetic scales.
+  </p>
+
+<pre><code>  Llama-2-7B-shaped, 512 tokens of context, fp16 weights
+  weights dragged off memory per forward pass: 13,480,000,000 bytes (12.55 GiB)
+
+   tokens in the pass        MACs        MACs per byte moved
+         1             5,167,382,528              <span class="hl">0.38</span>
+         2            10,334,765,056              0.77
+         4            20,669,530,112              1.53
+         8            41,339,060,224              3.07
+        16            82,678,120,448              <span class="ok">6.13 ✓</span></code></pre>
+
+  <p>
+    An accelerator needs roughly 100–300 MACs per byte of memory traffic to
+    keep its arithmetic units busy. One-token decoding sits at 0.38 — off by
+    nearly three orders of magnitude. Verifying sixteen tokens in the same
+    pass moves the identical bytes, does sixteen times the arithmetic, and
+    <em>still</em> doesn't saturate the chip. The k extra tokens are close to
+    free.
+  </p>
+
+  <div class="note">
+    <strong>This is why the trick exists at all.</strong> If decoding were
+    compute-bound, verifying k tokens would cost k times as much and the whole
+    scheme would collapse to zero gain. Speculative decoding is not a clever
+    algorithm that happens to be fast; it is a direct exploitation of one
+    hardware imbalance.
+  </div>
+
+  <h2>What came after</h2>
+
+  <p>
+    Chen et al. published the same acceptance rule independently a couple of
+    months later (<a href="https://arxiv.org/abs/2302.01318">arXiv
+    2302.01318</a>), applied to Chinchilla — worth knowing because half the
+    blog posts you'll read cite one and half cite the other.
+  </p>
+
+  <p>
+    The obvious annoyance with all of this is that you now have to serve two
+    models, keep them on the same tokeniser, and keep them in sync through
+    every fine-tune. Later work removes the second model: bolt extra
+    prediction heads onto the target model itself so it drafts its own
+    continuations, Medusa being the well-known example. Same acceptance
+    machinery, one set of weights. Different paper, different page.
+  </p>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    <a href="../kv-cache/">KV-cache பக்கம்</a> ஒரு அசௌகரியமான கண்டுபிடிப்புடன்
+    முடிந்தது: decoding memory-bound. நீங்கள் உருவாக்கும் ஒவ்வொரு token-க்கும்
+    பன்னிரண்டரை gigabyte weights-ஐ memory bus வழியாக இழுத்து வர வேண்டும் —
+    செய்வதோ சுமார் ஐந்து பில்லியன் multiply-accumulate மட்டும். அடுத்த weight
+    துண்டு வருவதற்குள்ளாகவே chip அந்தக் கணக்கை முடித்துவிடுகிறது. Arithmetic
+    units சும்மா உட்கார்ந்திருக்கின்றன. நடைமுறையில் compute <em>இலவசம்</em>.
+  </p>
+  <p>
+    இந்தக் கட்டுரை அந்த இலவச compute-ஐச் செலவழிக்கிறது. அவ்வளவுதான் கருத்து.
+    "speculative" என்றால் "தோராயமானது" என்று அர்த்தம் என நினைத்து ஒரு வருடம் இதை
+    ஒதுக்கிவைத்தேன் — நான் தோராயமானதை ship செய்வதில்லை. ஆனால் இது தோராயமானது
+    இல்லை. வெளியீட்டு distribution நிரூபிக்கக்கூடிய அளவுக்கு, சரியாகப் பெரிய
+    model-ஓடுதே — அந்த உத்தரவாதம் நீங்கள் எண்ணிப் பார்த்து சரிபார்க்கக்கூடிய
+    நான்கு வரி code.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (draft model, target
+    model, acceptance rate, rejection, residual distribution, verify,
+    arithmetic intensity, memory-bound, branch prediction…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>இது branch prediction தான்</h2>
+
+  <p>
+    ஒவ்வொரு conditional-லும் உங்கள் CPU இதைத்தான் செய்கிறது. branch எடுக்கப்படுமா
+    என்று தெரியும்வரை அது காத்திருப்பதில்லை. ஊகிக்கிறது, speculative-ஆக முன்னால்
+    ஓடுகிறது, உண்மையான விடை வந்தபிறகு அந்த வேலையை வைத்துக்கொள்கிறது அல்லது
+    தூக்கி எறிகிறது. உங்களுக்கு ஒருபோதும் தவறான விடை கிடைக்காது. வீணான வேலை
+    மட்டுமே கிடைக்கும்.
+  </p>
+
+<pre><code># இன்று decoding செய்வது: ஒரு விலையுயர்ந்த call, ஒரு token
+for _ in range(n):
+    token = big_model(context)     # 12.5 GiB weights read, 1 token out
+    context.append(token)</code></pre>
+
+  <p>
+    இப்போது முன்னால் ஊகியுங்கள். ஒரு சிறிய மலிவான model <code>k</code> tokens
+    draft செய்கிறது. பிறகு பெரிய model அவை அனைத்தையும் <em>ஒரே call-ல்</em>
+    சரிபார்க்கிறது — ஏனெனில் k+1 positions மீதான ஒரு forward pass-ன் விலை, ஒரு
+    position மீதான pass-ன் விலையளவுதான்: இரண்டிலும் weights-ஐ ஒரு முறைதான்
+    படிக்கிறீர்கள்.
+  </p>
+
+<pre><code># speculative: k மலிவான calls, பிறகு எல்லாவற்றையும் சரிபார்க்கும் ஒரே call
+guesses = [small_model(context + guesses) for _ in range(k)]   # மலிவு, serial
+p = big_model(context + guesses)      # k+1 distributions, ஒரே pass
+keep = accept(guesses, p)             # token-க்கு ஒரு coin flip, பிறகு STOP
+context.extend(keep)                  # ஒரு big call-க்கு 1 முதல் k+1 tokens</code></pre>
+
+  <p>
+    புத்திசாலித்தனமான பகுதி drafting இல்லை. drafting யாருக்கும் தோன்றும்.
+    புத்திசாலித்தனமான பகுதி <code>accept</code> — அது எப்படி அமைக்கப்பட்டிருக்கிறது
+    என்றால், மறுமுனையில் வெளிவரும் tokens, பெரிய model தனியாக உருவாக்கியிருந்தால்
+    எப்படி இருந்திருக்குமோ <em>அப்படியே</em> distribute ஆகின்றன. தோராயமாக இல்லை.
+    சரியாக.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Target model</strong></td><td>உங்கள் users-க்கு வாக்குறுதி அளித்த விடைகளைத் தரும் பெரிய model</td><td>உண்மையான branch outcome</td></tr>
+      <tr><td><strong>Draft model</strong></td><td>சிறிய மலிவான model, அதே tokeniser</td><td>Branch predictor</td></tr>
+      <tr><td><strong>p, q</strong></td><td>அதே அடுத்த token-க்கு target-ன், draft-ன் probability</td><td>key வாரியாக ஒப்பிடும் இரு dicts</td></tr>
+      <tr><td><strong>Accept</strong></td><td>ஊகத்தை வைத்துக்கொள்: draft-ன் சாய்வைத் திருத்தும் ஒரு probability-யுடன்</td><td>Prediction hit — வேலையை commit செய்</td></tr>
+      <tr><td><strong>Reject</strong></td><td>இந்த ஊகத்தையும் அதற்குப் பிறகு வந்த அனைத்தையும் தூக்கி எறி</td><td>Pipeline flush</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="thanglish">
+    Draft model munnadi k tokens guess pannudhu, target model ellathaiyum ore
+    call-la verify pannudhu. Clever part drafting illa — accept rule dhaan.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <p>இரண்டு வரிகள். இரண்டாவதுதான் எல்லோரும் மறப்பது.</p>
+
+  <div class="formula">accept x with probability min(1, p(x) / q(x))<br>
+  on rejection, sample from p′(x) = norm( max(0, p(x) − q(x)) )</div>
+
+  <p>இதை ஒரு pipeline-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>விலை</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>draft k tokens</code></td><td>k மலிவான serial calls</td><td>முன்னால் ஊகி. ஒவ்வொரு ஊகமும் முந்தைய ஊகத்தின் மீது நிபந்தனை</td></tr>
+      <tr><td><code>one target call</code></td><td>1 விலையுயர்ந்த call</td><td>k+1 distributions திருப்பித் தரும் — prefix-க்கு ஒன்று, ஒரே நேரத்தில்</td></tr>
+      <tr><td><code>min(1, p/q)</code></td><td>ஒரு coin flip</td><td>draft x-ஐ அதிகமாக முன்மொழிந்ததா? p/q பங்கை மட்டும் வை. குறைவாகவா? எல்லாவற்றையும் வை</td></tr>
+      <tr><td><code>norm(max(0, p−q))</code></td><td>ஒரு sample</td><td><strong>Residual.</strong> accept படி தர தவறிய அளவு, சரியாக அதுவே</td></tr>
+      <tr><td><code>stop</code></td><td>இலவசம்</td><td>rejection-க்குப் பிறகு வந்த அனைத்தும், இப்போது இல்லாத ஒரு token மீது நிபந்தனை கொண்டவை</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Accept-ம் residual-ம் சேர்ந்து மீண்டும் p ஆகின்றன. அதுதான் நிரூபணம் —
+    limit வாதம் அல்ல, calculator-ல் சரிபார்க்கக்கூடிய ஒரு அடையாளம்.
+  </p>
+
+  <h2>ஒரு token மீது இந்த விதி</h2>
+
+  <p>
+    இங்கு என் models neural nets இல்லை. அவை 6×6 probability tables — தற்போதைய
+    token-க்கு ஒரு row, அந்த row-தான் அடுத்த token-ன் distribution. இது
+    வேண்டுமென்றே. கட்டுரையின் கூற்று <em>distributions</em> பற்றியது; உண்மையான
+    distribution-ஐ print செய்து ஒப்பிடக்கூடிய ஒரே model, ஒரு table மட்டுமே. ஒரு
+    70B target-ம் ஒரு 6×6 table-ம் ஒரே acceptance rule-க்குக் கீழ்ப்படிகின்றன.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>  context token          : 'a'
+  target  p(.|ctx)       : [0.0943 0.31   0.0908 0.0015 0.3821 0.1213]
+  draft   q(.|ctx)       : [0.0823 0.2638 0.0777 0.0013 0.4479 0.127 ]
+
+  draft proposes 'b'
+    q[b] = 0.2638, p[b] = 0.3100
+    accept with min(1, p/q) = min(1, 0.3100/0.2638) = <span class="ok">1.0000 ✓</span>
+    draft under-proposes it -&gt; always accept
+
+  draft proposes 'e'
+    q[e] = 0.4479, p[e] = 0.3821
+    accept with min(1, p/q) = min(1, 0.3821/0.4479) = 0.8532
+    draft over-proposes it -&gt; reject 14.7% of the time
+
+  on rejection, resample from residual = norm(max(0, p - q)):
+    p - q          : [ 0.0119  0.0461  0.0131  0.0002 -0.0657 -0.0057]
+    residual       : [0.1673 0.6457 0.1838 0.0032 0.     0.    ]</code></pre>
+
+  <p>
+    கையால் பின்தொடருங்கள். draft "e"-ஐ அடிக்கடி சொல்கிறது, எனவே 14.7% நேரம் அந்த
+    ஊகத்தை நாம் தூக்கி எறிகிறோம். ஆனால் பிறகு p-லிருந்து வெறுமனே resample செய்ய
+    முடியாது — அந்த rejections vocabulary முழுக்கச் சமமாகப் பரவவில்லை, draft
+    அதிகமாக முன்மொழிந்த tokens மீதுதான் குவிந்திருக்கின்றன. எனவே <em>விடுபட்டதில்</em>
+    இருந்து sample செய்கிறோம்: p கழித்தல் q, negatives பூஜ்ஜியமாக clip செய்யப்பட்டு,
+    மறு-normalise. residual-ல் "e"-ம் "f"-ம் probability 0 என்பதைக் கவனியுங்கள்.
+    அவற்றை draft ஏற்கனவே போதுமான அளவு தந்துவிட்டது.
+  </p>
+
+  <p class="thanglish">
+    Reject aana odane p-la irundhu resample panna koodadhu — adhu double count.
+    Residual = max(0, p−q) normalise pannadhu; accept + residual = p. Adhu dhaan proof.
+  </p>
+
+  <h2>Correctness உத்தரவாதம், எண்ணிப் பார்த்தது</h2>
+
+  <p>
+    இதுதான் முக்கியமான பகுதி. மற்ற எல்லாம் performance engineering; production-ல்
+    இதை ON செய்ய உங்களுக்கு அனுமதி தருவது இதுதான். ஒரு நிலையான context-லிருந்து
+    முழுத் திட்டத்தையும் 60,000 முறை ஓட்டி, வெளியான முதல் இரண்டு tokens-ஐ
+    வைத்துக்கொண்டு, அனுபவப்பூர்வ joint-ஐ target model-ன் உண்மையான joint-உடன்
+    ஒப்பிடுகிறேன். பிறகு விதியை மூன்று வழிகளில் உடைத்து, distribution எவ்வளவு
+    விலகுகிறது என்று அளக்கிறேன்.
+  </p>
+
+  <p>
+    அளவீடு: total variation distance — முழுமையான வேறுபாடுகளின் கூட்டுத்தொகையில்
+    பாதி. எந்த ஒரு நிகழ்வைப் பற்றியும் இரு distributions எவ்வளவு அதிகபட்சமாக
+    முரண்படலாம் என்பதே அது. பூஜ்ஜியம் என்றால் ஒரே மாதிரி.
+  </p>
+
+<pre><code>  60000 rounds, k=4 drafted tokens per round, first two tokens kept
+
+  first-token marginal, target vs speculative decoding:
+    token      target   speculative    diff
+      a       0.0943      0.0905      -0.0038
+      b       0.3100      0.3155      +0.0056
+      c       0.0908      0.0920      +0.0012
+      d       0.0015      0.0015      -0.0001
+      e       0.3821      0.3801      -0.0020
+      f       0.1213      0.1204      -0.0010
+
+  total variation distance on the two-token joint:
+    correct rule                     : <span class="ok">0.0079 ✓</span>
+    BROKEN: accept on argmax agreement     : <span class="hl">0.2735</span>
+    BROKEN: resample from p, not residual  : 0.0349
+    BROKEN: keep drafts after a rejection   : 0.0333
+
+  sampling-error floor (target model sampled directly): 0.0059</code></pre>
+
+  <p>
+    கடைசி வரியை முதலில் படியுங்கள். target model-லிருந்தே 60,000 ஜோடிகளை sample
+    செய்து அதை target model-உடன் ஒப்பிட்டால் எனக்கு 0.0059 கிடைக்கிறது — அது
+    வெறும் எண்ணிக்கை noise, ஒரு வரையறுக்கப்பட்ட sample-ன் விலை. சரியான விதியுடன்
+    speculative decoding 0.0079-ல் அமர்கிறது. அதே தரை. இது target model-க்கு
+    "அருகில்" இல்லை; இது target model-<em>ஆகவே</em> இருக்கிறது, மீதி என் sample
+    size மட்டுமே.
+  </p>
+
+  <p>
+    உடைந்த மூன்று விதிகளும் அந்தத் தரையை விட நான்கு முதல் முப்பது மடங்கு
+    மேலே இருக்கின்றன. அது உங்கள் users-க்கு பதில் சொல்லும் வேறொரு model — அது
+    எது என்று உங்களிடம் இருக்கும் எந்த eval-ம் சொல்லாது.
+  </p>
+
+  <div class="note">
+    <strong>Greedy குறுக்குவழிதான் ஆசை காட்டுவது.</strong> "target argmax-ல்
+    ஒத்துப்போனால் draft-ஐ ஏற்றுக்கொள்" — வேகமானது, random number தேவையில்லை,
+    பாதுகாப்பாகவும் தோன்றுகிறது. அது 0.2735 பெறுகிறது. நீங்கள் sampling-ஐ
+    அமைதியாக greedy decoding-க்கு அருகிலான ஒன்றால் மாற்றிவிட்டீர்கள் — அது வேறு
+    ஒரு product.
+  </div>
+
+  <h2>Acceptance rate தான் முழு விளையாட்டு</h2>
+
+  <p>
+    இது லாபகரமா என்பதை இரண்டு எண்கள் தீர்மானிக்கின்றன: draft எத்தனை முறை
+    accept ஆகிறது, draft எவ்வளவு செலவாகிறது. வேறு எதுவும் இல்லை. target-ன்
+    சரியான நகலிலிருந்து குப்பை வரை draft-ஐ sweep செய்கிறேன்; draft-ன் விலை ஒரு
+    token-க்கு ஒரு target call-ல் 10%, ஒரு round-க்கு 4 tokens draft:
+  </p>
+
+<pre><code>  k=4 drafted tokens per round, draft cost c=0.10 of a target call
+
+  draft quality      accept rate   tokens/target call   speedup
+  alpha=1.00 (perfect)   1.0000        5.0000            <span class="ok">3.571x ✓</span>
+  alpha=0.95             0.9204        4.6814            3.344x
+  alpha=0.85             0.7769        4.1076            2.934x
+  alpha=0.60             0.4964        2.9856            2.133x
+  alpha=0.30             0.2698        2.0792            1.485x
+  alpha=0.00 (junk)      0.1316        1.5265            <span class="hl">1.090x</span>
+
+  temperature mismatch (same model, wrong sampling temperature):
+    draft T=1.0 vs target T=1.0 : accept 1.0000, tokens/call 5.0000, 3.571x
+    draft T=1.3 vs target T=1.0 : accept 0.8625, tokens/call 4.4501, 3.179x
+    draft T=2.0 vs target T=1.0 : accept 0.6658, tokens/call 3.6631, 2.617x
+    draft T=0.5 vs target T=1.0 : accept 0.6743, tokens/call 3.6970, 2.641x</code></pre>
+
+  <p>
+    சரியான draft ஒருபோதும் reject ஆகாது, எனவே draft செய்த 4 tokens-ஓடு, கடைசி
+    position-ல் target ஏற்கனவே கணக்கிட்ட இலவச bonus token-ம் சேர்த்து
+    வெளியிடுகிறீர்கள்: ஒரு target call-க்கு 5 tokens. குப்பை draft 1.5 வெளியிடுகிறது,
+    drafting-க்குச் செலவழித்த பிறகு உங்களுக்கு 9% கிடைக்கிறது. இவை என் toy
+    model-ன் எண்கள், கட்டுரையினுடையவை அல்ல; மாறுவது வடிவம், அளவுகள் அல்ல.
+  </p>
+
+  <p>
+    Temperature வரிசைகளைத்தான் நான் ஒரு incident postmortem-ல் வைப்பேன். இரு
+    model-லும் எதுவும் தவறில்லை. draft சரியாக target-தான், வெறும் வேறு ஒரு
+    temperature-ல் sample செய்யப்பட்டது — acceptance 1.00-லிருந்து 0.67-க்கு
+    விழுகிறது. Acceptance rate என்பது <em>ஜோடியின்</em> பண்பு, எந்த ஒரு
+    model-னுடையதும் அல்ல. draft, target-ன் tokeniser-ஐப் பகிர்ந்துகொள்ள வேண்டியதற்கும்
+    இதுவே காரணம்: இல்லாவிட்டால் p-ம் q-ம் ஒரே தொகுப்பின் மீதான distributions
+    அல்ல, p/q விகிதத்திற்கு அர்த்தமே இல்லை.
+  </p>
+
+  <h2>எவ்வளவு முன்னால் ஊகிப்பது</h2>
+
+  <p>
+    ஒரு token draft செய்தால் இலவச compute-ஐ கிட்டத்தட்ட பயன்படுத்தவே இல்லை.
+    பதினாறு draft செய்தால், முதல் ஊகம் reject ஆன கணத்தில் flush ஆகும் பதினைந்து
+    ஊகங்களுக்குப் பணம் கொடுக்கிறீர்கள். ஒரு உகந்த புள்ளி உண்டு, அது acceptance
+    rate-உடன் நகர்கிறது:
+  </p>
+
+<pre><code>  middling draft (alpha=0.55), draft cost c=0.10
+
+   k   accept rate   tokens/target call   cost 1+k*c   speedup
+   1      0.7078        1.7078           1.10        1.553x
+   2      0.5997        2.1995           1.20        1.833x
+   3      0.5194        2.5583           1.30        1.968x
+   4      0.4494        2.7974           1.40        1.998x
+   5      0.4002        3.0009           1.50        <span class="ok">2.001x ✓</span>
+   6      0.3490        3.0937           1.60        1.934x
+   8      0.2829        3.2634           1.80        1.813x
+  12      0.1987        3.3845           2.20        1.538x
+  16      0.1486        3.3774           2.60        <span class="hl">1.299x</span>
+
+  best k here: 5 at 2.001x</code></pre>
+
+  <p>
+    நடுவில் உள்ள இரு columns ஒன்றையொன்று இழுப்பதைக் கவனியுங்கள். Call-க்கான
+    tokens நிறைவடைகிறது — k=8-லிருந்து k=16-க்குப் போவது 0.11 token மட்டுமே
+    தருகிறது, ஏனெனில் எட்டு acceptances-ஐ அந்த run கிட்டத்தட்ட தாண்டுவதே இல்லை.
+    அதே நேரத்தில் cost column நேர்கோட்டில் ஏறிக்கொண்டே இருக்கிறது — கூடுதல்
+    draft-க்கு 0.10, அந்த token தப்பிப்பிழைத்தாலும் இல்லாவிட்டாலும். வளைவின்
+    முழு வடிவம் அதுதான்: நிறைவடையும் தொகுதி, நேர்கோட்டுப் பகுதி.
+  </p>
+
+  <div class="note">
+    <strong>Interview கேள்வி "50 ஏன் draft செய்யக்கூடாது?"</strong> ஏனெனில்
+    acceptance கூட்டு வட்டி போலப் பெருகுகிறது. ஒவ்வொரு token-ம் probability
+    r-உடன் accept ஆனால், k எல்லாம் தப்பிக்கும் வாய்ப்பு r<sup>k</sup>. r = 0.7
+    என்றால் k = 10-ல் அது 3%. நிலையான விலைக்கு lottery ticket வாங்குகிறீர்கள்.
+  </div>
+
+  <h2>Draft model உங்களை மெதுவாக்கும்போது</h2>
+
+  <p>
+    Cost model ஒரே வரி. ஒரு round-க்கு ஒரு target call கூட்டல் k draft calls;
+    இங்கு c என்பது ஒரு target call-ன் பகுதியாக draft-ன் token விலை. எனவே
+    speedup = round-க்கான tokens ÷ (1 + k·c); c = (round-க்கான tokens − 1) / k
+    என்னும்போது break-even.
+  </p>
+
+<pre><code>  middling draft, k=4, tokens per target call = 2.8064
+  break-even draft cost c* = (tokens - 1)/k = 0.4516
+  i.e. the draft model must cost less than 45.2% of the target per token.
+
+  draft cost c    1 + k*c    speedup
+      0.0100      1.0400     2.698x
+      0.0500      1.2000     2.339x
+      0.1000      1.4000     <span class="ok">2.005x ✓</span>
+      0.4516      2.8064     1.000x  &lt;-- break-even
+      0.6000      3.4000     0.825x  SLOWER than no speculation
+      1.0000      5.0000     0.561x  SLOWER than no speculation
+
+  a 'draft' that is a quarter of the target (c=0.25) and only
+  as good as our poor draft:
+    tokens/call 1.5523, speedup <span class="hl">0.776x</span></code></pre>
+
+  <p>
+    அந்தக் கடைசி block-தான் மக்கள் உண்மையில் ship செய்யும் failure mode. அதிக
+    முறை accept ஆகும் என்பதற்காக ஒரு பெரிய draft model-ஐ எடுக்கிறீர்கள் —
+    target-ன் விலையில் கால் பங்கு draft, மோசமான acceptance rate-உடன், 0.776x-ல்
+    வந்து நிற்கிறது. Inference-ஐ மெதுவாக்கிவிட்டீர்கள், வெளியீட்டு distribution
+    இன்னும் முற்றிலும் சரியாகவே இருக்கிறது, எனவே எந்த alert-ம் வராது. ஒரே அறிகுறி
+    p50 latency graph மட்டுமே.
+  </p>
+
+  <p>
+    நடைமுறையில் c என்பது தோராயமாக parameter எண்ணிக்கைகளின் விகிதம்: 70B-க்கு
+    draft செய்யும் 7B சுமார் 0.1. தனக்குத்தானே draft செய்யும் model-ன் c = 1,
+    அது ஒருபோதும் ஜெயிக்க முடியாது.
+  </p>
+
+  <h2>இலவச compute எங்கிருந்து வருகிறது</h2>
+
+  <p>
+    மீண்டும் KV-cache கண்டுபிடிப்புக்கு — ஆனால் இப்போது வெறுமனே கவனிக்கப்படாமல்
+    செலவழிக்கப்படுகிறது. ஒரு forward pass-க்காக memory-லிருந்து இழுக்கும்
+    weights, அந்த pass ஒரு token-ஐ மூடினாலும் பதினாறை மூடினாலும் அதே weights.
+    Arithmetic மட்டுமே அளவில் வளர்கிறது.
+  </p>
+
+<pre><code>  Llama-2-7B-shaped, 512 tokens of context, fp16 weights
+  weights dragged off memory per forward pass: 13,480,000,000 bytes (12.55 GiB)
+
+   tokens in the pass        MACs        MACs per byte moved
+         1             5,167,382,528              <span class="hl">0.38</span>
+         2            10,334,765,056              0.77
+         4            20,669,530,112              1.53
+         8            41,339,060,224              3.07
+        16            82,678,120,448              <span class="ok">6.13 ✓</span></code></pre>
+
+  <p>
+    ஒரு accelerator-ன் arithmetic units வேலையில் இருக்க, memory traffic-ன்
+    ஒவ்வொரு byte-க்கும் தோராயமாக 100–300 MACs தேவை. ஒரு-token decoding 0.38-ல்
+    அமர்ந்திருக்கிறது — கிட்டத்தட்ட மூன்று அளவுக் கோடுகள் குறைவு. அதே pass-ல்
+    பதினாறு tokens-ஐ verify செய்தால் அதே bytes நகர்கின்றன, பதினாறு மடங்கு
+    arithmetic நடக்கிறது, <em>இருந்தும்</em> chip நிறைவடையவில்லை. அந்த k கூடுதல்
+    tokens கிட்டத்தட்ட இலவசம்.
+  </p>
+
+  <div class="note">
+    <strong>இந்தத் தந்திரம் இருப்பதற்கே இதுதான் காரணம்.</strong> Decoding
+    compute-bound-ஆக இருந்திருந்தால், k tokens-ஐ verify செய்வது k மடங்கு
+    செலவாகியிருக்கும், முழுத் திட்டமும் பூஜ்ஜிய லாபத்தில் சரிந்திருக்கும்.
+    Speculative decoding தற்செயலாக வேகமாக இருக்கும் ஒரு புத்திசாலி algorithm
+    அல்ல; அது ஒரு hardware சமநிலையின்மையின் நேரடிச் சுரண்டல்.
+  </div>
+
+  <h2>அதற்குப் பிறகு வந்தவை</h2>
+
+  <p>
+    Chen மற்றும் பலர் இதே acceptance rule-ஐ சில மாதங்கள் கழித்துத் தனியாக
+    வெளியிட்டார்கள் (<a href="https://arxiv.org/abs/2302.01318">arXiv
+    2302.01318</a>), Chinchilla-வில் பயன்படுத்தி — நீங்கள் படிக்கும் blog
+    posts-ல் பாதி ஒன்றையும் பாதி மற்றொன்றையும் மேற்கோள் காட்டுவதால் இதை
+    அறிந்திருப்பது நல்லது.
+  </p>
+
+  <p>
+    இதிலெல்லாம் உள்ள வெளிப்படையான தொல்லை: இப்போது இரண்டு models-ஐ serve செய்ய
+    வேண்டும், இரண்டையும் ஒரே tokeniser-ல் வைத்திருக்க வேண்டும், ஒவ்வொரு
+    fine-tune-லும் ஒத்திசைவாக வைத்திருக்க வேண்டும். பிற்கால வேலைகள் இரண்டாவது
+    model-ஐ நீக்குகின்றன: target model மீதே கூடுதல் prediction heads பொருத்தி,
+    அது தன் தொடர்ச்சிகளையே draft செய்யும் — Medusa அதற்கு நன்கு அறியப்பட்ட
+    உதாரணம். அதே acceptance இயந்திரம், ஒரே தொகுப்பு weights. வேறு கட்டுரை, வேறு
+    பக்கம்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    <a href="../kv-cache/">KV-cache पेज</a> एक असहज नतीजे पर खत्म हुआ था:
+    decoding memory-bound है। आप जो भी एक token बनाते हैं, उसके लिए साढ़े बारह
+    gigabyte weights को memory bus पर खींचना पड़ता है, और काम होता है लगभग पाँच
+    अरब multiply-accumulate का। अगला weight टुकड़ा आने से पहले ही chip वह गणित
+    खत्म कर चुका होता है। Arithmetic units खाली बैठे रहते हैं। व्यावहारिक रूप से
+    compute <em>मुफ़्त</em> है।
+  </p>
+  <p>
+    यह पेपर उसी मुफ़्त compute को खर्च करता है। पूरा विचार बस इतना है। मैंने इसे
+    एक साल नज़रअंदाज़ किया क्योंकि "speculative" सुनने में "approximate" जैसा
+    लगता था, और मैं approximate चीज़ें ship नहीं करता। पर यह approximate है ही
+    नहीं। output distribution प्रमाणित रूप से, बिल्कुल वही है जो बड़े model की
+    होती — और वह गारंटी चार लाइन का code है, जिसे आप गिनकर जाँच सकते हैं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (draft model, target
+    model, acceptance rate, rejection, residual distribution, verify,
+    arithmetic intensity, memory-bound, branch prediction…) मैंने वैसे ही रखे
+    हैं, क्योंकि code में और बाकी papers में आपको वही शब्द मिलेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>यह branch prediction ही है</h2>
+
+  <p>
+    आपका CPU हर conditional पर यही करता है। वह यह जानने के लिए नहीं रुकता कि
+    branch लिया जाएगा या नहीं। वह अनुमान लगाता है, speculative तरीके से आगे
+    दौड़ता है, और असली जवाब आने पर या तो काम रख लेता है या फेंक देता है। आपको
+    गलत नतीजा कभी नहीं मिलता। सिर्फ़ बेकार गया काम मिलता है।
+  </p>
+
+<pre><code># आज decoding जो करता है: एक महँगी call, एक token
+for _ in range(n):
+    token = big_model(context)     # 12.5 GiB weights पढ़े, 1 token बाहर
+    context.append(token)</code></pre>
+
+  <p>
+    अब आगे का अनुमान लगाइए। एक छोटा सस्ता model <code>k</code> tokens draft
+    करता है। फिर बड़ा model उन सबको <em>एक ही call में</em> जाँचता है, क्योंकि
+    k+1 positions पर एक forward pass की लागत लगभग एक position वाले pass जितनी
+    ही है — weights तो दोनों में एक ही बार पढ़े जाते हैं।
+  </p>
+
+<pre><code># speculative: k सस्ती calls, फिर एक महँगी call जो सबकी जाँच करती है
+guesses = [small_model(context + guesses) for _ in range(k)]   # सस्ता, serial
+p = big_model(context + guesses)      # k+1 distributions, एक ही pass
+keep = accept(guesses, p)             # हर token पर coin flip, फिर STOP
+context.extend(keep)                  # एक big call पर 1 से k+1 tokens</code></pre>
+
+  <p>
+    होशियारी वाला हिस्सा drafting नहीं है। drafting तो किसी को भी सूझ जाएगी।
+    होशियारी वाला हिस्सा <code>accept</code> है, जिसे इस तरह गढ़ा गया है कि दूसरी
+    तरफ़ से निकलने वाले tokens <em>बिल्कुल</em> उसी तरह distribute होते हैं जैसे
+    बड़ा model अकेले उन्हें बनाता। लगभग नहीं। बिल्कुल।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Target model</strong></td><td>वही बड़ा model जिसके जवाबों का वादा आपने users से किया है</td><td>असली branch outcome</td></tr>
+      <tr><td><strong>Draft model</strong></td><td>छोटा सस्ता model, वही tokeniser</td><td>Branch predictor</td></tr>
+      <tr><td><strong>p, q</strong></td><td>उसी अगले token के लिए target और draft की probability</td><td>दो dicts, key दर key तुलना</td></tr>
+      <tr><td><strong>Accept</strong></td><td>अनुमान रख लो, ऐसी probability से जो draft के झुकाव को सुधार दे</td><td>Prediction hit — काम commit करो</td></tr>
+      <tr><td><strong>Reject</strong></td><td>यह अनुमान और उसके बाद का सब कुछ फेंक दो</td><td>Pipeline flush</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <p>दो लाइनें, और दूसरी वही है जिसे सब भूल जाते हैं।</p>
+
+  <div class="formula">accept x with probability min(1, p(x) / q(x))<br>
+  on rejection, sample from p′(x) = norm( max(0, p(x) − q(x)) )</div>
+
+  <p>इसे एक pipeline की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>लागत</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>draft k tokens</code></td><td>k सस्ती serial calls</td><td>आगे का अनुमान। हर अनुमान पिछले अनुमान पर conditioned</td></tr>
+      <tr><td><code>one target call</code></td><td>1 महँगी call</td><td>k+1 distributions लौटाती है — हर prefix के लिए एक, सब एक साथ</td></tr>
+      <tr><td><code>min(1, p/q)</code></td><td>एक coin flip</td><td>draft ने x को ज़्यादा प्रस्तावित किया? सिर्फ़ p/q हिस्सा रखो। कम किया? सब रखो</td></tr>
+      <tr><td><code>norm(max(0, p−q))</code></td><td>एक sample</td><td><strong>Residual.</strong> ठीक उतना ही द्रव्यमान जितना accept चरण नहीं दे पाया</td></tr>
+      <tr><td><code>stop</code></td><td>मुफ़्त</td><td>rejection के बाद का सब कुछ ऐसे token पर conditioned था जो अब मौजूद ही नहीं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Accept और residual मिलकर वापस p बन जाते हैं। यही प्रमाण है — कोई limit वाला
+    तर्क नहीं, बल्कि एक पहचान जिसे आप calculator से जाँच सकते हैं।
+  </p>
+
+  <h2>एक token पर यह नियम</h2>
+
+  <p>
+    यहाँ मेरे models neural nets नहीं हैं। वे 6×6 probability tables हैं — हर
+    मौजूदा token के लिए एक row, और वह row ही अगले token का distribution है। यह
+    जानबूझकर है। पेपर का दावा <em>distributions</em> के बारे में है, और table ही
+    वह इकलौता model है जिसका सच्चा distribution मैं print करके मिला सकता हूँ।
+    एक 70B target और एक 6×6 table, दोनों एक ही acceptance rule मानते हैं।
+  </p>
+
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। यह रहा असली output:</strong></p>
+
+<pre><code>  context token          : 'a'
+  target  p(.|ctx)       : [0.0943 0.31   0.0908 0.0015 0.3821 0.1213]
+  draft   q(.|ctx)       : [0.0823 0.2638 0.0777 0.0013 0.4479 0.127 ]
+
+  draft proposes 'b'
+    q[b] = 0.2638, p[b] = 0.3100
+    accept with min(1, p/q) = min(1, 0.3100/0.2638) = <span class="ok">1.0000 ✓</span>
+    draft under-proposes it -&gt; always accept
+
+  draft proposes 'e'
+    q[e] = 0.4479, p[e] = 0.3821
+    accept with min(1, p/q) = min(1, 0.3821/0.4479) = 0.8532
+    draft over-proposes it -&gt; reject 14.7% of the time
+
+  on rejection, resample from residual = norm(max(0, p - q)):
+    p - q          : [ 0.0119  0.0461  0.0131  0.0002 -0.0657 -0.0057]
+    residual       : [0.1673 0.6457 0.1838 0.0032 0.     0.    ]</code></pre>
+
+  <p>
+    इसे हाथ से follow कीजिए। draft "e" को ज़रूरत से ज़्यादा बार कहता है, इसलिए
+    14.7% बार हम वह अनुमान फेंक देते हैं। लेकिन फिर हम सीधे p से resample नहीं कर
+    सकते — वे rejections पूरी vocabulary पर समान रूप से फैले नहीं हैं, वे ठीक उन्हीं
+    tokens पर केंद्रित हैं जिन्हें draft ने ज़्यादा प्रस्तावित किया। इसलिए हम वहाँ
+    से sample करते हैं जो <em>छूट गया</em>: p घटा q, ऋणात्मक मान शून्य पर clip,
+    फिर renormalise. ध्यान दीजिए कि residual में "e" और "f" की probability 0 है।
+    draft उन्हें पहले ही पर्याप्त मात्रा में दे चुका है।
+  </p>
+
+  <h2>Correctness की गारंटी, गिनकर</h2>
+
+  <p>
+    यही वह हिस्सा है जो मायने रखता है। बाकी सब performance engineering है; यह वह
+    वजह है जिसके कारण आपको इसे production में चालू करने की इजाज़त है। मैं पूरी
+    योजना को एक तय context से 60,000 बार चलाता हूँ, पहले दो निकले tokens रखता
+    हूँ, और अनुभवजन्य joint की तुलना target model के सच्चे joint से करता हूँ। फिर
+    नियम को तीन तरीकों से तोड़ता हूँ और नापता हूँ कि distribution कितना खिसकता है।
+  </p>
+
+  <p>
+    माप है total variation distance: निरपेक्ष अंतरों के योग का आधा। यह सबसे बड़ी
+    probability है जिस पर दो distributions किसी भी घटना को लेकर असहमत हो सकते
+    हैं। शून्य का मतलब समान।
+  </p>
+
+<pre><code>  60000 rounds, k=4 drafted tokens per round, first two tokens kept
+
+  first-token marginal, target vs speculative decoding:
+    token      target   speculative    diff
+      a       0.0943      0.0905      -0.0038
+      b       0.3100      0.3155      +0.0056
+      c       0.0908      0.0920      +0.0012
+      d       0.0015      0.0015      -0.0001
+      e       0.3821      0.3801      -0.0020
+      f       0.1213      0.1204      -0.0010
+
+  total variation distance on the two-token joint:
+    correct rule                     : <span class="ok">0.0079 ✓</span>
+    BROKEN: accept on argmax agreement     : <span class="hl">0.2735</span>
+    BROKEN: resample from p, not residual  : 0.0349
+    BROKEN: keep drafts after a rejection   : 0.0333
+
+  sampling-error floor (target model sampled directly): 0.0059</code></pre>
+
+  <p>
+    आखिरी लाइन पहले पढ़िए। अगर मैं target model से ही 60,000 जोड़े sample करूँ और
+    उनकी तुलना target model से करूँ, तो मुझे 0.0059 मिलता है — यह शुद्ध गिनती का
+    शोर है, सीमित sample की कीमत। सही नियम के साथ speculative decoding 0.0079 पर
+    बैठता है। वही फ़र्श। यह target model के "करीब" नहीं है; यह target model
+    <em>है</em>, और बाकी बचा अंतर मेरा sample size है।
+  </p>
+
+  <p>
+    तीनों टूटे नियम उस फ़र्श से चार से तीस गुना ऊपर बैठते हैं। वह आपके users को
+    जवाब देता कोई दूसरा model है, और आपका कोई भी eval आपको नहीं बताएगा कि वह
+    कौन-सा था।
+  </p>
+
+  <div class="note">
+    <strong>Greedy शॉर्टकट ही सबसे लुभावना है।</strong> "जब भी target argmax पर
+    सहमत हो, draft मान लो" — तेज़ है, कोई random number नहीं चाहिए, और सुरक्षित
+    लगता है। उसका स्कोर 0.2735 है। आपने चुपचाप sampling की जगह greedy decoding
+    जैसी कोई चीज़ रख दी है, जो एक अलग product है।
+  </div>
+
+  <h2>Acceptance rate ही पूरा खेल है</h2>
+
+  <p>
+    यह फ़ायदे का सौदा है या नहीं, यह दो संख्याएँ तय करती हैं: draft कितनी बार
+    accept होता है, और draft की लागत कितनी है। और कुछ नहीं। मैं draft को target
+    की एकदम सही नकल से लेकर कचरे तक sweep करता हूँ, draft की कीमत प्रति token एक
+    target call का 10%, हर round में 4 tokens draft:
+  </p>
+
+<pre><code>  k=4 drafted tokens per round, draft cost c=0.10 of a target call
+
+  draft quality      accept rate   tokens/target call   speedup
+  alpha=1.00 (perfect)   1.0000        5.0000            <span class="ok">3.571x ✓</span>
+  alpha=0.95             0.9204        4.6814            3.344x
+  alpha=0.85             0.7769        4.1076            2.934x
+  alpha=0.60             0.4964        2.9856            2.133x
+  alpha=0.30             0.2698        2.0792            1.485x
+  alpha=0.00 (junk)      0.1316        1.5265            <span class="hl">1.090x</span>
+
+  temperature mismatch (same model, wrong sampling temperature):
+    draft T=1.0 vs target T=1.0 : accept 1.0000, tokens/call 5.0000, 3.571x
+    draft T=1.3 vs target T=1.0 : accept 0.8625, tokens/call 4.4501, 3.179x
+    draft T=2.0 vs target T=1.0 : accept 0.6658, tokens/call 3.6631, 2.617x
+    draft T=0.5 vs target T=1.0 : accept 0.6743, tokens/call 3.6970, 2.641x</code></pre>
+
+  <p>
+    एकदम सही draft कभी reject नहीं होता, इसलिए आप चारों drafted tokens के साथ वह
+    मुफ़्त bonus token भी निकालते हैं जो target ने आखिरी position पर पहले ही गिन
+    लिया था: एक target call पर 5 tokens। कचरा draft 1.5 निकालता है और drafting
+    की कीमत चुकाने के बाद आपको 9% देता है। ये मेरे toy model के आँकड़े हैं, पेपर
+    के नहीं; जो चीज़ आगे काम आती है वह आकार है, परिमाण नहीं।
+  </p>
+
+  <p>
+    Temperature वाली पंक्तियाँ ही वे हैं जिन्हें मैं किसी incident postmortem में
+    रखूँगा। दोनों models में कुछ भी गलत नहीं है। draft बिल्कुल target ही है, बस
+    किसी और temperature पर sample किया गया — और acceptance 1.00 से गिरकर 0.67 हो
+    जाता है। Acceptance rate <em>जोड़ी</em> का गुण है, किसी एक model का नहीं। यही
+    वजह है कि draft को target का tokeniser साझा करना ही होगा: उसके बिना p और q
+    एक ही समुच्चय पर distributions नहीं हैं और अनुपात p/q निरर्थक है।
+  </p>
+
+  <h2>कितना आगे तक अनुमान लगाएँ</h2>
+
+  <p>
+    एक token draft कीजिए तो मुफ़्त compute का इस्तेमाल लगभग हुआ ही नहीं। सोलह
+    draft कीजिए तो आप पंद्रह अनुमानों की कीमत चुका रहे हैं जो पहला अनुमान reject
+    होते ही flush हो जाएँगे। एक optimum है, और वह acceptance rate के साथ खिसकता
+    है:
+  </p>
+
+<pre><code>  middling draft (alpha=0.55), draft cost c=0.10
+
+   k   accept rate   tokens/target call   cost 1+k*c   speedup
+   1      0.7078        1.7078           1.10        1.553x
+   2      0.5997        2.1995           1.20        1.833x
+   3      0.5194        2.5583           1.30        1.968x
+   4      0.4494        2.7974           1.40        1.998x
+   5      0.4002        3.0009           1.50        <span class="ok">2.001x ✓</span>
+   6      0.3490        3.0937           1.60        1.934x
+   8      0.2829        3.2634           1.80        1.813x
+  12      0.1987        3.3845           2.20        1.538x
+  16      0.1486        3.3774           2.60        <span class="hl">1.299x</span>
+
+  best k here: 5 at 2.001x</code></pre>
+
+  <p>
+    बीच के दोनों columns को एक-दूसरे के खिलाफ़ खिंचते देखिए। प्रति call tokens
+    संतृप्त हो जाता है — k=8 से k=16 जाने पर 0.11 token ही मिलता है, क्योंकि आठ
+    acceptances तक run लगभग कभी टिकता ही नहीं। उधर cost column रैखिक रूप से चढ़ता
+    रहता है, हर अतिरिक्त draft पर 0.10, चाहे वह token बचे या न बचे। पूरे वक्र का
+    आकार यही है: संतृप्त होता अंश, और रैखिक हर।
+  </p>
+
+  <div class="note">
+    <strong>Interview का सवाल है "50 draft क्यों नहीं?"</strong> क्योंकि
+    acceptance चक्रवृद्धि की तरह बढ़ता है। अगर हर token probability r से accept
+    होता है, तो सभी k के बचने की संभावना r<sup>k</sup> है। r = 0.7 पर k = 10 तक
+    वह 3% है। आप तय कीमत पर lottery के टिकट खरीद रहे हैं।
+  </div>
+
+  <h2>जब draft model आपको धीमा कर देता है</h2>
+
+  <p>
+    Cost model एक लाइन का है। एक round की लागत एक target call जमा k draft calls,
+    जहाँ c एक target call के अंश के रूप में draft की प्रति token लागत है। तो
+    speedup = प्रति round tokens ÷ (1 + k·c), और break-even तब होता है जब
+    c = (प्रति round tokens − 1) / k.
+  </p>
+
+<pre><code>  middling draft, k=4, tokens per target call = 2.8064
+  break-even draft cost c* = (tokens - 1)/k = 0.4516
+  i.e. the draft model must cost less than 45.2% of the target per token.
+
+  draft cost c    1 + k*c    speedup
+      0.0100      1.0400     2.698x
+      0.0500      1.2000     2.339x
+      0.1000      1.4000     <span class="ok">2.005x ✓</span>
+      0.4516      2.8064     1.000x  &lt;-- break-even
+      0.6000      3.4000     0.825x  SLOWER than no speculation
+      1.0000      5.0000     0.561x  SLOWER than no speculation
+
+  a 'draft' that is a quarter of the target (c=0.25) and only
+  as good as our poor draft:
+    tokens/call 1.5523, speedup <span class="hl">0.776x</span></code></pre>
+
+  <p>
+    वह आखिरी block ही असल में लोगों द्वारा ship किया जाने वाला failure mode है।
+    आप बड़ा draft model उठाते हैं क्योंकि वह ज़्यादा बार accept होता है — और
+    target की एक चौथाई लागत वाला draft, खराब acceptance rate के साथ, 0.776x पर आ
+    गिरता है। आपने inference धीमा कर दिया और output distribution फिर भी पूरी तरह
+    सही है, इसलिए कोई alert नहीं बजता। इकलौता लक्षण p50 latency का graph है।
+  </p>
+
+  <p>
+    व्यवहार में c मोटे तौर पर parameter संख्याओं का अनुपात है: 70B के लिए draft
+    करता 7B लगभग 0.1 है। खुद के लिए draft करता model c = 1 है और कभी जीत नहीं
+    सकता।
+  </p>
+
+  <h2>मुफ़्त compute आता कहाँ से है</h2>
+
+  <p>
+    वापस उसी KV-cache नतीजे पर, पर इस बार सिर्फ़ देखा नहीं, खर्च किया गया। एक
+    forward pass के लिए आप memory से जो weights खींचते हैं, वे वही weights हैं
+    चाहे वह pass एक token पर हो या सोलह पर। सिर्फ़ arithmetic बढ़ता है।
+  </p>
+
+<pre><code>  Llama-2-7B-shaped, 512 tokens of context, fp16 weights
+  weights dragged off memory per forward pass: 13,480,000,000 bytes (12.55 GiB)
+
+   tokens in the pass        MACs        MACs per byte moved
+         1             5,167,382,528              <span class="hl">0.38</span>
+         2            10,334,765,056              0.77
+         4            20,669,530,112              1.53
+         8            41,339,060,224              3.07
+        16            82,678,120,448              <span class="ok">6.13 ✓</span></code></pre>
+
+  <p>
+    अपनी arithmetic units को व्यस्त रखने के लिए एक accelerator को memory traffic
+    के हर byte पर लगभग 100–300 MACs चाहिए। एक-token decoding 0.38 पर बैठा है —
+    लगभग तीन order of magnitude कम। उसी pass में सोलह tokens verify करने पर वही
+    bytes चलते हैं, सोलह गुना arithmetic होता है, और <em>फिर भी</em> chip संतृप्त
+    नहीं होता। वे k अतिरिक्त tokens लगभग मुफ़्त हैं।
+  </p>
+
+  <div class="note">
+    <strong>यही वजह है कि यह तरकीब मौजूद ही है।</strong> अगर decoding
+    compute-bound होता, तो k tokens verify करना k गुना महँगा पड़ता और पूरी योजना
+    शून्य फ़ायदे पर ढह जाती। Speculative decoding कोई चतुर algorithm नहीं है जो
+    संयोग से तेज़ है; यह एक hardware असंतुलन का सीधा दोहन है।
+  </div>
+
+  <h2>इसके बाद क्या आया</h2>
+
+  <p>
+    Chen और साथियों ने यही acceptance rule कुछ महीने बाद स्वतंत्र रूप से प्रकाशित
+    किया (<a href="https://arxiv.org/abs/2302.01318">arXiv 2302.01318</a>),
+    Chinchilla पर लागू करके — यह जानना काम का है क्योंकि आप जो blog posts पढ़ेंगे
+    उनमें आधे एक का हवाला देते हैं और आधे दूसरे का।
+  </p>
+
+  <p>
+    इस पूरी चीज़ की ज़ाहिर झंझट यह है कि अब आपको दो models serve करने हैं, दोनों
+    को एक ही tokeniser पर रखना है, और हर fine-tune के बाद उन्हें sync में रखना
+    है। बाद के काम दूसरे model को हटा देते हैं: target model पर ही अतिरिक्त
+    prediction heads जोड़ दो ताकि वह अपनी ही continuations draft करे — Medusa
+    इसका जाना-पहचाना उदाहरण है। वही acceptance मशीनरी, weights का एक ही सेट।
+    अलग पेपर, अलग पेज।
+  </p>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no neural network at all — the models are
+  explicit probability tables, so the distribution the paper promises is a
+  thing you can print and subtract. Every function under 20 lines. Below is the
+  acceptance rule and the verify loop; the drafting loop, the cost model and
+  the six demos are in the file.
+</p>
+<p>
+  <a href="speculative_decoding_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 400 lines plus 6 runnable demos. Then:
+</p>
+<pre><code>python3 speculative_decoding_from_scratch.py</code></pre>
+
+<pre><code># ---------------------------------------------------------------------------
+# STAGE 2 -- THE WHOLE PAPER, part 1: the acceptance rule.
+#
+# The draft model proposed token x, and it proposed it with probability q[x].
+# The target model would have said p[x]. Then:
+#
+#     accept x with probability   min(1, p[x] / q[x])
+#
+# q[x] &gt; p[x] means the draft over-proposes x, so we keep only p/q of those.
+# q[x] &lt;= p[x] means the draft under-proposes x, so we keep every one.
+# ---------------------------------------------------------------------------
+def accept_prob(p, q, x):
+    return min(1.0, p[x] / q[x])
+
+
+# ---------------------------------------------------------------------------
+# STAGE 3 -- THE WHOLE PAPER, part 2: the residual distribution.
+#
+# Accepting alone under-samples the tokens the draft was too shy about. On a
+# rejection we do NOT resample from p -- that would double-count. We resample
+# from the positive part of (p - q), normalised. That is exactly the mass the
+# accept step failed to deliver, so the two steps sum back to p. This one line
+# is the difference between "provably identical output" and "usually fine".
+# ---------------------------------------------------------------------------
+def residual(p, q):
+    r = np.clip(p - q, 0.0, None)
+    s = r.sum()
+    if s &lt;= 0:                     # degenerate: p is fully covered by q
+        return p / p.sum()
+    return r / s
+
+
+# ---------------------------------------------------------------------------
+# STAGE 5 -- verify all k drafts in ONE target call, then emit.
+#
+# The target sees the prefix plus all k drafted tokens at once, so it returns
+# k+1 next-token distributions for the price of one forward pass (the same
+# trick as training-time teacher forcing). Then walk them left to right:
+#
+#   accept  -&gt; emit the drafted token, move on
+#   reject  -&gt; emit one token from residual(p, q) and STOP. Everything after
+#              the rejection was conditioned on a token that no longer exists.
+#   all k accepted -&gt; you also get a free bonus token from the last
+#              distribution, because the target already computed it.
+#
+# `rule` selects deliberate breakages; "correct" is the paper.
+# ---------------------------------------------------------------------------
+def verify_round(P, Q, ctx, drafted, rng, rule="correct"):
+    prefixes = [ctx] + drafted          # k+1 positions, one target call
+    out, n_accepted = [], 0
+    for i, x in enumerate(drafted):
+        p, q = P[prefixes[i]], Q[prefixes[i]]
+        if rule == "greedy":
+            ok = (x == int(np.argmax(p)))          # BREAK: argmax agreement
+        else:
+            ok = rng.random() &lt; accept_prob(p, q, x)
+        if ok:
+            out.append(x)
+            n_accepted += 1
+            continue
+        if rule == "no_resample":
+            out.append(sample_from(p, rng.random()))          # BREAK
+        else:
+            out.append(sample_from(residual(p, q), rng.random()))
+        if rule == "continue":
+            out.extend(drafted[i + 1:])                       # BREAK
+        return out, n_accepted
+    out.append(sample_from(P[prefixes[-1]], rng.random()))     # bonus token
+    return out, n_accepted</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode.
+  Every row below is a rule already wired into the script: pass it as
+  <code>rule=</code>, or edit the function and rerun demo 2.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Accept greedily: <code>ok = (x == int(np.argmax(p)))</code></td><td>Faster, and the output distribution is no longer the target's. TV distance goes from 0.0079 to <strong>0.2735</strong> against a 0.0059 noise floor.</td></tr>
+    <tr><td>In <code>verify_round</code>, replace <code>residual(p, q)</code> with plain <code>p</code></td><td>Subtle bias — nothing crashes, nothing looks wrong. TV distance 0.0349, four times the noise floor. The tokens the draft over-proposed stay over-represented.</td></tr>
+    <tr><td>Keep the remaining drafts after a rejection: <code>out.extend(drafted[i+1:])</code></td><td>TV 0.0333. Every kept token was conditioned on a token you just threw away — a stale prefix, silently emitted.</td></tr>
+    <tr><td>Price the draft at <code>c = 0.60</code> in <code>demo_5_cost_model</code></td><td>Speedup <strong>0.825x</strong>. Past the break-even c* = 0.4516, speculation costs more than it saves and the only symptom is latency.</td></tr>
+    <tr><td>Draft with <code>temper(TARGET, 2.0)</code> — same model, wrong temperature</td><td>Acceptance falls 1.0000 → 0.6658, speedup 3.571x → 2.617x. A pure configuration bug that halves your gain.</td></tr>
+    <tr><td>Push <code>k</code> to 16 in <code>demo_4_draft_length</code></td><td>Tokens per call rises to 3.3774 (from 3.0009 at k=5) but speedup <em>falls</em> to 1.299x. You paid for 16 drafts to keep 3.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — the method section, where the
+  acceptance rule and its correctness proof live, and the section on the
+  expected number of accepted tokens, which is the k-sweep above done
+  analytically. Skip the hardware benchmark tables; your acceptance rate will
+  be different anyway. You'll find the paper is just the comments you've
+  already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  The word "provably" scared me off this paper for a long time. It shouldn't
+  have. The proof needs one idea: two ways of producing a token, whose
+  probabilities add up to the distribution you wanted. Accept gives you
+  min(p, q) of the mass. The residual gives you the rest, max(0, p − q). Add
+  them: p. That's it. Rejection sampling in one sentence, and you can confirm
+  it by counting outcomes in a loop, which is what demo 2 does.
+</p>
+<p>
+  You need to be comfortable with two things and no more. A probability
+  distribution is a vector that sums to 1 — an array with an invariant. Total
+  variation distance is <code>0.5 * np.abs(a - b).sum()</code>, a diff between
+  two such arrays. Neither is research maths.
+</p>
+<p>
+  What you actually need for this in production is engineering: measuring your
+  real acceptance rate on your real traffic, pricing the draft model, tuning k
+  per workload, and knowing that a distribution bug here is invisible to every
+  eval you own. The arithmetic is the easy half.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the acceptance rule as code you can break, and
+  the cost model that decides whether it's worth it. It skipped the proof
+  written out properly, the tree-structured variants, and everything about
+  running it in a real serving stack.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2211.17192">
+      <span class="paper-title">Fast Inference from Transformers via Speculative Decoding</span>
+      <span class="paper-meta">Leviathan, Kalman &amp; Matias, 2022. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the method section and the correctness theorem — you have the code
+      for both now, so the notation resolves. The analysis of expected accepted
+      tokens is the k-sweep above, done with algebra instead of 40,000 trials.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2302.01318">
+      <span class="paper-title">Accelerating Large Language Model Decoding with Speculative Sampling</span>
+      <span class="paper-meta">Chen et al., 2023. Concurrent, independent.</span>
+    </a>
+    <p class="paper-pitch">
+      The same rule derived a second time, on Chinchilla. Useful mostly as a
+      second pass over the same proof in different notation — if one write-up
+      doesn't land, the other might.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jaykmody.com/blog/speculative-sampling/">
+      <span class="paper-title">Speculative Sampling</span>
+      <span class="paper-meta">Jay Mody. The proof, worked line by line.</span>
+    </a>
+    <p class="paper-pitch">
+      Where I said "accept plus residual add up to p, that's the proof", he
+      actually does the algebra, case by case, slowly. Go here when you want
+      to see why it holds rather than count that it does.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/assisted-generation">
+      <span class="paper-title">Assisted Generation: a new direction toward low-latency text generation</span>
+      <span class="paper-meta">Joao Gante, Hugging Face. Working code, real models.</span>
+    </a>
+    <p class="paper-pitch">
+      This is the version you'd actually ship: two real checkpoints, a real
+      tokeniser constraint, and the <code>assistant_model=</code> argument that
+      turns it on in transformers. My toy tables become weights here.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Hugging Face first to see it run on
+  real models, then Jay Mody for the proof, then the paper. Chen et al. only
+  if the proof still hasn't clicked. And read the
+  <a href="../kv-cache/">KV-cache page</a> before any of them if "decode is
+  memory-bound" wasn't already obvious — it's the premise the whole trick
+  stands on. <a href="../gpt/">The GPT page</a> covers the plain decoding loop
+  this replaces.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

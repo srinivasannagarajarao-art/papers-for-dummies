@@ -1,0 +1,1221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chain-of-Thought and ReAct — for programmers</title>
+<meta name="description" content="Chain-of-thought explained as a scratch buffer, and ReAct as a state machine with a real tool in it. Runnable NumPy, eight demos, five deliberate breaks.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Chain-of-Thought and ReAct</h1>
+    <p class="paper-meta">Wei et al., 2022 · Yao et al., 2022</p>
+    <p class="lede">
+      Tokens are where the thinking happens. Not a metaphor — a budget.
+    </p>
+    <p>
+      <a href="chain_of_thought_from_scratch.py" download>Download chain_of_thought_from_scratch.py</a>
+      — everything below runs from it. NumPy and plain Python. There is no language model anywhere in it: what the script runs is the <em>mechanism</em> — the per-token compute budget, the loop shape, and the voting.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+
+  <p>
+    Blunt about that last bit first, the same way <a href="../rag/">the RAG
+    page</a> is about its retriever. <strong>There is no LLM in this
+    script.</strong> Nothing it prints is evidence about what GPT-4 does when you say "think step by step"; where something stands in for a model, it's a hand-written state machine and the code says so on the line above.
+  </p>
+
+  <p>
+    What it does show is the part I had backwards for two years. I thought chain-of-thought was a psychological trick — flatter the model, make it try harder. It isn't. It's an <em>allocation of compute</em>. Once I saw that, the rest of the agent stack stopped being prompt folklore and became something I could reason about like any other system.
+  </p>
+
+  <h2>A pure function versus one with a scratch buffer</h2>
+
+  <p>You've written this function. It has no local variables:</p>
+
+<pre><code>def answer(question):
+    return LOOKUP_TABLE[question]     # one step. That's all you get.</code></pre>
+
+  <p>
+    A transformer emitting one token is that function. One forward pass, a fixed number of layers, the same arithmetic whether the question is "what colour is the sky" or a 12-step word problem. It cannot loop internally. There is no <code>while</code> in there.
+  </p>
+
+  <p>Chain-of-thought gives it somewhere to put the intermediate values:</p>
+
+<pre><code>def answer(question):
+    scratch = []                      # each entry is another forward pass
+    for step in range(n):
+        scratch.append(one_step(question, scratch))   # reads its own output
+    return scratch[-1]</code></pre>
+
+  <p>
+    Every token the model emits gets appended to its own input, and the next forward pass reads it. So the number of tokens you let it emit <em>is</em> the number of serial steps it gets. Nothing else about the model changed.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Forward pass</strong></td><td>Fixed work per token: N layers, no loops</td><td>A function with a fixed call depth</td></tr>
+      <tr><td><strong>Chain-of-thought</strong></td><td>Emit intermediate tokens before the answer</td><td>A scratch buffer the function can write to and re-read</td></tr>
+      <tr><td><strong>Self-consistency</strong></td><td>Sample several paths, take the modal answer</td><td>Retry the flaky job 20 times, ship the most common result</td></tr>
+      <tr><td><strong>ReAct</strong></td><td>Let the scratch buffer hold a real tool's output</td><td>The loop body makes an API call instead of guessing the response</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why this beat plain few-shot prompting</h2>
+
+  <p>
+    Standard few-shot prompting, the thing <a href="../gpt/">GPT-3</a> introduced, shows the model input/output pairs and asks for one more output. It works beautifully for classification and translation, and it falls over on arithmetic word problems in a way that looked, for a while, like the models simply couldn't do maths.
+  </p>
+  <p>
+    They could. They were being asked to do six sequential operations inside one forward pass. The fix wasn't a bigger model or a new loss — it was changing the exemplars so they showed their working, and therefore so did the continuation. No fine-tuning, no gradient updates, no architecture change.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <p>
+    Chain-of-thought doesn't really have a formula; it's a prompt format. But self-consistency does, and it's the one worth knowing, because it says what a "reasoning path" is in probability terms:
+  </p>
+
+  <div class="formula">answer* = argmax<sub>a</sub> Σ<sub>r</sub> P(a, r | prompt)</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>What it is</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>r</code></td><td>A reasoning path</td><td>The intermediate tokens. A latent variable — you don't care which one you got</td></tr>
+      <tr><td><code>a</code></td><td>The final answer</td><td>The bit you actually parse out and return</td></tr>
+      <tr><td><code>P(a, r | ·)</code></td><td>Joint probability</td><td>One sample from the model is one draw from this</td></tr>
+      <tr><td><code>Σ<sub>r</sub></code></td><td>Marginalise</td><td>Sum over paths. In practice: sample k of them and count</td></tr>
+      <tr><td><code>argmax<sub>a</sub></code></td><td>Take the mode</td><td>Majority vote over final answers. That's the whole algorithm</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Plain chain-of-thought is the k=1 case with greedy decoding: one path, take its answer, hope it was a good one. Self-consistency is the same thing with the sum actually done.
+  </p>
+
+  <h2>The budget is a hard ceiling</h2>
+
+  <p>
+    The script implements an evaluator that may do exactly one operation per token it emits, and hands it a chain of six operations where each needs the previous one's result. <strong>This is an analogy for the depth limit of a fixed-size network, not a measurement of one.</strong> I'm labelling that hard because it's the one place on this page where you could mistake a toy for evidence.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>token budget 1:  steps needed 6, steps available 1  -&gt;  answer <span class="hl">7   (WRONG)</span>
+token budget 3:  steps needed 6, steps available 3  -&gt;  answer <span class="hl">32  (WRONG)</span>
+token budget 6:  steps needed 6, steps available 6  -&gt;  answer <span class="ok">63  (correct) ✓</span>
+
+the working, when it is allowed to exist:
+   token 1: start 7 -&gt; 7
+   token 2: mul 3 -&gt; 21
+   token 3: add 11 -&gt; 32
+   token 4: sub 5 -&gt; 27
+   token 5: mul 2 -&gt; 54
+   token 6: add 9 -&gt; 63</code></pre>
+
+  <div class="note">
+    <strong>The evaluator at budget 1 isn't lazy and isn't ignorant.</strong> It ran out of serial depth. Every "just answer, don't explain" line you've put in a system prompt is you spending this budget, and you should know what it costs.
+  </div>
+
+  <p>
+    There is real theory for this now: Li et al. (2024) prove that constant-depth transformers with a chain of thought can solve serial problems that constant-depth transformers without one provably cannot. My evaluator is a cartoon of their result. Link at the bottom.
+  </p>
+
+  <h2>The prompts, side by side</h2>
+
+  <p>
+    Here are both prompts as the script builds them. Look for the difference. It is entirely in the exemplars' answers.
+  </p>
+
+<pre><code>--- STANDARD few-shot ---
+Q: A shelf holds 4 boxes. Each box holds 6 mugs. 5 mugs break. How many
+   are left?
+A: The answer is 19.
+
+--- CHAIN-OF-THOUGHT few-shot ---
+Q: A shelf holds 4 boxes. Each box holds 6 mugs. 5 mugs break. How many
+   are left?
+A: 4 boxes * 6 mugs = 24 mugs. 24 - 5 broken = 19. The answer is 19.
+
+prompt lengths: standard 301 chars, CoT 400 chars</code></pre>
+
+  <p>
+    Ninety-nine characters. That's the paper. (The script prints both full two-exemplar prompts; I've shown one exemplar each to fit the column.)
+  </p>
+
+  <div class="note">
+    <strong>The claim you must not overstate.</strong> Wei et al.'s headline finding is an <em>emergence</em> result: chain-of-thought helps only at sufficient model scale, and on smaller models it can make performance <em>worse</em> than plain prompting. Nothing in my script demonstrates that — it needs real models at several sizes, which is what the paper has and I don't. Take the emergence claim from them and the mechanism from here.
+  </div>
+
+  <p>
+    Related, and frequently misattributed: the zero-shot "Let's think step by step" result is <strong>Kojima et al., 2022</strong>, not Wei — Wei's paper uses hand-written exemplars throughout. Worth having straight; it's an easy interview trip-up.
+  </p>
+
+  <h3>The bug that will actually bite you</h3>
+
+  <p>
+    Turning on chain-of-thought changes the shape of the model's output, and the answer parser you wrote for the old shape does not know that. This is the most common real failure in a CoT pipeline, and it does not throw:
+  </p>
+
+<pre><code>model output:
+  9 pots * 8 cups = 72 cups. 72 - 14 spilled = 58. The answer is 58.
+
+parse_loose  -&gt; <span class="hl">9</span>    &lt;-- first number in the working
+parse_strict -&gt; <span class="ok">58 ✓</span>  &lt;-- anchored on 'the answer is'</code></pre>
+
+  <p>
+    Under the standard prompt the answer held exactly one number, so <code>re.search(r"\d+")</code> was correct and nobody reviewed it. Under CoT the same regex silently returns an intermediate value, accuracy drops, and the prompt gets blamed for a parser bug.
+  </p>
+
+  <h2>Self-consistency: why voting works</h2>
+  <p class="muted">Wang et al., 2022 — <a href="https://arxiv.org/abs/2203.11171">arXiv 2203.11171</a>.</p>
+
+  <p>
+    This is the one piece of genuine statistics on the page, and the numbers mean what they say. The script's solver is stochastic: each of the six steps is carried out correctly 80% of the time, and a slip lands on a scattered wrong value. Sample k independent paths, take the modal answer.
+  </p>
+  <p>
+    The mechanism is one sentence: <strong>correct paths all agree on one number; wrong paths disagree with each other.</strong> So the mode beats any single draw, even when a single draw is right well under half the time.
+  </p>
+
+<pre><code>per-step accuracy 0.8, 6 steps, 4000 trials, true answer 63
+
+  paths (k)   accuracy of the vote
+          1   <span class="hl">0.270</span>
+          3   0.332
+          5   0.458
+         11   0.745
+         21   0.927
+         41   <span class="ok">0.994 ✓</span>
+
+one sample of 11 paths, so you can see the shape of it:
+  answers: [77, 45, 81, 63, 51, 67, 69, 71, 66, 63, 87]
+  vote   : 63  truth: 63</code></pre>
+
+  <p>
+    Note the gains flattening between 21 and 41. You're converging on the distribution's mode, not adding information, so the curve is bounded by "is the mode the right answer at all". Past that, more samples buy nothing but tokens.
+  </p>
+
+  <p>
+    And the failure mode people actually ship. Vote over paths that aren't independent and the vote does nothing:
+  </p>
+
+<pre><code>k=21, independent paths        : <span class="ok">0.928 ✓</span>
+k=21, 21 copies of ONE path    : <span class="hl">0.272</span>   ← same as k=1</code></pre>
+
+  <p>
+    Same vote, same k, no benefit whatsoever. Sampling at temperature 0, or reusing one cached trace across your "samples", buys the bottom row and a 21× bill. Self-consistency needs <em>independent errors</em> — check that first when voting doesn't help.
+  </p>
+
+  <h2>ReAct: put a real tool in the scratch buffer</h2>
+
+  <p>
+    Chain-of-thought gives the model somewhere to write. ReAct's move is to let one of those writes be <em>something the world said</em>, not something the model produced. Thought, action, observation, repeat, until it answers or you cut it off.
+  </p>
+
+  <p>
+    Here's a full transcript from the script: two lookups against a real table and one call to a real calculator, both actually executed. The policy choosing the next action is a hand-written state machine — that's the part standing in for a model. The loop is the real thing.
+  </p>
+
+<pre><code>Question: How many more vans does Northwind have than Contoso?
+
+  Thought 1: I need Northwind's van count. I should look it up, not recall it.
+  Action  1: lookup('northwind', 'vans')
+  Obs     1: 34
+  Thought 2: Got Northwind. Now Contoso.
+  Action  2: lookup('contoso', 'vans')
+  Obs     2: 21
+  Thought 3: Now subtract: 34 minus 21.
+  Action  3: calc('34 - 21')
+  Obs     3: 13
+  Thought 4: The difference is 13.
+  Answer: 13
+
+finished in 4 loop iterations, answer = <span class="ok">13 ✓</span>
+ground truth = 13</code></pre>
+
+  <p>
+    Now remove one line — the one appending the observation to the scratchpad. The tool still gets called and the observation still gets printed. It just never reaches the thing deciding the next step:
+  </p>
+
+<pre><code>with observations fed back   : <span class="ok">13 ✓</span>  ← checked
+with observations discarded  : <span class="hl">15</span>    ← guessed
+ground truth                 : 13
+
+  Action  1: lookup('northwind', 'vans')
+  Obs     1: 34                          ← fetched, then thrown away
+  Action  2: lookup('contoso', 'vans')
+  Obs     2: 21                          ← fetched, then thrown away
+  Thought 3: Now subtract: <span class="hl">40 minus 25</span>.   ← plausible. memorised. wrong.
+  Answer: <span class="hl">15</span></code></pre>
+
+  <p>
+    That fallback is a hardcoded number standing in for a memorised guess — I'm not claiming a model would produce 40. What the transcript shows is the <em>shape</em> of the failure: the fact was available, the call was made, and the answer still came from memory, because nothing wired the result back into the next step. Yao et al. report reduced hallucination for ReAct relative to chain-of-thought alone on the tasks they tested, and this is the plumbing reason why.
+  </p>
+
+  <div class="note">
+    <strong>This is the same idea as <a href="../rag/">RAG</a>, moved inside the loop.</strong> RAG fetches once, up front, and stuffs the context. ReAct fetches repeatedly, deciding what to fetch from what it has already read. Same principle — put the fact in the context rather than trusting the weights — different control flow.
+  </div>
+
+  <h3>Put a limit on the loop</h3>
+
+  <p>
+    A ReAct loop with no step count is a <code>while True</code> with a credit card attached. Point it at a tool that keeps returning nothing and it never terminates on its own — the policy has no reason to stop asking:
+  </p>
+
+<pre><code>max_steps=None: <span class="hl">still looping after 200 iterations, no answer, no end</span>
+                tool calls made: 200, distinct observations: 1
+max_steps=5   : <span class="ok">guard fired at step 5, returned None ✓</span></code></pre>
+
+  <p>
+    Two hundred identical tool calls, one distinct observation. The guard is three lines. Return <code>None</code> and let the caller decide what a non-answer means — don't let the loop decide for itself, and don't let it invent an answer to escape.
+  </p>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    முதலில் அந்தக் கடைசி வரியைப் பற்றி நேரடியாகச் சொல்லிவிடுகிறேன்,
+    <a href="../rag/">RAG பக்கம்</a> தன் retriever-ஐப் பற்றிச் சொல்வது போலவே.
+    <strong>இந்த script-ல் எந்த LLM-ம் இல்லை.</strong> "step by step யோசி" என்று
+    நீங்கள் சொல்லும்போது GPT-4 என்ன செய்கிறது என்பதற்கு இது அச்சிடும் எதுவும்
+    ஆதாரம் இல்லை; எங்கே ஒன்று model-க்குப் பதிலாக நிற்கிறதோ, அது கையால் எழுதப்பட்ட
+    ஒரு state machine, அதை மேல் வரியிலேயே code சொல்லிவிடுகிறது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (chain-of-thought, prompt,
+    exemplar, self-consistency, majority vote, ReAct, thought, action,
+    observation, tool, hallucination…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால்
+    code-லும் மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>
+    இது காட்டுவது என்னவென்றால் — இரண்டு வருடங்களாக நான் தலைகீழாகப் புரிந்து
+    வைத்திருந்த பகுதி. chain-of-thought என்பது ஒரு உளவியல் தந்திரம், model-ஐப்
+    புகழ்ந்து அதிகம் முயற்சி செய்ய வைப்பது என்று நினைத்தேன். இல்லை. அது ஒரு
+    <em>compute ஒதுக்கீடு</em>. இதைப் பார்த்த பிறகுதான், மீதி agent stack
+    prompt நாட்டுப்புறக் கதையாக இல்லாமல், வேறு எந்த system-ஐயும் போல நான்
+    யோசிக்கக்கூடிய ஒன்றாக மாறியது.
+  </p>
+
+  <h2>Pure function vs. scratch buffer உள்ள function</h2>
+
+  <p>இந்த function-ஐ நீங்கள் எழுதியிருக்கிறீர்கள். இதில் local variables இல்லை:</p>
+
+<pre><code>def answer(question):
+    return LOOKUP_TABLE[question]     # ஒரே ஒரு step. அவ்வளவுதான்.</code></pre>
+
+  <p>
+    ஒரு token-ஐ வெளியிடும் transformer இந்த function தான். ஒரு forward pass,
+    நிர்ணயிக்கப்பட்ட layer எண்ணிக்கை, "வானம் என்ன நிறம்" என்றாலும் 12-step
+    கணக்கு என்றாலும் அதே arithmetic. உள்ளே loop போட முடியாது. அதற்குள் ஒரு
+    <code>while</code> கிடையாது.
+  </p>
+
+  <p>Chain-of-thought இடைநிலை மதிப்புகளை வைக்க ஓர் இடம் தருகிறது:</p>
+
+<pre><code>def answer(question):
+    scratch = []                      # ஒவ்வொரு entry-ம் இன்னொரு forward pass
+    for step in range(n):
+        scratch.append(one_step(question, scratch))   # தன் output-ஐயே படிக்கிறது
+    return scratch[-1]</code></pre>
+
+  <p>
+    Model வெளியிடும் ஒவ்வொரு token-ம் அதன் சொந்த input-உடன் சேர்க்கப்படுகிறது,
+    அடுத்த forward pass அதைப் படிக்கிறது. எனவே எத்தனை tokens வெளியிட
+    அனுமதிக்கிறீர்களோ, அத்தனைதான் அதற்குக் கிடைக்கும் serial steps. Model-ல்
+    வேறு எதுவும் மாறவில்லை.
+  </p>
+
+  <p class="thanglish">
+    Oru token = fixed compute. Model loop panna mudiyaadhu. Chain-of-thought
+    kudukkardhu extra time illa — extra <em>steps</em>. Tokens dhaan scratch buffer.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Forward pass</strong></td><td>Token ஒன்றுக்கு நிர்ணயிக்கப்பட்ட வேலை: N layers, loop இல்லை</td><td>நிர்ணயிக்கப்பட்ட call depth உள்ள function</td></tr>
+      <tr><td><strong>Chain-of-thought</strong></td><td>விடைக்கு முன் இடைநிலை tokens வெளியிடுவது</td><td>Function எழுதி மீண்டும் படிக்கக்கூடிய scratch buffer</td></tr>
+      <tr><td><strong>Self-consistency</strong></td><td>பல பாதைகளை sample செய்து, அதிகம் வரும் விடையை எடு</td><td>Flaky job-ஐ 20 முறை retry செய்து, அதிகம் வந்த முடிவை ship செய்</td></tr>
+      <tr><td><strong>ReAct</strong></td><td>Scratch buffer-ல் நிஜ tool-ன் output இருக்கட்டும்</td><td>Loop body யூகிக்காமல் ஓர் API call செய்கிறது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>சாதாரண few-shot prompting-ஐ இது ஏன் வென்றது</h2>
+
+  <p>
+    <a href="../gpt/">GPT-3</a> அறிமுகப்படுத்திய standard few-shot prompting,
+    model-க்கு input/output ஜோடிகளைக் காட்டி இன்னொரு output கேட்கிறது.
+    Classification, translation-க்கு இது அற்புதமாக வேலை செய்கிறது; ஆனால்
+    arithmetic word problems-ல் விழுந்துவிடுகிறது — சிறிது காலம் அது models-க்குக்
+    கணக்கே தெரியாது என்பது போலத் தோன்றியது.
+  </p>
+  <p>
+    தெரியும். ஒரே forward pass-க்குள் ஆறு தொடர்ச்சியான operations செய்யச்
+    சொல்லப்பட்டிருந்தது, அவ்வளவுதான். தீர்வு பெரிய model-ம் இல்லை, புது loss-ம்
+    இல்லை — exemplars-ஐ மாற்றி அவை வேலையைக் காட்டச் செய்தது, அதனால்
+    continuation-ம் காட்டியது. Fine-tuning இல்லை, gradient updates இல்லை,
+    architecture மாற்றம் இல்லை.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <p>
+    Chain-of-thought-க்கு உண்மையில் ஒரு சூத்திரம் கிடையாது; அது ஒரு prompt format.
+    ஆனால் self-consistency-க்கு உண்டு, அதைத் தெரிந்துகொள்வது மதிப்புள்ளது —
+    ஏனெனில் "reasoning path" என்றால் என்ன என்பதை probability மொழியில் சொல்கிறது:
+  </p>
+
+  <div class="formula">answer* = argmax<sub>a</sub> Σ<sub>r</sub> P(a, r | prompt)</div>
+
+  <p>இதை pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>என்ன</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>r</code></td><td>ஒரு reasoning path</td><td>இடைநிலை tokens. ஒரு latent variable — எது கிடைத்தது என்பது முக்கியமில்லை</td></tr>
+      <tr><td><code>a</code></td><td>இறுதி விடை</td><td>நீங்கள் உண்மையில் parse செய்து திருப்பித் தரும் பகுதி</td></tr>
+      <tr><td><code>P(a, r | ·)</code></td><td>Joint probability</td><td>Model-லிருந்து ஒரு sample என்பது இதிலிருந்து ஒரு draw</td></tr>
+      <tr><td><code>Σ<sub>r</sub></code></td><td>Marginalise</td><td>பாதைகள் மேல் கூட்டு. நடைமுறையில்: k பாதைகளை sample செய்து எண்ணு</td></tr>
+      <tr><td><code>argmax<sub>a</sub></code></td><td>Mode-ஐ எடு</td><td>இறுதி விடைகள் மேல் majority vote. அவ்வளவுதான் algorithm</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    சாதாரண chain-of-thought என்பது greedy decoding-உடன் k=1 நிலை: ஒரு பாதை, அதன்
+    விடையை எடு, அது நல்லதாக இருந்திருக்கும் என்று நம்பு. Self-consistency என்பது
+    அதே விஷயம், கூட்டலை உண்மையிலேயே செய்தது.
+  </p>
+
+  <h2>Budget என்பது கடினமான உச்சவரம்பு</h2>
+
+  <p>
+    வெளியிடும் ஒவ்வொரு token-க்கும் சரியாக ஒரு operation மட்டுமே செய்யக்கூடிய ஒரு
+    evaluator-ஐ script உருவாக்குகிறது, பிறகு ஆறு operations கொண்ட ஒரு சங்கிலியைக்
+    கொடுக்கிறது — ஒவ்வொன்றுக்கும் முந்தையதன் முடிவு தேவை.
+    <strong>இது நிர்ணய அளவு network-ன் depth limit-க்கான ஓர் உவமை, அதன் அளவீடு
+    அல்ல.</strong> இதைக் கடினமாகவே குறிக்கிறேன், ஏனெனில் இந்தப் பக்கத்தில் ஒரு
+    விளையாட்டுக் கருவியை ஆதாரம் என்று தவறாக நினைக்கக்கூடிய ஒரே இடம் இதுதான்.
+  </p>
+
+  <p><strong>என் சொல்லை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>token budget 1:  steps needed 6, steps available 1  -&gt;  answer <span class="hl">7   (WRONG)</span>
+token budget 3:  steps needed 6, steps available 3  -&gt;  answer <span class="hl">32  (WRONG)</span>
+token budget 6:  steps needed 6, steps available 6  -&gt;  answer <span class="ok">63  (correct) ✓</span>
+
+the working, when it is allowed to exist:
+   token 1: start 7 -&gt; 7
+   token 2: mul 3 -&gt; 21
+   token 3: add 11 -&gt; 32
+   token 4: sub 5 -&gt; 27
+   token 5: mul 2 -&gt; 54
+   token 6: add 9 -&gt; 63</code></pre>
+
+  <div class="note">
+    <strong>Budget 1-ல் இருக்கும் evaluator சோம்பேறியும் இல்லை, அறியாதவனும்
+    இல்லை.</strong> அதற்கு serial depth தீர்ந்துவிட்டது. "விடையை மட்டும் சொல்,
+    விளக்காதே" என்று நீங்கள் system prompt-ல் போட்ட ஒவ்வொரு வரியும் இந்த
+    budget-ஐச் செலவழிப்பதுதான் — அது என்ன விலை கேட்கிறது என்று தெரிந்திருக்க
+    வேண்டும்.
+  </div>
+
+  <p>
+    இதற்கு இப்போது உண்மையான theory இருக்கிறது: constant-depth transformers, chain
+    of thought-உடன், அது இல்லாத constant-depth transformers நிரூபிக்கப்பட்ட
+    விதத்தில் தீர்க்க முடியாத serial problems-ஐத் தீர்க்கும் என்று Li et al. (2024)
+    நிரூபிக்கிறார்கள். என் evaluator அவர்கள் முடிவின் ஒரு cartoon. கீழே link.
+  </p>
+
+  <h2>இரண்டு prompts, அருகருகே</h2>
+
+  <p>
+    Script உருவாக்கும் இரண்டு prompts-ம் இதோ. வித்தியாசத்தைத் தேடுங்கள். அது
+    முழுக்க முழுக்க exemplars-ன் விடைகளில் மட்டுமே இருக்கிறது.
+  </p>
+
+<pre><code>--- STANDARD few-shot ---
+Q: A shelf holds 4 boxes. Each box holds 6 mugs. 5 mugs break. How many
+   are left?
+A: The answer is 19.
+
+--- CHAIN-OF-THOUGHT few-shot ---
+Q: A shelf holds 4 boxes. Each box holds 6 mugs. 5 mugs break. How many
+   are left?
+A: 4 boxes * 6 mugs = 24 mugs. 24 - 5 broken = 19. The answer is 19.
+
+prompt lengths: standard 301 chars, CoT 400 chars</code></pre>
+
+  <p>
+    தொண்ணூற்றொன்பது எழுத்துகள். அதுதான் paper. (Script இரண்டு exemplar கொண்ட
+    முழு prompts-ஐயும் அச்சிடுகிறது; column-ல் அடங்க ஒவ்வொன்றிலும் ஒரு
+    exemplar மட்டும் காட்டியிருக்கிறேன்.)
+  </p>
+
+  <div class="note">
+    <strong>மிகைப்படுத்தக் கூடாத கூற்று.</strong> Wei et al.-ன் தலைப்புச் செய்தி ஒரு
+    <em>emergence</em> முடிவு: போதுமான model scale-ல் மட்டுமே chain-of-thought
+    உதவுகிறது, சிறிய models-ல் அது சாதாரண prompting-ஐ விட செயல்திறனை
+    <em>மோசமாக்கவும்</em> செய்யலாம். என் script-ல் எதுவும் அதை நிரூபிக்கவில்லை —
+    அதற்குப் பல அளவுகளில் நிஜ models தேவை, அது paper-ல் இருக்கிறது, என்னிடம்
+    இல்லை. Emergence கூற்றை அவர்களிடமிருந்தும், mechanism-ஐ இங்கிருந்தும்
+    எடுத்துக்கொள்ளுங்கள்.
+  </div>
+
+  <p>
+    இதனுடன் தொடர்புடையது, அடிக்கடி தவறாக யாருக்கோ சேர்க்கப்படுவது: zero-shot
+    "Let's think step by step" முடிவு <strong>Kojima et al., 2022</strong>, Wei
+    அல்ல — Wei-ன் paper முழுவதும் கையால் எழுதிய exemplars-ஐப் பயன்படுத்துகிறது.
+    இதைத் தெளிவாக வைத்திருங்கள்; interview-ல் எளிதில் தடுக்கி விழ வைக்கும்.
+  </p>
+
+  <h3>உண்மையில் உங்களைக் கடிக்கப் போகும் bug</h3>
+
+  <p>
+    Chain-of-thought-ஐ ஆன் செய்தால் model-ன் output-ன் வடிவம் மாறுகிறது, பழைய
+    வடிவத்துக்கு நீங்கள் எழுதிய answer parser-க்கு அது தெரியாது. CoT pipeline-ல்
+    இதுதான் மிகச் சாதாரணமான நிஜத் தோல்வி, இது exception-ம் எறியாது:
+  </p>
+
+<pre><code>model output:
+  9 pots * 8 cups = 72 cups. 72 - 14 spilled = 58. The answer is 58.
+
+parse_loose  -&gt; <span class="hl">9</span>    &lt;-- first number in the working
+parse_strict -&gt; <span class="ok">58 ✓</span>  &lt;-- anchored on 'the answer is'</code></pre>
+
+  <p>
+    Standard prompt-ல் விடையில் சரியாக ஒரே ஒரு எண் இருந்தது, எனவே
+    <code>re.search(r"\d+")</code> சரியாக இருந்தது, யாரும் அதை மறுபரிசீலனை
+    செய்யவில்லை. CoT-ல் அதே regex அமைதியாக ஓர் இடைநிலை மதிப்பைத் திருப்பித்
+    தருகிறது, accuracy குறைகிறது, குற்றம் prompt மேல் விழுகிறது.
+  </p>
+
+  <h2>Self-consistency: voting ஏன் வேலை செய்கிறது</h2>
+  <p class="muted">Wang et al., 2022 — <a href="https://arxiv.org/abs/2203.11171">arXiv 2203.11171</a>.</p>
+
+  <p>
+    இந்தப் பக்கத்தில் உண்மையான புள்ளியியல் இருக்கும் ஒரே இடம் இதுதான், இந்த
+    எண்கள் சொல்வது சரியானதே. Script-ன் solver stochastic: ஆறு steps-ல்
+    ஒவ்வொன்றும் 80% நேரம் சரியாகச் செய்யப்படுகிறது, தவறினால் சிதறிய ஒரு தவறான
+    மதிப்பில் விழுகிறது. k தனித்தனிப் பாதைகளை sample செய்து, அதிகம் வரும் விடையை
+    எடுங்கள்.
+  </p>
+  <p>
+    Mechanism ஒரே வாக்கியம்: <strong>சரியான பாதைகள் அனைத்தும் ஒரே எண்ணில்
+    ஒத்துப்போகின்றன; தவறான பாதைகள் ஒன்றோடொன்று மாறுபடுகின்றன.</strong> எனவே ஒரு
+    தனித்த draw சரியாக இருப்பது பாதிக்கும் குறைவான நேரமாக இருந்தாலும், mode
+    எந்த ஒரு draw-ஐயும் விட சிறந்தது.
+  </p>
+
+<pre><code>per-step accuracy 0.8, 6 steps, 4000 trials, true answer 63
+
+  paths (k)   accuracy of the vote
+          1   <span class="hl">0.270</span>
+          3   0.332
+          5   0.458
+         11   0.745
+         21   0.927
+         41   <span class="ok">0.994 ✓</span>
+
+one sample of 11 paths, so you can see the shape of it:
+  answers: [77, 45, 81, 63, 51, 67, 69, 71, 66, 63, 87]
+  vote   : 63  truth: 63</code></pre>
+
+  <p>
+    21-க்கும் 41-க்கும் இடையே ஆதாயம் தட்டையாவதைக் கவனியுங்கள். நீங்கள்
+    distribution-ன் mode-ஐ நோக்கிச் சேர்கிறீர்கள், தகவலைச் சேர்க்கவில்லை — எனவே
+    வளைவு "mode உண்மையில் சரியான விடையா" என்பதால் வரையறுக்கப்படுகிறது. அதற்குப்
+    பிறகு அதிக samples tokens-ஐத் தவிர வேறெதையும் வாங்கித் தராது.
+  </p>
+
+  <p>
+    இப்போது மக்கள் உண்மையில் ship செய்யும் தோல்வி. சுதந்திரமாக இல்லாத
+    பாதைகள் மேல் vote செய்தால், vote எதுவும் செய்யாது:
+  </p>
+
+<pre><code>k=21, independent paths        : <span class="ok">0.928 ✓</span>
+k=21, 21 copies of ONE path    : <span class="hl">0.272</span>   ← same as k=1</code></pre>
+
+  <p>
+    அதே vote, அதே k, எந்தப் பயனும் இல்லை. Temperature 0-ல் sample செய்வது, அல்லது
+    உங்கள் "samples" முழுவதும் ஒரே cached trace-ஐ மறுபயன்படுத்துவது — கடைசி
+    வரிசையையும் 21× bill-ஐயும் வாங்கித் தரும். Self-consistency-க்கு
+    <em>சுதந்திரமான தவறுகள்</em> தேவை — voting உதவாதபோது முதலில் இதைச்
+    சரிபாருங்கள்.
+  </p>
+
+  <p class="thanglish">
+    Correct paths ellaam ore number-la agree aagum; wrong paths thani thaniya
+    poagum. Adhaan majority vote velai seiyaradhu — aana paths independent-a
+    irundhaa mattum dhaan.
+  </p>
+
+  <h2>ReAct: scratch buffer-ல் ஒரு நிஜ tool-ஐ வையுங்கள்</h2>
+
+  <p>
+    Chain-of-thought model-க்கு எழுத ஓர் இடம் தருகிறது. ReAct-ன் நகர்வு என்னவென்றால்,
+    அந்த எழுத்துகளில் ஒன்று model உருவாக்கியது அல்லாமல் <em>உலகம் சொன்னது</em>
+    ஆக இருக்கட்டும் என்பது. Thought, action, observation, மீண்டும் — அது பதில்
+    சொல்லும் வரை, அல்லது நீங்கள் நிறுத்தும் வரை.
+  </p>
+
+  <p>
+    Script-லிருந்து ஒரு முழு transcript இதோ: ஒரு நிஜ table மேல் இரண்டு lookups,
+    ஒரு நிஜ calculator-க்கு ஒரு call — இரண்டும் உண்மையிலேயே நடக்கின்றன. அடுத்த
+    action-ஐத் தேர்வு செய்யும் policy கையால் எழுதப்பட்ட ஒரு state machine — அதுதான்
+    model-க்குப் பதிலாக நிற்கும் பகுதி. Loop மட்டும் நிஜம்.
+  </p>
+
+<pre><code>Question: How many more vans does Northwind have than Contoso?
+
+  Thought 1: I need Northwind's van count. I should look it up, not recall it.
+  Action  1: lookup('northwind', 'vans')
+  Obs     1: 34
+  Thought 2: Got Northwind. Now Contoso.
+  Action  2: lookup('contoso', 'vans')
+  Obs     2: 21
+  Thought 3: Now subtract: 34 minus 21.
+  Action  3: calc('34 - 21')
+  Obs     3: 13
+  Thought 4: The difference is 13.
+  Answer: 13
+
+finished in 4 loop iterations, answer = <span class="ok">13 ✓</span>
+ground truth = 13</code></pre>
+
+  <p>
+    இப்போது ஒரே ஒரு வரியை நீக்குங்கள் — observation-ஐ scratchpad-ல் சேர்க்கும் வரி.
+    Tool இன்னும் அழைக்கப்படுகிறது, observation இன்னும் அச்சிடப்படுகிறது. அது
+    அடுத்த step-ஐத் தீர்மானிக்கும் பொருளை மட்டும் சென்றடைவதில்லை:
+  </p>
+
+<pre><code>with observations fed back   : <span class="ok">13 ✓</span>  ← checked
+with observations discarded  : <span class="hl">15</span>    ← guessed
+ground truth                 : 13
+
+  Action  1: lookup('northwind', 'vans')
+  Obs     1: 34                          ← fetched, then thrown away
+  Action  2: lookup('contoso', 'vans')
+  Obs     2: 21                          ← fetched, then thrown away
+  Thought 3: Now subtract: <span class="hl">40 minus 25</span>.   ← plausible. memorised. wrong.
+  Answer: <span class="hl">15</span></code></pre>
+
+  <p>
+    அந்த fallback ஒரு hardcoded எண், மனப்பாடமான ஒரு யூகத்துக்குப் பதிலாக நிற்கிறது
+    — ஒரு model 40 என்று தரும் என்று நான் சொல்லவில்லை. Transcript காட்டுவது
+    தோல்வியின் <em>வடிவம்</em>: உண்மை கிடைக்கும் நிலையில் இருந்தது, call
+    செய்யப்பட்டது, இருந்தும் விடை நினைவிலிருந்தே வந்தது — ஏனெனில் முடிவை அடுத்த
+    step-உடன் எதுவும் இணைக்கவில்லை. அவர்கள் சோதித்த tasks-ல் chain-of-thought
+    மட்டும் இருப்பதோடு ஒப்பிடும்போது ReAct-க்கு hallucination குறைவாக இருந்ததாக Yao
+    et al. அறிக்கை செய்கிறார்கள்; அதற்கான குழாய்ப் பணிக் காரணம் இதுதான்.
+  </p>
+
+  <div class="note">
+    <strong>இது <a href="../rag/">RAG</a>-ன் அதே கருத்துதான், loop-க்குள்
+    நகர்த்தப்பட்டது.</strong> RAG ஒரே முறை, முன்கூட்டியே எடுத்து context-ஐ
+    நிரப்புகிறது. ReAct மீண்டும் மீண்டும் எடுக்கிறது, ஏற்கனவே படித்ததிலிருந்து
+    எதை எடுக்க வேண்டும் என்று முடிவு செய்கிறது. அதே கொள்கை — weights-ஐ
+    நம்பாமல் உண்மையை context-ல் வையுங்கள் — வேறு control flow.
+  </div>
+
+  <h3>Loop-க்கு ஒரு எல்லை வையுங்கள்</h3>
+
+  <p>
+    Step எண்ணிக்கை இல்லாத ஒரு ReAct loop என்பது credit card இணைக்கப்பட்ட ஒரு
+    <code>while True</code>. எதையும் திருப்பித் தராத ஒரு tool-ஐ நோக்கிக்
+    காட்டுங்கள், அது தானாக ஒருபோதும் நிற்காது — policy-க்குக் கேட்பதை நிறுத்த
+    எந்தக் காரணமும் இல்லை:
+  </p>
+
+<pre><code>max_steps=None: <span class="hl">still looping after 200 iterations, no answer, no end</span>
+                tool calls made: 200, distinct observations: 1
+max_steps=5   : <span class="ok">guard fired at step 5, returned None ✓</span></code></pre>
+
+  <p>
+    இருநூறு ஒரே மாதிரியான tool calls, ஒரே ஒரு தனித்த observation. Guard மூன்று
+    வரிகள். <code>None</code>-ஐத் திருப்பித் தந்து, பதில் இல்லாதது என்றால் என்ன
+    என்பதைக் காலர் முடிவு செய்யட்டும் — loop தானே முடிவு செய்ய விடாதீர்கள்,
+    தப்பிக்க ஒரு விடையைக் கண்டுபிடிக்கவும் விடாதீர்கள்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    पहले उस आख़िरी बात को साफ़ कह देता हूँ, ठीक वैसे ही जैसे
+    <a href="../rag/">RAG वाला पन्ना</a> अपने retriever के बारे में कहता है।
+    <strong>इस script में कोई LLM नहीं है।</strong> जब आप "step by step सोचो"
+    कहते हैं तो GPT-4 क्या करता है — इसका कोई सबूत यह script जो छापती है उसमें
+    नहीं है; जहाँ कोई चीज़ model की जगह खड़ी है, वह हाथ से लिखी हुई एक state
+    machine है, और code ऊपर वाली लाइन में यह बात लिख देता है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (chain-of-thought, prompt,
+    exemplar, self-consistency, majority vote, ReAct, thought, action,
+    observation, tool, hallucination…) मैंने वैसे ही रखे हैं। क्योंकि code में
+    और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    यह जो दिखाती है, वह हिस्सा मैं दो साल तक उल्टा समझता रहा। मुझे लगता था
+    chain-of-thought एक मनोवैज्ञानिक चाल है — model की तारीफ़ करो, वह ज़्यादा
+    कोशिश करेगा। ऐसा नहीं है। यह <em>compute का आवंटन</em> है। जिस दिन यह दिखा,
+    उस दिन से बाक़ी agent stack prompt की लोककथा नहीं रहा — किसी भी दूसरे
+    system की तरह सोचने लायक़ चीज़ बन गया।
+  </p>
+
+  <h2>Pure function बनाम scratch buffer वाला function</h2>
+
+  <p>यह function आपने लिखा है। इसमें कोई local variable नहीं है:</p>
+
+<pre><code>def answer(question):
+    return LOOKUP_TABLE[question]     # एक ही step. बस इतना ही.</code></pre>
+
+  <p>
+    एक token निकालता transformer यही function है। एक forward pass, तय संख्या
+    में layers, वही अंकगणित — चाहे सवाल "आसमान किस रंग का है" हो या 12 step
+    वाला word problem। वह अंदर loop नहीं चला सकता। उसके भीतर कोई
+    <code>while</code> है ही नहीं।
+  </p>
+
+  <p>Chain-of-thought उसे बीच के मान रखने की जगह देता है:</p>
+
+<pre><code>def answer(question):
+    scratch = []                      # हर entry एक और forward pass है
+    for step in range(n):
+        scratch.append(one_step(question, scratch))   # अपना ही output पढ़ता है
+    return scratch[-1]</code></pre>
+
+  <p>
+    Model जो भी token निकालता है वह उसके अपने input में जुड़ जाता है, और अगला
+    forward pass उसे पढ़ता है। यानी आप जितने tokens निकालने देते हैं, उतने ही
+    serial steps उसे मिलते हैं। Model में और कुछ नहीं बदला।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Forward pass</strong></td><td>हर token पर तय काम: N layers, कोई loop नहीं</td><td>तय call depth वाला function</td></tr>
+      <tr><td><strong>Chain-of-thought</strong></td><td>जवाब से पहले बीच के tokens निकालना</td><td>Scratch buffer जिसमें function लिख और दोबारा पढ़ सके</td></tr>
+      <tr><td><strong>Self-consistency</strong></td><td>कई paths sample करो, सबसे आम जवाब लो</td><td>Flaky job 20 बार retry करो, सबसे आम नतीजा ship करो</td></tr>
+      <tr><td><strong>ReAct</strong></td><td>Scratch buffer में असली tool का output रखने दो</td><td>Loop body अनुमान लगाने के बजाय API call करती है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>यह सादे few-shot prompting से बेहतर क्यों निकला</h2>
+
+  <p>
+    Standard few-shot prompting, जिसे <a href="../gpt/">GPT-3</a> लाया था,
+    model को input/output जोड़े दिखाकर एक और output माँगता है। Classification
+    और translation पर यह शानदार चलता है, और arithmetic word problems पर ऐसे
+    गिरता है कि कुछ समय तक लगा models को गणित आता ही नहीं।
+  </p>
+  <p>
+    आता था। उनसे एक ही forward pass के भीतर छह क्रमिक operations करवाए जा रहे
+    थे। इलाज न बड़ा model था, न नया loss — exemplars बदलकर उनमें काम दिखाया गया,
+    इसलिए continuation ने भी दिखाया। न fine-tuning, न gradient updates, न
+    architecture में कोई बदलाव।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <p>
+    Chain-of-thought का असल में कोई सूत्र नहीं है; वह एक prompt format है।
+    लेकिन self-consistency का है, और वही जानने लायक़ है — क्योंकि वह बताता है
+    कि probability की भाषा में "reasoning path" होता क्या है:
+  </p>
+
+  <div class="formula">answer* = argmax<sub>a</sub> Σ<sub>r</sub> P(a, r | prompt)</div>
+
+  <p>इसे pipeline के चरणों की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>क्या है</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>r</code></td><td>एक reasoning path</td><td>बीच के tokens। एक latent variable — कौन सा मिला, इससे फ़र्क़ नहीं</td></tr>
+      <tr><td><code>a</code></td><td>आख़िरी जवाब</td><td>वही हिस्सा जिसे आप parse करके लौटाते हैं</td></tr>
+      <tr><td><code>P(a, r | ·)</code></td><td>Joint probability</td><td>Model से एक sample यानी इसी से एक draw</td></tr>
+      <tr><td><code>Σ<sub>r</sub></code></td><td>Marginalise</td><td>Paths पर जोड़ो। व्यवहार में: k paths sample करो और गिनो</td></tr>
+      <tr><td><code>argmax<sub>a</sub></code></td><td>Mode लो</td><td>आख़िरी जवाबों पर majority vote। पूरा algorithm यही है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    सादा chain-of-thought greedy decoding के साथ k=1 वाली स्थिति है: एक path,
+    उसका जवाब लो, और उम्मीद करो कि वह अच्छा path था। Self-consistency वही चीज़
+    है, बस जोड़ सचमुच किया गया है।
+  </p>
+
+  <h2>Budget एक सख़्त छत है</h2>
+
+  <p>
+    Script एक ऐसा evaluator बनाती है जो हर निकाले गए token पर ठीक एक operation
+    कर सकता है, और उसे छह operations की एक शृंखला देती है जिसमें हर operation
+    को पिछले का नतीजा चाहिए। <strong>यह किसी तय आकार के network की depth limit
+    की उपमा है, उसका माप नहीं।</strong> इसे मैं जान-बूझकर मोटे अक्षरों में लिख
+    रहा हूँ, क्योंकि इस पन्ने पर यही एक जगह है जहाँ आप एक खिलौने को सबूत समझ
+    सकते हैं।
+  </p>
+
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। यह रहा असली output:</strong></p>
+
+<pre><code>token budget 1:  steps needed 6, steps available 1  -&gt;  answer <span class="hl">7   (WRONG)</span>
+token budget 3:  steps needed 6, steps available 3  -&gt;  answer <span class="hl">32  (WRONG)</span>
+token budget 6:  steps needed 6, steps available 6  -&gt;  answer <span class="ok">63  (correct) ✓</span>
+
+the working, when it is allowed to exist:
+   token 1: start 7 -&gt; 7
+   token 2: mul 3 -&gt; 21
+   token 3: add 11 -&gt; 32
+   token 4: sub 5 -&gt; 27
+   token 5: mul 2 -&gt; 54
+   token 6: add 9 -&gt; 63</code></pre>
+
+  <div class="note">
+    <strong>Budget 1 वाला evaluator न आलसी है, न अनजान।</strong> उसकी serial
+    depth ख़त्म हो गई। "बस जवाब दो, समझाओ मत" — यह लाइन आपने जितनी बार system
+    prompt में डाली है, हर बार आप यही budget ख़र्च कर रहे थे, और आपको पता होना
+    चाहिए कि उसकी क़ीमत क्या है।
+  </div>
+
+  <p>
+    इसका अब असली theory भी है: Li et al. (2024) सिद्ध करते हैं कि chain of
+    thought वाले constant-depth transformers ऐसे serial problems हल कर सकते हैं
+    जो उसके बिना वाले constant-depth transformers प्रमाणित रूप से नहीं कर सकते।
+    मेरा evaluator उनके नतीजे का cartoon भर है। Link नीचे है।
+  </p>
+
+  <h2>दोनों prompts, आमने-सामने</h2>
+
+  <p>
+    यह रहे दोनों prompts, जैसे script उन्हें बनाती है। फ़र्क़ ढूँढिए। वह पूरी
+    तरह exemplars के जवाबों में है।
+  </p>
+
+<pre><code>--- STANDARD few-shot ---
+Q: A shelf holds 4 boxes. Each box holds 6 mugs. 5 mugs break. How many
+   are left?
+A: The answer is 19.
+
+--- CHAIN-OF-THOUGHT few-shot ---
+Q: A shelf holds 4 boxes. Each box holds 6 mugs. 5 mugs break. How many
+   are left?
+A: 4 boxes * 6 mugs = 24 mugs. 24 - 5 broken = 19. The answer is 19.
+
+prompt lengths: standard 301 chars, CoT 400 chars</code></pre>
+
+  <p>
+    निन्यानबे characters। यही पूरा paper है। (Script दोनों पूरे दो-exemplar
+    वाले prompts छापती है; column में समाने के लिए मैंने हर एक का एक ही
+    exemplar दिखाया है।)
+  </p>
+
+  <div class="note">
+    <strong>वह दावा जिसे बढ़ा-चढ़ाकर नहीं कहना है।</strong> Wei et al. का मुख्य
+    नतीजा <em>emergence</em> का है: chain-of-thought तभी मदद करता है जब model का
+    scale पर्याप्त हो, और छोटे models पर यह सादे prompting से प्रदर्शन
+    <em>ख़राब</em> भी कर सकता है। मेरी script में ऐसा कुछ नहीं जो इसे दिखाता हो —
+    इसके लिए कई आकारों के असली models चाहिए, जो paper के पास हैं और मेरे पास
+    नहीं। Emergence का दावा उनसे लीजिए, mechanism यहाँ से।
+  </div>
+
+  <p>
+    इससे जुड़ी और अक्सर ग़लत नाम से जोड़ी जाने वाली बात: zero-shot "Let's think
+    step by step" वाला नतीजा <strong>Kojima et al., 2022</strong> का है, Wei का
+    नहीं — Wei का paper पूरे समय हाथ से लिखे exemplars इस्तेमाल करता है। इसे
+    साफ़ रखिए; interview में आसानी से फिसलाने वाली बात है।
+  </p>
+
+  <h3>वह bug जो सचमुच आपको काटेगा</h3>
+
+  <p>
+    Chain-of-thought चालू करने से model के output का आकार बदल जाता है, और पुराने
+    आकार के लिए लिखा आपका answer parser यह नहीं जानता। CoT pipeline में यही सबसे
+    आम असली failure है, और यह exception भी नहीं फेंकती:
+  </p>
+
+<pre><code>model output:
+  9 pots * 8 cups = 72 cups. 72 - 14 spilled = 58. The answer is 58.
+
+parse_loose  -&gt; <span class="hl">9</span>    &lt;-- first number in the working
+parse_strict -&gt; <span class="ok">58 ✓</span>  &lt;-- anchored on 'the answer is'</code></pre>
+
+  <p>
+    Standard prompt में जवाब में ठीक एक संख्या होती थी, इसलिए
+    <code>re.search(r"\d+")</code> सही था और किसी ने उसकी समीक्षा नहीं की। CoT
+    में वही regex चुपचाप बीच का कोई मान लौटा देता है, accuracy गिरती है, और
+    इल्ज़ाम prompt पर आ जाता है।
+  </p>
+
+  <h2>Self-consistency: voting काम क्यों करती है</h2>
+  <p class="muted">Wang et al., 2022 — <a href="https://arxiv.org/abs/2203.11171">arXiv 2203.11171</a>.</p>
+
+  <p>
+    इस पन्ने पर असली आँकड़ों वाला यही एक हिस्सा है, और ये संख्याएँ जो कहती हैं
+    वही मतलब रखती हैं। Script का solver stochastic है: छह steps में हर step 80%
+    बार सही होता है, और चूक होने पर जवाब किसी बिखरे हुए ग़लत मान पर गिरता है।
+    k स्वतंत्र paths sample कीजिए और सबसे आम जवाब लीजिए।
+  </p>
+  <p>
+    Mechanism एक वाक्य का है: <strong>सही paths सब एक ही संख्या पर सहमत होते
+    हैं; ग़लत paths आपस में असहमत होते हैं।</strong> इसलिए mode किसी भी एक draw
+    से बेहतर निकलता है — तब भी, जब एक draw आधे से काफ़ी कम बार सही होता हो।
+  </p>
+
+<pre><code>per-step accuracy 0.8, 6 steps, 4000 trials, true answer 63
+
+  paths (k)   accuracy of the vote
+          1   <span class="hl">0.270</span>
+          3   0.332
+          5   0.458
+         11   0.745
+         21   0.927
+         41   <span class="ok">0.994 ✓</span>
+
+one sample of 11 paths, so you can see the shape of it:
+  answers: [77, 45, 81, 63, 51, 67, 69, 71, 66, 63, 87]
+  vote   : 63  truth: 63</code></pre>
+
+  <p>
+    ध्यान दीजिए कि 21 और 41 के बीच फ़ायदा सपाट हो जाता है। आप distribution के
+    mode की ओर पहुँच रहे हैं, नई जानकारी नहीं जोड़ रहे — इसलिए curve की सीमा यही
+    है कि "mode सही जवाब है भी या नहीं"। उसके आगे ज़्यादा samples सिर्फ़ tokens
+    ख़रीदते हैं।
+  </p>
+
+  <p>
+    और वह failure जो लोग सचमुच ship करते हैं। ऐसे paths पर vote कीजिए जो
+    स्वतंत्र नहीं हैं, तो vote कुछ नहीं करती:
+  </p>
+
+<pre><code>k=21, independent paths        : <span class="ok">0.928 ✓</span>
+k=21, 21 copies of ONE path    : <span class="hl">0.272</span>   ← same as k=1</code></pre>
+
+  <p>
+    वही vote, वही k, फ़ायदा शून्य। Temperature 0 पर sample करना, या अपने
+    "samples" में एक ही cached trace दोबारा इस्तेमाल करना — यह आपको नीचे वाली
+    पंक्ति और 21× का bill देता है। Self-consistency को <em>स्वतंत्र ग़लतियाँ</em>
+    चाहिए — जब voting मदद न करे, सबसे पहले यही जाँचिए।
+  </p>
+
+  <h2>ReAct: scratch buffer में एक असली tool रखिए</h2>
+
+  <p>
+    Chain-of-thought model को लिखने की जगह देता है। ReAct की चाल यह है कि उन
+    लिखावटों में से एक <em>दुनिया ने जो कहा</em> वह हो, model ने जो बनाया वह
+    नहीं। Thought, action, observation, फिर दोहराओ — जब तक वह जवाब न दे दे, या
+    आप उसे रोक न दें।
+  </p>
+
+  <p>
+    Script से एक पूरा transcript: एक असली table पर दो lookups और एक असली
+    calculator को एक call, दोनों सचमुच चले। अगला action चुनने वाली policy हाथ
+    से लिखी state machine है — वही हिस्सा model की जगह खड़ा है। Loop असली है।
+  </p>
+
+<pre><code>Question: How many more vans does Northwind have than Contoso?
+
+  Thought 1: I need Northwind's van count. I should look it up, not recall it.
+  Action  1: lookup('northwind', 'vans')
+  Obs     1: 34
+  Thought 2: Got Northwind. Now Contoso.
+  Action  2: lookup('contoso', 'vans')
+  Obs     2: 21
+  Thought 3: Now subtract: 34 minus 21.
+  Action  3: calc('34 - 21')
+  Obs     3: 13
+  Thought 4: The difference is 13.
+  Answer: 13
+
+finished in 4 loop iterations, answer = <span class="ok">13 ✓</span>
+ground truth = 13</code></pre>
+
+  <p>
+    अब एक लाइन हटा दीजिए — वह जो observation को scratchpad में जोड़ती है। Tool
+    फिर भी call होता है और observation फिर भी छपता है। बस वह उस चीज़ तक कभी
+    नहीं पहुँचता जो अगला क़दम तय करती है:
+  </p>
+
+<pre><code>with observations fed back   : <span class="ok">13 ✓</span>  ← checked
+with observations discarded  : <span class="hl">15</span>    ← guessed
+ground truth                 : 13
+
+  Action  1: lookup('northwind', 'vans')
+  Obs     1: 34                          ← fetched, then thrown away
+  Action  2: lookup('contoso', 'vans')
+  Obs     2: 21                          ← fetched, then thrown away
+  Thought 3: Now subtract: <span class="hl">40 minus 25</span>.   ← plausible. memorised. wrong.
+  Answer: <span class="hl">15</span></code></pre>
+
+  <p>
+    वह fallback एक hardcoded संख्या है जो रटे हुए अनुमान की जगह खड़ी है — मैं यह
+    दावा नहीं कर रहा कि कोई model 40 निकालेगा। Transcript जो दिखाता है वह failure
+    का <em>आकार</em> है: तथ्य उपलब्ध था, call हुई भी, और फिर भी जवाब याददाश्त से
+    आया, क्योंकि नतीजे को अगले क़दम से किसी ने जोड़ा ही नहीं। Yao et al. बताते हैं
+    कि जिन tasks पर उन्होंने परखा, वहाँ अकेले chain-of-thought की तुलना में ReAct
+    में hallucination कम हुई — और plumbing वाली वजह यही है।
+  </p>
+
+  <div class="note">
+    <strong>यह वही विचार है जो <a href="../rag/">RAG</a> का है, बस loop के अंदर
+    ले जाया गया।</strong> RAG एक बार, शुरुआत में लाता है और context भर देता है।
+    ReAct बार-बार लाता है, और जो पहले पढ़ चुका है उससे तय करता है कि अब क्या
+    लाना है। सिद्धांत वही — weights पर भरोसा करने के बजाय तथ्य context में
+    रखो — control flow अलग।
+  </div>
+
+  <h3>Loop पर एक सीमा लगाइए</h3>
+
+  <p>
+    बिना step count वाला ReAct loop एक <code>while True</code> है जिससे credit
+    card जुड़ा है। उसे ऐसे tool की तरफ़ मोड़ दीजिए जो कुछ नहीं लौटाता, और वह अपने
+    आप कभी नहीं रुकेगा — policy के पास पूछना बंद करने की कोई वजह ही नहीं:
+  </p>
+
+<pre><code>max_steps=None: <span class="hl">still looping after 200 iterations, no answer, no end</span>
+                tool calls made: 200, distinct observations: 1
+max_steps=5   : <span class="ok">guard fired at step 5, returned None ✓</span></code></pre>
+
+  <p>
+    दो सौ एक जैसी tool calls, एक ही अलग observation। Guard तीन लाइनों का है।
+    <code>None</code> लौटाइए और caller को तय करने दीजिए कि जवाब न मिलना क्या
+    मतलब रखता है — loop को ख़ुद तय मत करने दीजिए, और बचने के लिए जवाब गढ़ने
+    भी मत दीजिए।
+  </p>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy and plain Python. No torch, no autograd, no model of any kind — the demos are the mechanism, printed. Every function short enough to read in one sitting.
+</p>
+<p>
+  <a href="chain_of_thought_from_scratch.py" download><strong>Download the full script</strong></a> — 535 lines including comments, with eight runnable demos. Then:
+</p>
+<pre><code>python3 chain_of_thought_from_scratch.py</code></pre>
+
+<pre><code>def solve_with_token_budget(problem, budget):
+    """Emit at most `budget` tokens; one op each; answer with what you have.
+
+    Returns (answer, tokens_emitted, steps_needed, scratchpad).
+    The scratchpad IS the emitted tokens -- it is the only memory there is.
+    """
+    steps_needed = len(problem)
+    scratch = []
+    state = None
+    for op in problem[:budget]:
+        state = apply_op(state, op)
+        scratch.append(f"{op[0]} {op[1]} -&gt; {state}")
+    return state, min(budget, steps_needed), steps_needed, scratch
+
+
+
+
+
+def react_loop(policy, question, max_steps=8, feed_observations=True,
+               verbose=True):
+    """Run thought/action/observation until the policy answers or we cut off.
+
+    max_steps=None means no guard. Nothing stops it.
+    """
+    scratch = []          # the ONLY thing the policy gets to condition on
+    steps = 0
+    while max_steps is None or steps &lt; max_steps:
+        steps += 1
+        thought, action = policy(question, scratch)
+        if action[0] == "finish":
+            return action[1], steps, scratch
+        obs = run_action(action)
+
+        # THE line that matters. With feed_observations=False the fact the
+        # tool just fetched never reaches the scratchpad, so the next
+        # thought is conditioned on a tool result the policy never saw.
+        if feed_observations or action[0] == "calc":
+            scratch.append((action, obs))
+        else:
+            scratch.append((action, None))
+    return None, steps, scratch</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a living — reverse-engineering from broken behaviour is your native mode, and every row below is something you can do to this file in under a minute.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>demo_1</code>, ask for the answer immediately: budget <code>1</code> instead of <code>6</code></td><td>Answer <code>7</code> instead of <code>63</code>. Six serial steps needed, one available. The budget ran out.</td></tr>
+    <tr><td>Swap <code>parse_strict</code> for <code>parse_loose</code> in your answer extraction</td><td>Returns <code>9</code>, not <code>58</code> — a number from inside the working. Silent. No exception. Your eval drops and the prompt gets blamed.</td></tr>
+    <tr><td>In <code>demo_5</code>, reuse one seed for all 21 paths</td><td>Vote accuracy falls from <code>0.928</code> to <code>0.272</code> — exactly the k=1 number. Voting over correlated paths adds nothing.</td></tr>
+    <tr><td>Call <code>react_loop(..., feed_observations=False)</code></td><td>The tool is still called and still prints <code>Obs 1: 34</code>, but the loop answers <code>15</code> instead of <code>13</code>. Fetched, then ignored.</td></tr>
+    <tr><td>Call <code>react_loop(..., max_steps=None)</code> with <code>missing_key_policy</code></td><td>200 identical tool calls, one distinct observation, no termination. With <code>max_steps=5</code> the guard fires and returns <code>None</code>.</td></tr>
+    <tr><td>Set <code>STEP_CORRECT_P = 0.35</code> and rerun <code>demo_4</code></td><td>The accuracy column stays near zero at every k. The mode of the samples is no longer the right answer, so more paths just converge on a wrong one, confidently.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers, and not all of them. Wei et al.: the method section and the scale ablation — that's where the emergence claim lives, and it's the claim people get wrong. Skip the per-benchmark tables. Yao et al.: the method section and the hallucination analysis. Both are largely the comments you've already read, plus the experiments that make them credible.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  Good news: these two papers need almost none. No new loss, no new layer, no derivation. Chain-of-thought is a prompt format; ReAct is a <code>while</code> loop. If you can read the code above, you have read the methods.
+</p>
+<p>
+  The one bit that earns its keep is self-consistency, and it's first-year probability: a joint distribution over (answer, reasoning path), and <em>marginalising</em> — summing over the paths because you only care about the answer. "Marginalise" is a scary word for "group by the column you care about and sum the rest away". You've written that query.
+</p>
+<p>
+  What's genuinely hard here isn't maths at all, it's systems: token budgets, latency (k=41 paths is 41× the cost), tool timeouts, loop guards, answer parsing, and deciding when a non-answer beats a guess. That's engineering, and it's the half the papers don't cover.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one angle: chain-of-thought as compute allocation, ReAct as the loop that makes the scratchpad factual. It skipped the experimental evidence entirely, because I can't produce that with NumPy. These four can.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2201.11903">
+      <span class="paper-title">Chain-of-Thought Prompting Elicits Reasoning in Large Language Models</span>
+      <span class="paper-meta">Wei et al., 2022. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the method section, then go straight to the scale ablation. That plot — benefit appearing only past a size threshold, small models doing <em>worse</em> with CoT than without — is the finding, and it's the one thing here my script cannot show you.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2210.03629">
+      <span class="paper-title">ReAct: Synergizing Reasoning and Acting in Language Models</span>
+      <span class="paper-meta">Yao et al., 2022. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      The method section is short and you've already run its state machine. Go for the failure analysis instead: reasoning-only versus acting-only versus interleaved, and where each goes wrong. That comparison is the argument.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2402.12875">
+      <span class="paper-title">Chain of Thought Empowers Transformers to Solve Inherently Serial Problems</span>
+      <span class="paper-meta">Li et al., 2024. The theory. Real maths.</span>
+    </a>
+    <p class="paper-pitch">
+      The proof of the thing my demo 1 only mimes: constant-depth transformers with a chain of thought can compute functions that ones without provably cannot. Circuit complexity, so a real step up — but the intro alone is worth it for the framing.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2023-06-23-agent/">
+      <span class="paper-title">LLM Powered Autonomous Agents</span>
+      <span class="paper-meta">Lilian Weng. The map of everything downstream.</span>
+    </a>
+    <p class="paper-pitch">
+      Where ReAct sits in the wider agent picture: planning, reflection, memory, tool APIs. My page stops at one loop with one calculator; this is the survey of what got built on top of it, with the failure modes named honestly.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Wei → Yao → Weng → Li. The first three are readable in an evening and directly useful; save the complexity theory for when you want to know <em>why</em> it works rather than that it does.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

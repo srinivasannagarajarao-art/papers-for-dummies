@@ -1,0 +1,1218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Direct Preference Optimization — for programmers</title>
+<meta name="description" content="DPO explained as code: the RLHF objective has a closed-form optimum, so the reward model turns out to be a pure function of the policy. Runnable NumPy and CPU PyTorch, seven demos, printed numbers.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Tamil:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Direct Preference Optimization: the reward model was hiding in the policy</h1>
+    <p class="paper-meta">Rafailov, Sharma, Mitchell, Ermon, Manning &amp; Finn, 2023</p>
+    <p class="lede">
+      Two services, and it turns out one was a pure function of the other. So
+      they deleted it and inlined the call.
+    </p>
+    <p>
+      <a href="dpo_from_scratch.py" download>Download dpo_from_scratch.py</a> —
+      everything below runs from it. NumPy for the algebra, a tiny CPU PyTorch
+      loop for the training. Nine seconds.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+
+  <p>
+    I wrote the <a href="../rlhf/">RLHF page</a> and came away thinking the
+    pipeline was irreducible. Three moving parts: a <strong>reward model</strong>
+    fitted to votes with the Bradley-Terry loss, a <strong>policy</strong> that
+    climbs it, and a <strong>KL penalty</strong> holding the policy near the
+    frozen reference it started from. (One sentence each; if any of those three
+    is new, read that page first, and the <a href="../instructgpt/">InstructGPT
+    page</a> for the three-stage recipe they sit inside.) Then this paper showed
+    up and deleted the first one. Not approximated it. Deleted it, and proved it
+    was never a separate thing.
+  </p>
+
+  <h2>The service that was a pure function</h2>
+
+  <p>
+    You have shipped this refactor. Two services, one calls the other:
+  </p>
+
+<pre><code>score   = reward_service.score(prompt, answer)   # a whole trained model
+policy  = climb(score, start=ref, leash=beta)    # RL, sampling, the lot</code></pre>
+
+  <p>
+    And then someone reads the code properly and notices that
+    <code>reward_service</code> has no state of its own. Everything it returns is
+    derivable from what the caller already has. So you delete the service and
+    inline the expression:
+  </p>
+
+<pre><code>def score(prompt, answer):                       # no model. Two log-probs.
+    return beta * (log_prob(policy, answer) - log_prob(ref, answer))</code></pre>
+
+  <p>
+    That is DPO in one line, and the rest of this page is why the line is true.
+    The paper's title says it outright: <em>your language model is secretly a
+    reward model</em>. Not "can be used as one". <em>Is</em> one.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Closed form</strong></td><td>The exact maximiser of the RLHF objective, written down rather than searched for</td><td>The analytic solution you find after profiling the loop</td></tr>
+      <tr><td><strong>The inversion</strong></td><td>Rearranging that form so r is on the left and π is on the right</td><td>Reading the getter and realising it's computed, not stored</td></tr>
+      <tr><td><strong>Z(x)</strong></td><td>The normaliser. Depends on the prompt only, and is the one expensive term</td><td>The denominator you cancel before you ever evaluate it</td></tr>
+      <tr><td><strong>Implicit reward</strong></td><td>β · log(π / π<sub>ref</sub>), read off the trained policy</td><td>The inlined expression, still callable</td></tr>
+      <tr><td><strong>β</strong></td><td>Same leash length as in RLHF, now living inside the loss instead of the reward</td><td>The one knob you still tune by hand</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The paper reports DPO matching or beating PPO-based RLHF on the tasks it
+    tested — sentiment control, summarisation, single-turn dialogue — so the
+    claim is parity plus simplicity, not dominance. The win is operational, and
+    it is the kind an engineer feels immediately: one training loop instead of
+    two, no sampling from the policy while training, no reward model to serve, no
+    PPO hyperparameters (clip range, value head, GAE, rollout batch) to get
+    wrong. What was a distributed system is now <code>loss.backward()</code> on a
+    batch of pairs.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">π*(y|x) = π<sub>ref</sub>(y|x) · exp( r(x,y) / β ) / Z(x)<br>
+  ⇒ r(x,y) = β · log( π*(y|x) / π<sub>ref</sub>(y|x) ) + β · log Z(x)<br>
+  loss<sub>DPO</sub> = −log σ( β·log(π(y<sub>w</sub>)/π<sub>ref</sub>(y<sub>w</sub>)) − β·log(π(y<sub>l</sub>)/π<sub>ref</sub>(y<sub>l</sub>)) )</div>
+
+  <p>
+    Three lines, and only the first is new. Read them as pipeline stages:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>exp(r / β)</code></td><td>(n answers,)</td><td>Tilt the reference towards high reward. Big β = gentle tilt</td></tr>
+      <tr><td><code>· π<sub>ref</sub> / Z(x)</code></td><td>sums to 1</td><td>Renormalise. <strong>This is the exact optimum of E[r] − β·KL</strong> — no RL needed to reach it</td></tr>
+      <tr><td><code>β·log(π*/π<sub>ref</sub>)</code></td><td>scalar per answer</td><td>Take logs, move r to the left. The reward, recovered from the policy</td></tr>
+      <tr><td><code>+ β·log Z(x)</code></td><td>scalar per <em>prompt</em></td><td>The leftover. Depends on x, not y — so it cancels in any comparison</td></tr>
+      <tr><td><code>−log σ(Δ)</code></td><td>scalar</td><td>Bradley-Terry, unchanged from the RLHF page. Only what's inside σ changed</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The last line is a binary classifier on pairs of responses. That's it. That
+    is the whole training algorithm.
+  </p>
+
+  <h2>Step 1: the objective already had an answer</h2>
+  <p>
+    RLHF maximises E<sub>y∼π</sub>[r(x,y)] − β·KL(π ‖ π<sub>ref</sub>). PPO
+    <em>searches</em> for the maximiser. But for a fixed prompt that objective is
+    a concave problem over a probability distribution, and its maximiser can be
+    written down: the reference, tilted by the exponential of the scaled reward,
+    renormalised.
+  </p>
+  <p>
+    Don't take that on faith. The script climbs the same objective by brute force
+    — 4000 steps of Adam on the logits, no formula anywhere — and compares where
+    it lands with where the formula says it should. The toy world is the RLHF
+    page's, unchanged: 4 prompts, 8 answers each, a hidden true reward, β = 0.5.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>prompt 0, in probabilities:
+  formula : [0.001 0.129 0.16  0.709 0.    0.    0.    0.   ]
+  solver  : [0.001 0.129 0.16  0.709 0.    0.    0.    0.   ]
+
+  max |formula - solver| over all 32 entries: <span class="ok">0.000018 ✓</span>
+  objective at the formula's policy: 2.319595
+  objective at the solver's policy:  2.319593</code></pre>
+
+  <p>
+    Four thousand gradient steps land where one line of algebra already was. So
+    the RL in RLHF is a numerical search for a point you could have written down
+    — <em>if</em> you had r. You don't have r. That's the next step.
+  </p>
+
+  <h2>Step 2: invert it, and the reward falls out of the policy</h2>
+  <p>
+    Take logs of that closed form and solve for r, and r comes out as a function
+    of the policy. The awkward leftover is β·log Z(x): Z(x) sums over every
+    possible answer to the prompt, which for a language model is every string
+    that exists. Nobody can compute it. Nobody has to — it depends on the
+    <strong>prompt</strong>, not the answer, and a preference model only ever
+    compares two answers to the <em>same</em> prompt. Subtract, and it's gone.
+  </p>
+
+<pre><code>prompt 0:
+  hidden true reward : [ 0.112  2.705  2.812  3.556 -0.035 -1.623  0.899  0.67 ]
+  beta * log-ratio   : [-2.82  -0.227 -0.12   0.624 -2.967 -4.555 -2.033 -2.262]
+  difference         : [2.932 2.932 2.932 2.932 2.932 2.932 2.932 2.932]
+
+the difference is CONSTANT within a prompt. That constant is
+beta*log Z(x), one per prompt, and here it is:
+  prompt 0:  beta*log Z =  2.9317   spread within prompt = 4.44e-16
+  prompt 1:  beta*log Z =  2.4033   spread within prompt = 4.44e-16
+  prompt 2:  beta*log Z =  2.8227   spread within prompt = 8.88e-16
+  prompt 3:  beta*log Z =  1.1207   spread within prompt = 4.44e-16
+
+rank correlation within each prompt, averaged: <span class="ok">1.000 ✓</span>
+rank correlation across all 32 answers at once:  <span class="hl">0.849</span>
+
+pairwise, the constant cancels. Prompt 0, answers 3 and 7:
+  true r[3] - true r[7]      =  2.8866
+  recovered[3] - recovered[7] =  2.8866</code></pre>
+
+  <p>
+    Within a prompt the recovered reward ranks answers exactly as the hidden true
+    reward does — correlation 1.000, residual spread 4·10<sup>−16</sup>, which is
+    float noise. Across all 32 at once it drops to 0.849, and that gap is the
+    point rather than a flaw: each prompt carries its own β·log Z offset, and
+    comparing answers across prompts is the one thing preference data never does.
+  </p>
+
+  <div class="note">
+    <strong>The reward model was a pure function of the policy all along.</strong>
+    Anything you can express as a per-prompt-normalised score, you can express as
+    a log-ratio between two policies. Fitting a separate network to do it was
+    redundant work.
+  </div>
+
+  <h2>Step 3: substitute, and the second service disappears</h2>
+  <p>
+    Now put the inverted reward into the Bradley-Terry loss from the RLHF page.
+    Both β·log Z terms cancel, r vanishes, and what's left mentions only the
+    policy and the reference. Ten lines of PyTorch, no sampling, no rollouts, no
+    second model to train and serve:
+  </p>
+
+<pre><code>margin = beta * (logp[p, w] - ref[p, w]) - beta * (logp[p, l] - ref[p, l])
+loss   = -F.logsigmoid(margin).mean()</code></pre>
+
+  <p>
+    The script runs it on 2000 noisy votes and, on the same votes and the same β,
+    runs the previous page's full RLHF pipeline — fit a reward model, REINFORCE
+    against it with a KL penalty — so the two are comparable rather than merely
+    described. <code>true reward</code> is the scoreboard neither ever sees.
+  </p>
+
+<pre><code>  step    1   loss 0.6931
+  step  100   loss 0.4590
+  step  200   loss 0.4544
+  step  300   loss 0.4541
+  step  400   loss 0.4541
+  step  500   loss 0.4541
+  step  600   loss 0.4541
+
+  policy                      true reward    KL to ref   parts
+  reference (SFT)                  1.117        0.000   1
+  RLHF: reward model + RL          2.535        0.709   3
+  DPO: one classifier loss         <span class="ok">2.898</span>        1.183   2
+  best possible                    3.196          -    -</code></pre>
+
+  <p>
+    The loss floors at 0.4541 rather than 0 because the votes are noisy — a close
+    call is nearly a coin flip and no model should fit that. Don't read much into
+    DPO's 2.898 beating RLHF's 2.535: four prompts, eight answers, and DPO also
+    drifted further (KL 1.183 against 0.709). What the table earns is the last
+    column. Comparable quality, one fewer model, no sampling loop.
+  </p>
+
+  <div class="note">
+    <strong>DPO still needs the reference model in memory.</strong> Look at the
+    loss: <code>log π<sub>ref</sub></code> appears twice. It's frozen and never
+    gets gradients, so no optimiser state, but it is a second full set of weights
+    resident during training. "No reward model" is not "one model".
+  </div>
+
+  <h2>The reward model was trained. It just isn't an object</h2>
+  <p>
+    The part that made it click for me: take the DPO-trained policy, compute
+    β·log(π/π<sub>ref</sub>) — the same expression, on a policy never told what a
+    reward is — and check it against the hidden truth.
+  </p>
+
+<pre><code>  ans      true    implicit
+    0     0.112      -2.601
+    1     2.705      -0.263
+    2     2.812       0.011
+    3     3.556       0.595
+    4    -0.035      -2.802
+    5    -1.623      -4.015
+    6     0.899      -1.508
+    7     0.670      -1.023
+
+rank correlation with the hidden true reward, all 32 answers: <span class="ok">0.763</span></code></pre>
+
+  <p>
+    Nobody built a scorer, nobody scored an answer, and there is a scorer in
+    there anyway, ordering answers roughly as people do. That's how you do
+    best-of-n at eval time after a DPO run with no reward model deployed.
+    <strong>The interview question is "where did the reward model go?" and the
+    answer is "into the log-ratio".</strong>
+  </p>
+
+  <h2>β is the same leash, in a new place</h2>
+  <p>
+    On the RLHF page β was a coefficient on a KL term added to the reward. Here
+    it multiplies the margin inside the loss. Same job — how far the policy is
+    allowed to move from the reference — and the same trade. The script sweeps
+    it twice: once on 2000 votes, once on 150.
+  </p>
+
+<pre><code>  beta    KL to ref   true (2000)   KL to ref   true (150 votes)
+  0.05       1.946         3.191       1.901            <span class="hl">3.115</span>
+  0.10       1.954         3.193       2.039            <span class="hl">3.030</span>
+  0.50       1.183         2.898       2.097            <span class="ok">2.845</span>
+  1.00       0.538         2.405       1.624             2.710
+  5.00       0.035         1.460       0.151             1.659
+
+  reference itself:  KL     0.000   true       1.117
+  best possible:                     true       3.196</code></pre>
+
+  <p>
+    β = 5 barely leaves the reference either way — short leash, safe, useless.
+    Small β means the policy trusts the votes completely and collapses onto their
+    argmax; with 2000 votes that argmax is mostly right, so it looks free. It
+    isn't free, it's a bet on your data. Same trade the KL coefficient made:
+    <em>how much do you trust what you're optimising against?</em>
+  </p>
+
+  <h2>The limitation people actually argue about</h2>
+  <p>
+    The derivation assumes the pairs came from the reference policy. That
+    assumption does real work and is easy to violate — your preference dataset
+    was probably collected from some other model, months ago, by someone else.
+    The script breaks it: same 2000 votes, but sampled from a long-winded policy
+    the reference would essentially never produce.
+  </p>
+
+<pre><code>average reference probability of an answer in those pairs: <span class="hl">0.0249</span>
+same for the on-policy pairs:                              0.1805
+
+  preference pairs drawn from    true reward    KL to ref
+  the reference (as derived)          <span class="ok">2.898</span>        1.183
+  a far-off policy                    <span class="hl">1.927</span>        1.241
+  no training at all (reference)      1.117        0.000</code></pre>
+
+  <p>
+    Better than not training; considerably worse than on-policy pairs, at the
+    same KL cost. DPO only gets gradient on the pairs you show it: shown long
+    answers only, it raises the best of a bad bunch while the good short answers
+    lose mass by normalisation alone. Nothing in the loss warns you. PPO samples
+    from the current policy every step, so it is on-policy by construction and
+    doesn't have this failure — it has different ones, as the RLHF page shows.
+  </p>
+
+  <div class="note">
+    <strong>A trade, not a replacement.</strong> DPO is simpler, cheaper and more
+    stable to train. On-policy methods still win in some settings, and
+    iterated/online DPO variants exist precisely to close this gap. If someone
+    says the question is settled, they're picking a side of a live argument.
+  </div>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் <a href="../rlhf/">RLHF பக்கத்தை</a> எழுதி முடித்தபோது, அந்த pipeline-ஐ
+    மேலும் சுருக்க முடியாது என்று நினைத்தேன். மூன்று பாகங்கள்: votes-ஐ வைத்து
+    Bradley-Terry loss-உடன் பொருத்தப்பட்ட ஒரு <strong>reward model</strong>,
+    அதை ஏறிச் செல்லும் ஒரு <strong>policy</strong>, மற்றும் அந்த policy-ஐ அது
+    தொடங்கிய frozen reference-க்கு அருகில் பிடித்து வைக்கும் ஒரு
+    <strong>KL penalty</strong>. (ஒவ்வொன்றுக்கும் ஒரு வரி; இந்த மூன்றில் ஏதேனும்
+    ஒன்று புதிதாக இருந்தால், முதலில் அந்தப் பக்கத்தையும், அவை அமர்ந்திருக்கும்
+    மூன்று-நிலை recipe-க்காக <a href="../instructgpt/">InstructGPT பக்கத்தையும்</a>
+    படியுங்கள்.) பிறகு இந்த paper வந்து முதல் பாகத்தை அழித்தது. தோராயமாக்கவில்லை.
+    அழித்தது — அது ஒருபோதும் தனி விஷயமாக இருக்கவே இல்லை என்று நிரூபித்தது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (reward model, policy,
+    reference, KL, Bradley-Terry, implicit reward, log-ratio, closed form,
+    off-distribution, preference pair…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால்
+    code-லும் மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>Pure function-ஆக இருந்த அந்த service</h2>
+
+  <p>
+    இந்த refactor-ஐ நீங்கள் ship செய்திருக்கிறீர்கள். இரண்டு services, ஒன்று
+    மற்றொன்றை அழைக்கிறது:
+  </p>
+
+<pre><code>score   = reward_service.score(prompt, answer)   # முழுமையாக train ஆன model
+policy  = climb(score, start=ref, leash=beta)    # RL, sampling, எல்லாம்</code></pre>
+
+  <p>
+    பிறகு யாரோ ஒருவர் code-ஐ ஒழுங்காகப் படித்து, <code>reward_service</code>-க்கு
+    தனக்கென எந்த state-ம் இல்லை என்பதைக் கவனிக்கிறார். அது திருப்பித் தரும்
+    எல்லாமே, அழைப்பவரிடம் ஏற்கனவே இருப்பதிலிருந்தே பெறக்கூடியது. எனவே அந்த
+    service-ஐ அழித்துவிட்டு, அந்த expression-ஐ inline செய்கிறீர்கள்:
+  </p>
+
+<pre><code>def score(prompt, answer):                       # model இல்லை. இரண்டு log-probs.
+    return beta * (log_prob(policy, answer) - log_prob(ref, answer))</code></pre>
+
+  <p>
+    ஒரே வரியில் DPO அவ்வளவுதான்; இந்தப் பக்கத்தின் மீதி முழுவதும், அந்த வரி ஏன்
+    உண்மை என்பதைப் பற்றியது. Paper-இன் தலைப்பே அதை நேரடியாகச் சொல்கிறது:
+    <em>உங்கள் language model ரகசியமாக ஒரு reward model</em>. "ஒன்றாகப்
+    பயன்படுத்தலாம்" அல்ல. அது ஒன்றாகவே <em>இருக்கிறது</em>.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Closed form</strong></td><td>RLHF objective-இன் சரியான maximiser — தேடிக் கண்டுபிடிக்காமல், எழுதி வைக்கப்பட்டது</td><td>Loop-ஐ profile செய்த பிறகு கிடைக்கும் analytic தீர்வு</td></tr>
+      <tr><td><strong>The inversion</strong></td><td>அந்த வடிவத்தை மாற்றி எழுதி, r-ஐ இடதுபுறமும் π-ஐ வலதுபுறமும் கொண்டுவருவது</td><td>Getter-ஐப் படித்து, அது சேமிக்கப்படவில்லை, கணிக்கப்படுகிறது என்று உணர்வது</td></tr>
+      <tr><td><strong>Z(x)</strong></td><td>Normaliser. Prompt-ஐ மட்டுமே சார்ந்தது, மற்றும் இதுவே விலையுயர்ந்த ஒரே பதம்</td><td>மதிப்பிடுவதற்கு முன்பே நீங்கள் cancel செய்யும் denominator</td></tr>
+      <tr><td><strong>Implicit reward</strong></td><td>β · log(π / π<sub>ref</sub>), train ஆன policy-லிருந்து படித்து எடுக்கப்பட்டது</td><td>Inline செய்யப்பட்ட expression — இன்னும் அழைக்கக்கூடியது</td></tr>
+      <tr><td><strong>β</strong></td><td>RLHF-ல் இருந்த அதே leash நீளம்; இப்போது reward-க்குள் அல்ல, loss-க்குள் வாழ்கிறது</td><td>கையால் tune செய்ய மீதமிருக்கும் ஒரே knob</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    தான் சோதித்த tasks-ல் — sentiment control, summarisation, single-turn
+    dialogue — DPO, PPO அடிப்படையிலான RLHF-க்கு இணையாகவோ அதைத் தாண்டியோ
+    செயல்பட்டதாக paper சொல்கிறது. எனவே கூற்று என்பது ஆதிக்கம் அல்ல, சமநிலை
+    கூடிய எளிமை. வெற்றி operational-ஆனது, அதை ஒரு engineer உடனே உணர்வார்:
+    இரண்டுக்குப் பதிலாக ஒரே training loop, training-இன்போது policy-லிருந்து
+    sampling இல்லை, serve செய்ய reward model இல்லை, தவறாகப் போகக்கூடிய PPO
+    hyperparameters (clip range, value head, GAE, rollout batch) இல்லை. ஒரு
+    distributed system-ஆக இருந்தது இப்போது ஒரு batch preference pairs மீது
+    <code>loss.backward()</code> மட்டுமே.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">π*(y|x) = π<sub>ref</sub>(y|x) · exp( r(x,y) / β ) / Z(x)<br>
+  ⇒ r(x,y) = β · log( π*(y|x) / π<sub>ref</sub>(y|x) ) + β · log Z(x)<br>
+  loss<sub>DPO</sub> = −log σ( β·log(π(y<sub>w</sub>)/π<sub>ref</sub>(y<sub>w</sub>)) − β·log(π(y<sub>l</sub>)/π<sub>ref</sub>(y<sub>l</sub>)) )</div>
+
+  <p>
+    மூன்று வரிகள், அதில் முதல் வரி மட்டுமே புதியது. இவற்றை pipeline நிலைகளாகப்
+    படியுங்கள்:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>exp(r / β)</code></td><td>(n answers,)</td><td>Reference-ஐ அதிக reward பக்கம் சாய்க்கிறது. பெரிய β = மென்மையான சாய்வு</td></tr>
+      <tr><td><code>· π<sub>ref</sub> / Z(x)</code></td><td>கூட்டினால் 1</td><td>மீண்டும் normalise. <strong>இதுவே E[r] − β·KL-இன் சரியான optimum</strong> — அதை அடைய RL தேவையில்லை</td></tr>
+      <tr><td><code>β·log(π*/π<sub>ref</sub>)</code></td><td>ஒரு answer-க்கு scalar</td><td>Log எடுத்து, r-ஐ இடதுபுறம் நகர்த்து. Policy-லிருந்து மீட்கப்பட்ட reward</td></tr>
+      <tr><td><code>+ β·log Z(x)</code></td><td>ஒரு <em>prompt</em>-க்கு scalar</td><td>மீதி. x-ஐச் சார்ந்தது, y-ஐ அல்ல — எனவே எந்த ஒப்பீட்டிலும் cancel ஆகிறது</td></tr>
+      <tr><td><code>−log σ(Δ)</code></td><td>scalar</td><td>Bradley-Terry, RLHF பக்கத்திலிருந்து மாறவில்லை. σ-க்குள் இருப்பது மட்டுமே மாறியது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    கடைசி வரி என்பது responses-இன் pairs மீதான ஒரு binary classifier. அவ்வளவுதான்.
+    அதுதான் முழு training algorithm.
+  </p>
+
+  <h2>படி 1: objective-க்கு ஏற்கனவே ஒரு விடை இருந்தது</h2>
+  <p>
+    RLHF, E<sub>y∼π</sub>[r(x,y)] − β·KL(π ‖ π<sub>ref</sub>)-ஐ அதிகப்படுத்துகிறது.
+    PPO அந்த maximiser-ஐ <em>தேடுகிறது</em>. ஆனால் ஒரு நிலையான prompt-க்கு அந்த
+    objective ஒரு probability distribution மீதான concave பிரச்சனை, அதன்
+    maximiser-ஐ எழுதிவிட முடியும்: reference-ஐ எடுத்து, scaled reward-இன்
+    exponential-ஆல் சாய்த்து, மீண்டும் normalise செய்யுங்கள்.
+  </p>
+  <p>
+    இதை நம்பிக்கையின் மேல் ஏற்காதீர்கள். Script அதே objective-ஐ brute force-ஆல்
+    ஏறுகிறது — logits மீது 4000 steps Adam, எங்கும் சூத்திரம் இல்லை — பிறகு அது
+    வந்து நிற்கும் இடத்தை, சூத்திரம் சொல்லும் இடத்துடன் ஒப்பிடுகிறது. Toy world
+    RLHF பக்கத்தினுடையது, மாற்றமில்லாமல்: 4 prompts, தலா 8 answers, ஒரு மறைவான
+    true reward, β = 0.5.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>prompt 0, in probabilities:
+  formula : [0.001 0.129 0.16  0.709 0.    0.    0.    0.   ]
+  solver  : [0.001 0.129 0.16  0.709 0.    0.    0.    0.   ]
+
+  max |formula - solver| over all 32 entries: <span class="ok">0.000018 ✓</span>
+  objective at the formula's policy: 2.319595
+  objective at the solver's policy:  2.319593</code></pre>
+
+  <p>
+    நான்காயிரம் gradient steps, ஒரே வரி algebra ஏற்கனவே இருந்த இடத்திற்கே வந்து
+    சேர்கின்றன. எனவே RLHF-ல் இருக்கும் RL என்பது, நீங்கள் எழுதியே இருக்கக்கூடிய
+    ஒரு புள்ளிக்கான எண்ணியல் தேடல் — <em>உங்களிடம்</em> r இருந்தால். உங்களிடம் r
+    இல்லை. அதுதான் அடுத்த படி.
+  </p>
+
+  <p class="thanglish">
+    RLHF-oda objective-ku already oru closed form answer irukku: reference-a
+    exp(r/beta)-la saichi normalise pannunga. 4000 gradient steps poi nikkira
+    idam, andha oru vari algebra sonna idam dhaan.
+  </p>
+
+  <h2>படி 2: அதைத் தலைகீழாக்குங்கள் — reward, policy-லிருந்து விழுகிறது</h2>
+  <p>
+    அந்த closed form-இன் log எடுத்து r-க்குத் தீர்வு காணுங்கள்; r, policy-இன்
+    ஒரு function-ஆக வெளிவருகிறது. சங்கடமான மீதி β·log Z(x): Z(x), அந்த
+    prompt-க்கான சாத்தியமான ஒவ்வொரு answer-ஐயும் கூட்டுகிறது — ஒரு language
+    model-ஐப் பொறுத்தவரை அது இருக்கும் ஒவ்வொரு string-ம். யாராலும் அதைக் கணிக்க
+    முடியாது. கணிக்கவும் தேவையில்லை — அது <strong>prompt</strong>-ஐச் சார்ந்தது,
+    answer-ஐ அல்ல; ஒரு preference model எப்போதுமே <em>ஒரே</em> prompt-க்கான
+    இரண்டு answers-ஐத்தான் ஒப்பிடுகிறது. கழியுங்கள், அது போய்விட்டது.
+  </p>
+
+<pre><code>prompt 0:
+  hidden true reward : [ 0.112  2.705  2.812  3.556 -0.035 -1.623  0.899  0.67 ]
+  beta * log-ratio   : [-2.82  -0.227 -0.12   0.624 -2.967 -4.555 -2.033 -2.262]
+  difference         : [2.932 2.932 2.932 2.932 2.932 2.932 2.932 2.932]
+
+the difference is CONSTANT within a prompt. That constant is
+beta*log Z(x), one per prompt, and here it is:
+  prompt 0:  beta*log Z =  2.9317   spread within prompt = 4.44e-16
+  prompt 1:  beta*log Z =  2.4033   spread within prompt = 4.44e-16
+  prompt 2:  beta*log Z =  2.8227   spread within prompt = 8.88e-16
+  prompt 3:  beta*log Z =  1.1207   spread within prompt = 4.44e-16
+
+rank correlation within each prompt, averaged: <span class="ok">1.000 ✓</span>
+rank correlation across all 32 answers at once:  <span class="hl">0.849</span>
+
+pairwise, the constant cancels. Prompt 0, answers 3 and 7:
+  true r[3] - true r[7]      =  2.8866
+  recovered[3] - recovered[7] =  2.8866</code></pre>
+
+  <p>
+    ஒரு prompt-க்குள், மீட்கப்பட்ட reward, மறைவான true reward செய்வது போலவே
+    answers-ஐ சரியாக வரிசைப்படுத்துகிறது — correlation 1.000, மீதி பரவல்
+    4·10<sup>−16</sup>, அதாவது float noise. 32-ஐயும் ஒரே நேரத்தில் எடுத்தால் அது
+    0.849-க்கு இறங்குகிறது; அந்த இடைவெளியே கருத்து, குறை அல்ல: ஒவ்வொரு prompt-ம்
+    தனக்கான β·log Z offset-ஐச் சுமக்கிறது, மேலும் prompts-ஐக் கடந்து answers-ஐ
+    ஒப்பிடுவது என்பது preference data ஒருபோதும் செய்யாத ஒரே விஷயம்.
+  </p>
+
+  <div class="note">
+    <strong>Reward model, ஆரம்பத்திலிருந்தே policy-இன் ஒரு pure function-ஆகத்தான்
+    இருந்தது.</strong> Prompt-வாரியாக normalise செய்யப்பட்ட score-ஆக எதை
+    எழுத முடியுமோ, அதை இரண்டு policies-க்கு இடையிலான log-ratio-ஆகவும் எழுத
+    முடியும். அதைச் செய்ய ஒரு தனி network-ஐப் பொருத்தியது வீண் வேலை.
+  </div>
+
+  <h2>படி 3: பதிலிடுங்கள் — இரண்டாவது service மறைந்துவிடுகிறது</h2>
+  <p>
+    இப்போது தலைகீழாக்கப்பட்ட reward-ஐ RLHF பக்கத்தின் Bradley-Terry loss-க்குள்
+    வையுங்கள். இரண்டு β·log Z பதங்களும் cancel ஆகின்றன, r மறைகிறது, மீதம்
+    இருப்பது policy-ஐயும் reference-ஐயும் மட்டுமே குறிப்பிடுகிறது. பத்து வரி
+    PyTorch; sampling இல்லை, rollouts இல்லை, train செய்து serve செய்ய இரண்டாவது
+    model இல்லை:
+  </p>
+
+<pre><code>margin = beta * (logp[p, w] - ref[p, w]) - beta * (logp[p, l] - ref[p, l])
+loss   = -F.logsigmoid(margin).mean()</code></pre>
+
+  <p>
+    Script இதை 2000 noisy votes மீது ஓட்டுகிறது; அதே votes, அதே β-வுடன், முந்தைய
+    பக்கத்தின் முழு RLHF pipeline-ஐயும் ஓட்டுகிறது — ஒரு reward model பொருத்தி,
+    KL penalty-உடன் அதற்கு எதிராக REINFORCE — எனவே இரண்டும் வெறுமனே
+    விவரிக்கப்படாமல் ஒப்பிடத்தக்கவையாக இருக்கின்றன. <code>true reward</code>
+    என்பது இரண்டுமே ஒருபோதும் பார்க்காத scoreboard.
+  </p>
+
+<pre><code>  step    1   loss 0.6931
+  step  100   loss 0.4590
+  step  200   loss 0.4544
+  step  300   loss 0.4541
+  step  400   loss 0.4541
+  step  500   loss 0.4541
+  step  600   loss 0.4541
+
+  policy                      true reward    KL to ref   parts
+  reference (SFT)                  1.117        0.000   1
+  RLHF: reward model + RL          2.535        0.709   3
+  DPO: one classifier loss         <span class="ok">2.898</span>        1.183   2
+  best possible                    3.196          -    -</code></pre>
+
+  <p>
+    Loss 0-க்குப் பதிலாக 0.4541-ல் நிற்கிறது, ஏனெனில் votes noisy — நெருக்கமான
+    முடிவு கிட்டத்தட்ட நாணய சுழற்சி, அதை எந்த model-ம் பொருத்தக் கூடாது. DPO-வின்
+    2.898, RLHF-இன் 2.535-ஐ வென்றதற்கு அதிக அர்த்தம் கற்பிக்காதீர்கள்: நான்கு
+    prompts, எட்டு answers, மேலும் DPO மேலும் தூரம் நகர்ந்திருக்கிறது (KL 1.183
+    எதிராக 0.709). அந்த table சம்பாதிப்பது கடைசி column-ஐ. ஒப்பிடத்தக்க தரம்,
+    ஒரு model குறைவு, sampling loop இல்லை.
+  </p>
+
+  <div class="note">
+    <strong>DPO-க்கு இன்னும் reference model நினைவகத்தில் தேவை.</strong> Loss-ஐப்
+    பாருங்கள்: <code>log π<sub>ref</sub></code> இரண்டு முறை வருகிறது. அது frozen,
+    gradients ஒருபோதும் பெறாது, எனவே optimiser state இல்லை — ஆனால் training-இன்
+    போது அது முழு weights-இன் இரண்டாவது தொகுப்பாக நினைவகத்தில் இருக்கிறது.
+    "reward model இல்லை" என்பது "ஒரே model" அல்ல.
+  </div>
+
+  <h2>Reward model train ஆனது. அது ஒரு object-ஆக இல்லை, அவ்வளவுதான்</h2>
+  <p>
+    எனக்கு விஷயத்தைப் பொறி தட்ட வைத்த பகுதி: DPO-வால் train செய்யப்பட்ட
+    policy-ஐ எடுத்து, β·log(π/π<sub>ref</sub>)-ஐக் கணியுங்கள் — reward என்றால்
+    என்னவென்று ஒருபோதும் சொல்லப்படாத ஒரு policy மீது, அதே expression — பிறகு
+    அதை மறைவான உண்மையுடன் சரிபாருங்கள்.
+  </p>
+
+<pre><code>  ans      true    implicit
+    0     0.112      -2.601
+    1     2.705      -0.263
+    2     2.812       0.011
+    3     3.556       0.595
+    4    -0.035      -2.802
+    5    -1.623      -4.015
+    6     0.899      -1.508
+    7     0.670      -1.023
+
+rank correlation with the hidden true reward, all 32 answers: <span class="ok">0.763</span></code></pre>
+
+  <p>
+    யாரும் ஒரு scorer கட்டவில்லை, யாரும் ஒரு answer-க்கு score கொடுக்கவில்லை —
+    இருந்தும் உள்ளே ஒரு scorer இருக்கிறது, மனிதர்கள் செய்வதைப் போலவே
+    கிட்டத்தட்ட answers-ஐ வரிசைப்படுத்துகிறது. Reward model எதுவும் deploy
+    செய்யாமல், ஒரு DPO run-க்குப் பிறகு eval நேரத்தில் best-of-n செய்வது இப்படித்தான்.
+    <strong>Interview கேள்வி "reward model எங்கே போனது?"; பதில் "log-ratio-க்குள்
+    போனது".</strong>
+  </p>
+
+  <p class="thanglish">
+    Yaarum reward model build pannala, aana DPO policy-oda beta*log-ratio
+    edukkumbodhu 0.763 rank correlation varudhu. Reward model log-ratio-kkulla
+    okkandhu irundhuchu — adhu oru object-a illa, adhaan vithyasam.
+  </p>
+
+  <h2>β அதே leash, புது இடத்தில்</h2>
+  <p>
+    RLHF பக்கத்தில் β என்பது reward-உடன் சேர்க்கப்பட்ட ஒரு KL பதத்தின்
+    coefficient. இங்கே அது loss-க்குள் margin-ஐப் பெருக்குகிறது. அதே வேலை —
+    reference-லிருந்து policy எவ்வளவு தூரம் நகரலாம் — மற்றும் அதே trade. Script
+    இதை இரண்டு முறை sweep செய்கிறது: ஒருமுறை 2000 votes-ல், ஒருமுறை 150-ல்.
+  </p>
+
+<pre><code>  beta    KL to ref   true (2000)   KL to ref   true (150 votes)
+  0.05       1.946         3.191       1.901            <span class="hl">3.115</span>
+  0.10       1.954         3.193       2.039            <span class="hl">3.030</span>
+  0.50       1.183         2.898       2.097            <span class="ok">2.845</span>
+  1.00       0.538         2.405       1.624             2.710
+  5.00       0.035         1.460       0.151             1.659
+
+  reference itself:  KL     0.000   true       1.117
+  best possible:                     true       3.196</code></pre>
+
+  <p>
+    β = 5 என்பது இரண்டு பக்கமும் reference-ஐ விட்டு அரிதாகவே நகர்கிறது — குறுகிய
+    leash, பாதுகாப்பானது, பயனற்றது. சிறிய β என்றால் policy votes-ஐ முழுமையாக
+    நம்பி அவற்றின் argmax மீது சரிந்துவிடுகிறது; 2000 votes-உடன் அந்த argmax
+    பெரும்பாலும் சரியாக இருப்பதால் அது இலவசம் போலத் தெரிகிறது. அது இலவசம் இல்லை,
+    அது உங்கள் data மீது வைக்கும் பந்தயம். KL coefficient செய்த அதே trade:
+    <em>நீங்கள் எதற்கு எதிராக optimise செய்கிறீர்களோ, அதை எவ்வளவு
+    நம்புகிறீர்கள்?</em>
+  </p>
+
+  <h2>மக்கள் உண்மையிலேயே வாதிடும் வரம்பு</h2>
+  <p>
+    இந்த derivation, pairs reference policy-லிருந்து வந்தவை என்று அனுமானிக்கிறது.
+    அந்த அனுமானம் உண்மையான வேலை செய்கிறது, மேலும் அதை மீறுவது எளிது — உங்கள்
+    preference dataset பெரும்பாலும் வேறொரு model-லிருந்து, மாதங்களுக்கு முன்பு,
+    வேறு யாராலோ சேகரிக்கப்பட்டிருக்கும். Script அதை உடைக்கிறது: அதே 2000 votes,
+    ஆனால் reference கிட்டத்தட்ட ஒருபோதும் உருவாக்காத ஒரு நீளமாகப் பேசும்
+    policy-லிருந்து sample செய்யப்பட்டவை.
+  </p>
+
+<pre><code>average reference probability of an answer in those pairs: <span class="hl">0.0249</span>
+same for the on-policy pairs:                              0.1805
+
+  preference pairs drawn from    true reward    KL to ref
+  the reference (as derived)          <span class="ok">2.898</span>        1.183
+  a far-off policy                    <span class="hl">1.927</span>        1.241
+  no training at all (reference)      1.117        0.000</code></pre>
+
+  <p>
+    Train செய்யாததை விட மேல்; ஆனால் அதே KL செலவில், on-policy pairs-ஐ விட
+    கணிசமாக மோசம். நீங்கள் காட்டும் pairs மீது மட்டுமே DPO-க்கு gradient
+    கிடைக்கிறது: நீளமான answers மட்டுமே காட்டப்பட்டால், அது ஒரு மோசமான
+    கூட்டத்தில் சிறந்ததை உயர்த்துகிறது, அதே நேரம் நல்ல குறுகிய answers
+    normalisation-ஆலேயே எடையை இழக்கின்றன. Loss-ல் எதுவும் உங்களை
+    எச்சரிக்கவில்லை. PPO ஒவ்வொரு step-லும் தற்போதைய policy-லிருந்து sample
+    செய்கிறது, எனவே அது வடிவமைப்பாலேயே on-policy; இந்தத் தோல்வி அதற்கு இல்லை —
+    RLHF பக்கம் காட்டுவது போல, அதற்கு வேறு தோல்விகள் இருக்கின்றன.
+  </p>
+
+  <div class="note">
+    <strong>ஒரு trade, ஒரு replacement அல்ல.</strong> DPO எளிமையானது, மலிவானது,
+    train செய்ய நிலையானது. சில சூழல்களில் on-policy முறைகள் இன்னும் வெல்கின்றன,
+    மேலும் இந்த இடைவெளியை மூடுவதற்காகவே iterated/online DPO வகைகள் இருக்கின்றன.
+    இந்தக் கேள்வி முடிவுக்கு வந்துவிட்டது என்று யாராவது சொன்னால், அவர்கள் ஒரு
+    உயிரோட்டமான வாதத்தில் ஒரு பக்கத்தைத் தேர்ந்தெடுக்கிறார்கள், அவ்வளவுதான்.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने <a href="../rlhf/">RLHF पेज</a> लिखा और यह सोचकर लौटा कि वह pipeline
+    अब और नहीं घटाया जा सकता। तीन हिस्से: votes पर Bradley-Terry loss से fit
+    किया गया एक <strong>reward model</strong>, उस पर चढ़ने वाली एक
+    <strong>policy</strong>, और एक <strong>KL penalty</strong> जो policy को उस
+    frozen reference के पास बाँधे रखती है जहाँ से वह चली थी। (हर एक पर एक
+    वाक्य; इन तीनों में से कोई नया लगे तो पहले वह पेज पढ़ें, और जिस तीन-चरणीय
+    recipe के भीतर ये बैठते हैं उसके लिए <a href="../instructgpt/">InstructGPT
+    पेज</a>।) फिर यह paper आया और पहले हिस्से को मिटा दिया। उसका approximation
+    नहीं किया। मिटा दिया, और साबित किया कि वह कभी अलग चीज़ थी ही नहीं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (reward model, policy,
+    reference, KL, Bradley-Terry, implicit reward, log-ratio, closed form,
+    off-distribution, preference pair…) मैंने वैसे ही रखे हैं। क्योंकि code में
+    और बाक़ी papers में आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली
+    English में।</strong>
+  </div>
+
+  <h2>वह service जो असल में एक pure function थी</h2>
+
+  <p>
+    यह refactor आप कर चुके हैं। दो services, एक दूसरे को call करती है:
+  </p>
+
+<pre><code>score   = reward_service.score(prompt, answer)   # पूरा trained model
+policy  = climb(score, start=ref, leash=beta)    # RL, sampling, सब कुछ</code></pre>
+
+  <p>
+    फिर कोई code को ठीक से पढ़ता है और देखता है कि <code>reward_service</code>
+    का अपना कोई state है ही नहीं। वह जो कुछ लौटाती है, वह सब caller के पास पहले
+    से मौजूद चीज़ों से निकाला जा सकता है। तो आप service मिटा देते हैं और
+    expression को inline कर देते हैं:
+  </p>
+
+<pre><code>def score(prompt, answer):                       # model नहीं। दो log-probs।
+    return beta * (log_prob(policy, answer) - log_prob(ref, answer))</code></pre>
+
+  <p>
+    एक लाइन में DPO यही है, और इस पेज का बाक़ी हिस्सा यही बताता है कि वह लाइन
+    सच क्यों है। Paper का शीर्षक साफ़ कहता है: <em>आपका language model गुप्त
+    रूप से एक reward model है</em>। "उसे reward model की तरह इस्तेमाल किया जा
+    सकता है" नहीं। वह <em>है</em>।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Closed form</strong></td><td>RLHF objective का ठीक-ठीक maximiser — खोजा नहीं, लिखकर निकाला गया</td><td>Loop को profile करने के बाद मिला analytic हल</td></tr>
+      <tr><td><strong>The inversion</strong></td><td>उसी रूप को पलटना ताकि r बाईं ओर आ जाए और π दाईं ओर</td><td>Getter पढ़कर समझना कि मान store नहीं, compute होता है</td></tr>
+      <tr><td><strong>Z(x)</strong></td><td>Normaliser। सिर्फ़ prompt पर निर्भर, और यही एकमात्र महँगा पद है</td><td>वह denominator जिसे आप उसका मान निकाले बिना ही cancel कर देते हैं</td></tr>
+      <tr><td><strong>Implicit reward</strong></td><td>β · log(π / π<sub>ref</sub>), trained policy से पढ़ लिया गया</td><td>Inline किया हुआ expression — अब भी callable</td></tr>
+      <tr><td><strong>β</strong></td><td>वही leash जो RLHF में थी, अब reward के भीतर नहीं, loss के भीतर रहती है</td><td>वह इकलौता knob जिसे आप अब भी हाथ से tune करते हैं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Paper बताता है कि जिन tasks पर उसने परखा — sentiment control, summarisation,
+    single-turn dialogue — वहाँ DPO, PPO-आधारित RLHF के बराबर रहा या उससे आगे।
+    यानी दावा है बराबरी और सादगी, वर्चस्व नहीं। जीत operational है, और इसे
+    engineer तुरंत महसूस करता है: दो के बजाय एक training loop, training के दौरान
+    policy से sampling नहीं, serve करने के लिए कोई reward model नहीं, और ग़लत
+    होने के लिए कोई PPO hyperparameters (clip range, value head, GAE, rollout
+    batch) नहीं। जो distributed system था, वह अब preference pairs के एक batch पर
+    <code>loss.backward()</code> भर है।
+  </p>
+
+  <h2>वह एक फ़ॉर्मूला</h2>
+
+  <div class="formula">π*(y|x) = π<sub>ref</sub>(y|x) · exp( r(x,y) / β ) / Z(x)<br>
+  ⇒ r(x,y) = β · log( π*(y|x) / π<sub>ref</sub>(y|x) ) + β · log Z(x)<br>
+  loss<sub>DPO</sub> = −log σ( β·log(π(y<sub>w</sub>)/π<sub>ref</sub>(y<sub>w</sub>)) − β·log(π(y<sub>l</sub>)/π<sub>ref</sub>(y<sub>l</sub>)) )</div>
+
+  <p>
+    तीन लाइनें, और नई सिर्फ़ पहली है। इन्हें pipeline के चरणों की तरह पढ़ें:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>exp(r / β)</code></td><td>(n answers,)</td><td>Reference को ऊँचे reward की ओर झुकाओ। बड़ा β = हल्का झुकाव</td></tr>
+      <tr><td><code>· π<sub>ref</sub> / Z(x)</code></td><td>जोड़ = 1</td><td>फिर से normalise। <strong>यही E[r] − β·KL का ठीक-ठीक optimum है</strong> — यहाँ पहुँचने को RL नहीं चाहिए</td></tr>
+      <tr><td><code>β·log(π*/π<sub>ref</sub>)</code></td><td>हर answer पर scalar</td><td>Log लो, r को बाईं ओर लाओ। Policy से बरामद हुआ reward</td></tr>
+      <tr><td><code>+ β·log Z(x)</code></td><td>हर <em>prompt</em> पर scalar</td><td>बचा हुआ पद। x पर निर्भर, y पर नहीं — इसलिए किसी भी तुलना में cancel हो जाता है</td></tr>
+      <tr><td><code>−log σ(Δ)</code></td><td>scalar</td><td>Bradley-Terry, RLHF पेज से अपरिवर्तित। सिर्फ़ σ के भीतर की चीज़ बदली है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    आख़िरी लाइन responses के pairs पर एक binary classifier है। बस इतना ही। पूरा
+    training algorithm यही है।
+  </p>
+
+  <h2>चरण 1: objective के पास जवाब पहले से था</h2>
+  <p>
+    RLHF, E<sub>y∼π</sub>[r(x,y)] − β·KL(π ‖ π<sub>ref</sub>) को अधिकतम करता है।
+    PPO उस maximiser को <em>खोजता</em> है। पर किसी एक prompt के लिए वह objective
+    एक probability distribution पर concave समस्या है, और उसका maximiser लिखा जा
+    सकता है: reference को scaled reward के exponential से झुकाओ, फिर normalise
+    कर दो।
+  </p>
+  <p>
+    इसे भरोसे पर मत लीजिए। Script उसी objective पर brute force से चढ़ता है —
+    logits पर 4000 steps Adam, कहीं कोई formula नहीं — और फिर देखता है कि वह कहाँ
+    पहुँचा और formula कहाँ कहता है। Toy world वही है जो RLHF पेज पर था: 4
+    prompts, हर एक पर 8 answers, एक छिपा true reward, β = 0.5.
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>prompt 0, in probabilities:
+  formula : [0.001 0.129 0.16  0.709 0.    0.    0.    0.   ]
+  solver  : [0.001 0.129 0.16  0.709 0.    0.    0.    0.   ]
+
+  max |formula - solver| over all 32 entries: <span class="ok">0.000018 ✓</span>
+  objective at the formula's policy: 2.319595
+  objective at the solver's policy:  2.319593</code></pre>
+
+  <p>
+    चार हज़ार gradient steps वहीं पहुँचते हैं जहाँ algebra की एक लाइन पहले से
+    थी। यानी RLHF का RL उस बिंदु की संख्यात्मक खोज है जिसे आप लिख सकते थे —
+    <em>अगर</em> आपके पास r होता। आपके पास r नहीं है। अगला चरण यही है।
+  </p>
+
+  <h2>चरण 2: उसे उलटिए, और reward policy से गिर पड़ता है</h2>
+  <p>
+    उस closed form का log लीजिए और r के लिए हल कीजिए; r policy के एक function के
+    रूप में निकल आता है। अटपटा बचा हुआ पद है β·log Z(x): Z(x) उस prompt के हर
+    संभव answer पर जोड़ लगाता है — language model के लिए यानी हर मौजूद string।
+    इसे कोई नहीं निकाल सकता। निकालने की ज़रूरत भी नहीं — यह
+    <strong>prompt</strong> पर निर्भर है, answer पर नहीं, और preference model
+    हमेशा <em>एक ही</em> prompt के दो answers की तुलना करता है। घटाइए, और वह
+    ग़ायब।
+  </p>
+
+<pre><code>prompt 0:
+  hidden true reward : [ 0.112  2.705  2.812  3.556 -0.035 -1.623  0.899  0.67 ]
+  beta * log-ratio   : [-2.82  -0.227 -0.12   0.624 -2.967 -4.555 -2.033 -2.262]
+  difference         : [2.932 2.932 2.932 2.932 2.932 2.932 2.932 2.932]
+
+the difference is CONSTANT within a prompt. That constant is
+beta*log Z(x), one per prompt, and here it is:
+  prompt 0:  beta*log Z =  2.9317   spread within prompt = 4.44e-16
+  prompt 1:  beta*log Z =  2.4033   spread within prompt = 4.44e-16
+  prompt 2:  beta*log Z =  2.8227   spread within prompt = 8.88e-16
+  prompt 3:  beta*log Z =  1.1207   spread within prompt = 4.44e-16
+
+rank correlation within each prompt, averaged: <span class="ok">1.000 ✓</span>
+rank correlation across all 32 answers at once:  <span class="hl">0.849</span>
+
+pairwise, the constant cancels. Prompt 0, answers 3 and 7:
+  true r[3] - true r[7]      =  2.8866
+  recovered[3] - recovered[7] =  2.8866</code></pre>
+
+  <p>
+    एक prompt के भीतर बरामद reward answers को ठीक उसी क्रम में लगाता है जैसे
+    छिपा true reward लगाता है — correlation 1.000, बचा हुआ फैलाव
+    4·10<sup>−16</sup>, यानी float noise। सारे 32 एक साथ लें तो यह 0.849 पर आ
+    जाता है, और वह फ़र्क़ ख़ामी नहीं, यही तो बात है: हर prompt अपना अलग β·log Z
+    offset लिए बैठा है, और अलग-अलग prompts के answers की तुलना वही एक चीज़ है जो
+    preference data कभी नहीं करता।
+  </p>
+
+  <div class="note">
+    <strong>Reward model शुरू से ही policy का एक pure function था।</strong> जिसे
+    भी आप prompt-वार normalise किया गया score कह सकते हैं, उसे दो policies के
+    बीच log-ratio के रूप में भी लिखा जा सकता है। इसके लिए अलग network fit करना
+    दोहरा काम था।
+  </div>
+
+  <h2>चरण 3: प्रतिस्थापित कीजिए, और दूसरी service ग़ायब हो जाती है</h2>
+  <p>
+    अब उलटे हुए reward को RLHF पेज वाले Bradley-Terry loss में रख दीजिए। दोनों
+    β·log Z पद cancel हो जाते हैं, r ग़ायब हो जाता है, और जो बचता है उसमें सिर्फ़
+    policy और reference का ज़िक्र है। दस लाइन PyTorch, कोई sampling नहीं, कोई
+    rollouts नहीं, train और serve करने को दूसरा model नहीं:
+  </p>
+
+<pre><code>margin = beta * (logp[p, w] - ref[p, w]) - beta * (logp[p, l] - ref[p, l])
+loss   = -F.logsigmoid(margin).mean()</code></pre>
+
+  <p>
+    Script इसे 2000 noisy votes पर चलाता है और उन्हीं votes व उसी β पर पिछले पेज
+    की पूरी RLHF pipeline भी चलाता है — reward model fit करो, KL penalty के साथ
+    उसके ख़िलाफ़ REINFORCE करो — ताकि दोनों सिर्फ़ बताए नहीं, तुलनीय हों।
+    <code>true reward</code> वह scoreboard है जिसे इनमें से कोई नहीं देखता।
+  </p>
+
+<pre><code>  step    1   loss 0.6931
+  step  100   loss 0.4590
+  step  200   loss 0.4544
+  step  300   loss 0.4541
+  step  400   loss 0.4541
+  step  500   loss 0.4541
+  step  600   loss 0.4541
+
+  policy                      true reward    KL to ref   parts
+  reference (SFT)                  1.117        0.000   1
+  RLHF: reward model + RL          2.535        0.709   3
+  DPO: one classifier loss         <span class="ok">2.898</span>        1.183   2
+  best possible                    3.196          -    -</code></pre>
+
+  <p>
+    Loss 0 पर नहीं, 0.4541 पर जाकर बैठता है क्योंकि votes noisy हैं — क़रीबी
+    मुक़ाबला लगभग सिक्का उछालना है और कोई model उसे fit न करे तो ही ठीक। DPO के
+    2.898 का RLHF के 2.535 से आगे होना ज़्यादा मत पढ़िए: चार prompts, आठ answers,
+    और DPO ज़्यादा दूर भी बहा (KL 1.183 बनाम 0.709)। Table जो कमाता है वह आख़िरी
+    column है। तुलनीय गुणवत्ता, एक model कम, कोई sampling loop नहीं।
+  </p>
+
+  <div class="note">
+    <strong>DPO को अब भी reference model memory में चाहिए।</strong> Loss देखिए:
+    <code>log π<sub>ref</sub></code> दो बार आता है। वह frozen है और उसे gradients
+    कभी नहीं मिलते, इसलिए optimiser state नहीं — पर training के दौरान वह weights
+    का दूसरा पूरा सेट memory में मौजूद रहता है। "कोई reward model नहीं" का मतलब
+    "एक ही model" नहीं है।
+  </div>
+
+  <h2>Reward model train हुआ था। बस वह एक object नहीं है</h2>
+  <p>
+    जिस हिस्से से मेरे लिए बात बैठी: DPO से train हुई policy लीजिए, उस पर
+    β·log(π/π<sub>ref</sub>) निकालिए — वही expression, ऐसी policy पर जिसे कभी
+    बताया ही नहीं गया कि reward क्या होता है — और उसे छिपे सच से मिलाइए।
+  </p>
+
+<pre><code>  ans      true    implicit
+    0     0.112      -2.601
+    1     2.705      -0.263
+    2     2.812       0.011
+    3     3.556       0.595
+    4    -0.035      -2.802
+    5    -1.623      -4.015
+    6     0.899      -1.508
+    7     0.670      -1.023
+
+rank correlation with the hidden true reward, all 32 answers: <span class="ok">0.763</span></code></pre>
+
+  <p>
+    किसी ने scorer बनाया नहीं, किसी ने किसी answer को score किया नहीं, और फिर भी
+    वहाँ एक scorer मौजूद है, जो answers को क़रीब-क़रीब वैसे ही क्रम में लगाता है
+    जैसे लोग लगाते हैं। बिना कोई reward model deploy किए, DPO run के बाद eval के
+    समय best-of-n ऐसे ही किया जाता है। <strong>Interview का सवाल है "reward
+    model कहाँ गया?" और जवाब है "log-ratio के भीतर"।</strong>
+  </p>
+
+  <h2>β वही leash है, नई जगह पर</h2>
+  <p>
+    RLHF पेज पर β reward में जोड़े गए KL पद का coefficient था। यहाँ वह loss के
+    भीतर margin को गुणा करता है। काम वही — policy को reference से कितनी दूर जाने
+    दिया जाए — और सौदा भी वही। Script इसे दो बार sweep करता है: एक बार 2000
+    votes पर, एक बार 150 पर।
+  </p>
+
+<pre><code>  beta    KL to ref   true (2000)   KL to ref   true (150 votes)
+  0.05       1.946         3.191       1.901            <span class="hl">3.115</span>
+  0.10       1.954         3.193       2.039            <span class="hl">3.030</span>
+  0.50       1.183         2.898       2.097            <span class="ok">2.845</span>
+  1.00       0.538         2.405       1.624             2.710
+  5.00       0.035         1.460       0.151             1.659
+
+  reference itself:  KL     0.000   true       1.117
+  best possible:                     true       3.196</code></pre>
+
+  <p>
+    β = 5 पर policy दोनों ही हालात में reference से मुश्किल से हिलती है — छोटी
+    leash, सुरक्षित, बेकार। छोटा β यानी policy votes पर पूरा भरोसा करके उनके
+    argmax पर ढह जाती है; 2000 votes के साथ वह argmax ज़्यादातर सही होता है,
+    इसलिए यह मुफ़्त लगता है। मुफ़्त है नहीं, यह आपके data पर लगाया गया दाँव है।
+    वही सौदा जो KL coefficient करता था: <em>आप जिसके ख़िलाफ़ optimise कर रहे
+    हैं, उस पर कितना भरोसा है?</em>
+  </p>
+
+  <h2>जिस सीमा पर लोग सचमुच बहस करते हैं</h2>
+  <p>
+    Derivation मानकर चलता है कि pairs reference policy से आए हैं। वह मान्यता
+    असली काम करती है और उसे तोड़ना आसान है — आपका preference dataset शायद किसी
+    और model से, महीनों पहले, किसी और ने इकट्ठा किया था। Script इसे तोड़ता है:
+    वही 2000 votes, पर एक लंबी-चौड़ी बात करने वाली policy से लिए गए, जिसे
+    reference लगभग कभी पैदा ही नहीं करता।
+  </p>
+
+<pre><code>average reference probability of an answer in those pairs: <span class="hl">0.0249</span>
+same for the on-policy pairs:                              0.1805
+
+  preference pairs drawn from    true reward    KL to ref
+  the reference (as derived)          <span class="ok">2.898</span>        1.183
+  a far-off policy                    <span class="hl">1.927</span>        1.241
+  no training at all (reference)      1.117        0.000</code></pre>
+
+  <p>
+    बिना training के तो बेहतर; पर उसी KL लागत पर on-policy pairs से काफ़ी ख़राब।
+    DPO को gradient सिर्फ़ उन्हीं pairs पर मिलता है जो आप उसे दिखाते हैं: सिर्फ़
+    लंबे answers दिखाइए, तो वह एक ख़राब झुंड में से सबसे अच्छे को ऊपर उठाता है,
+    जबकि अच्छे छोटे answers सिर्फ़ normalisation से ही वज़न खो देते हैं। Loss
+    में कुछ भी आपको चेतावनी नहीं देता। PPO हर step पर मौजूदा policy से sample
+    करता है, इसलिए वह बनावट से ही on-policy है और उसे यह ख़राबी नहीं होती — उसकी
+    अपनी अलग ख़राबियाँ हैं, जैसा RLHF पेज दिखाता है।
+  </p>
+
+  <div class="note">
+    <strong>यह एक सौदा है, replacement नहीं।</strong> DPO सरल है, सस्ता है और
+    train करने में ज़्यादा स्थिर। कुछ हालात में on-policy तरीक़े अब भी जीतते
+    हैं, और इसी फ़र्क़ को पाटने के लिए iterated/online DPO variants मौजूद हैं।
+    अगर कोई कहे कि सवाल तय हो चुका है, तो वह एक चालू बहस में पक्ष चुन रहा है।
+  </div>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism: the world, the closed form, the inversion, the KL. A
+  torch loop for the training, because that is what DPO <em>is</em> — an
+  objective, and hand-rolling its backprop would bury the idea. CPU, nine
+  seconds. No function over 25 lines. Below, the four functions that are the
+  paper; the toy world, the votes and the RLHF baseline are in the script.
+</p>
+<p>
+  <a href="dpo_from_scratch.py" download><strong>Download the full
+  script</strong></a> — 514 lines including seven runnable demos. Then:
+</p>
+<pre><code>python3 dpo_from_scratch.py</code></pre>
+
+<pre><code>def optimal_policy(r, ref_logp, beta):
+    """The closed form above, in log space so nothing overflows. (4, 8)."""
+    return log_softmax(ref_logp + r / beta)
+
+
+def implicit_reward(logp, ref_logp, beta):
+    """beta * log-ratio. The reward, recovered from the policy, up to a
+    per-prompt constant. This is the whole 'secretly a reward model' claim."""
+    return beta * (logp - ref_logp)
+
+
+def dpo_loss(logp, ref_logp, p, w, l, beta, drop_reference=False,
+             no_pair=False):
+    """logp: torch (4, 8) log-probs of the policy. p/w/l: prompt, winner,
+    loser index tensors. The two flags are the deliberate breaks."""
+    ref = torch.zeros_like(logp) if drop_reference else ref_logp
+    margin_w = beta * (logp[p, w] - ref[p, w])
+    if no_pair:
+        return -F.logsigmoid(margin_w).mean()      # the break: no contrast
+    margin_l = beta * (logp[p, l] - ref[p, l])
+    return -F.logsigmoid(margin_w - margin_l).mean()
+
+
+def train_dpo(comparisons, ref_logp, beta=BETA, steps=600, lr=0.05,
+              log_every=0, drop_reference=False, no_pair=False, swap=False):
+    """Fit the policy directly on the votes. Returns its log-probs, (4, 8).
+    The policy is a table of logits here; in the paper it is a language
+    model and logp is the sum of token log-probs of the whole answer."""
+    torch.manual_seed(0)
+    ref = torch.tensor(ref_logp, dtype=torch.float32)
+    logits = ref.clone().requires_grad_(True)       # start AT the reference
+    opt = torch.optim.Adam([logits], lr=lr)
+    p, w, l = (torch.tensor([c[i] for c in comparisons]) for i in range(3))
+    if swap:
+        w, l = l, w                                 # the break: winner/loser
+    for step in range(1, steps + 1):
+        loss = dpo_loss(F.log_softmax(logits, dim=-1), ref, p, w, l, beta,
+                        drop_reference=drop_reference, no_pair=no_pair)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    with torch.no_grad():
+        return F.log_softmax(logits, dim=-1).numpy()</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. You debug for a living —
+  reverse-engineering from broken behaviour is your native mode. Demo 7 runs most
+  of these and prints them side by side, at 4000 steps so drift has time to show.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Pass <code>drop_reference=True</code> — the <code>log π<sub>ref</sub></code> terms leave the loss</td><td>It still trains, and stops being DPO. The margin becomes plain ranking of log-probs and the fixed point is no longer the KL-constrained optimum: true 2.898 → 2.865, KL 1.183 → 1.308, recovered-reward correlation 0.763 → 0.698. On a real LM the reference is the only thing keeping text fluent — this is the road to gibberish that wins comparisons.</td></tr>
+    <tr><td>Set <code>beta=0.0</code> in <code>train_dpo</code></td><td>Max |π − π<sub>ref</sub>| = 1.87e-08. The policy never moves at all: β multiplies the margin, so at zero the gradient dies. This is <em>not</em> the RLHF page's unleashed run — the no-leash behaviour is the small-β end of the sweep, <code>beta=0.01</code>, KL 1.430.</td></tr>
+    <tr><td>Sample the votes from <code>long_winded_policy</code> instead of the reference</td><td>True reward 2.898 → 1.927 at the same KL. The derivation's on-policy assumption, violated, with no error message.</td></tr>
+    <tr><td>Pass <code>no_pair=True</code> — train on winners only, no loser term</td><td>True reward 1.658 against the reference's 1.117 and DPO's 2.898. With nothing to contrast against it degenerates into imitating whatever the sampler produced. That's SFT, badly.</td></tr>
+    <tr><td>Pass <code>swap=True</code> — winner and loser exchanged</td><td>Recovered-reward correlation +0.763 → <strong>−0.773</strong>, true reward 2.898 → −0.151. It learns the preference backwards, confidently. Check your column order.</td></tr>
+    <tr><td>In <code>demo_1</code>, change <code>solve_objective_numerically(..., steps=4000)</code> to 100</td><td>The solver stops short of the closed form: max difference 0.000018 → 0.015708. Useful as a control: it confirms the agreement is real convergence, not a coincidence of two identical formulas.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — the derivation in the method section
+  ("Deriving the DPO objective"), and Appendix A.1, which is the closed form on
+  this page in four lines of algebra. Read the gradient discussion too: it says
+  in one paragraph why the loss up-weights examples where the implicit reward
+  ranks the pair wrongly. Skip the GPT-4-as-judge win-rate plots on a first pass.
+  You'll find the paper is just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  The formula sheet: a log, an exponential, a sigmoid, a weighted average. Log
+  and exp are inverses, which is the entire trick — the closed form has an exp
+  in it, you take logs, and a multiplication becomes a subtraction you can
+  cancel. Nothing else happens.
+</p>
+<p>
+  Worth sitting with: <em>why</em> Z(x) may disappear. Not because it's small —
+  it's enormous and uncomputable — but because it's constant in the thing you're
+  differencing. Same move as cancelling a common denominator, or the <code>-
+  max</code> in a numerically safe softmax. Cancellation, not approximation.
+</p>
+<p>
+  What you don't need: the uniqueness proof for the KL-constrained optimum, the
+  Plackett-Luce generalisation to rankings, any of the convex analysis. Demo 1
+  replaces the proof with a number you can rerun, which for engineering purposes
+  is worth more.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the inversion, and the cancellation that makes it
+  usable. It skipped the language-model reality — token-level log-probs, memory,
+  many epochs — and the argument over whether DPO is the right default.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2305.18290">
+      <span class="paper-title">Direct Preference Optimization: Your Language Model is Secretly a Reward Model</span>
+      <span class="paper-meta">Rafailov, Sharma, Mitchell, Ermon, Manning, Finn, 2023. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the derivation with the script open, then Appendix A.1 for the closed
+      form. Their experiments are what I have no equivalent of: real models, real
+      judges, and the stability comparison against PPO.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/dpo-trl">
+      <span class="paper-title">Fine-tune Llama 2 with DPO</span>
+      <span class="paper-meta">Hugging Face. Working code on a real model.</span>
+    </a>
+    <p class="paper-pitch">
+      What my four-by-eight table of logits looks like as a 7B model: how the
+      preference dataset is shaped, where the frozen reference lives, what
+      <code>beta</code> is in practice. The bridge to something you'd run.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2404.10719">
+      <span class="paper-title">Is DPO Superior to PPO for LLM Alignment?</span>
+      <span class="paper-meta">Xu, Fu, Gao et al., 2024. The other side.</span>
+    </a>
+    <p class="paper-pitch">
+      The argument I flagged, argued properly: it pins DPO's weakness to the
+      distribution shift demo 6 prints, and shows PPO ahead on harder benchmarks.
+      Read it so "which would you use?" gets a condition, not a preference.
+    </p>
+  </li>
+
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> the paper's derivation → the Hugging
+  Face fine-tuning post → the DPO-versus-PPO study. Theory,
+  practice, then doubt. And read the <a href="../rlhf/">RLHF
+  page</a> first if you haven't: DPO is a refactor, and a refactor only makes
+  sense once you've seen the code it replaced.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

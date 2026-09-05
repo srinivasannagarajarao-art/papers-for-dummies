@@ -1,0 +1,1264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlashAttention — for programmers</title>
+<meta name="description" content="FlashAttention explained as code. Attention was never compute-bound — it was memory traffic. Runnable NumPy with simulated HBM counters, nine demos that prove it by breaking it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Tamil:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>FlashAttention: attention was never compute-bound</h1>
+    <p class="paper-meta">Dao, Fu, Ermon, Rudra &amp; Ré, 2022</p>
+    <p class="lede">
+      The n<sup>2</sup> problem everyone quotes is not the multiplying. It's the moving.
+    </p>
+    <p>
+      <a href="flash_attention_from_scratch.py" download>Download
+      flash_attention_from_scratch.py</a> — everything below runs from it. NumPy only, no GPU
+      required.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+  <p>
+    I'd read the <a href="../attention/">attention page</a> — mine, and everyone else's — and
+    walked away with the same wrong conclusion everybody else does: attention is slow because
+    it does n<sup>2</sup> work. So I spent a year assuming the fix had to be doing
+    <em>less</em> work: sparse patterns, low-rank tricks, sliding windows. Then FlashAttention
+    shipped, did exactly the same arithmetic, and was several times faster on the same
+    hardware.
+  </p>
+
+  <p>
+    Nobody had told me the n<sup>2</sup> in that sentence is a <strong>bytes</strong> figure,
+    not a flops figure.
+  </p>
+
+  <h2>You already know this bug</h2>
+
+  <p>
+    You have written this function. It works on the test file and dies on the real one:
+  </p>
+
+<pre><code>rows = json.load(open("events.json"))   # 40GB. Your laptop has 16.
+rows = [normalise(r) for r in rows]
+rows = [enrich(r) for r in rows]
+return summarise(rows)</code></pre>
+
+  <p>
+    Three passes, three full materialisations, and the machine spends its life in swap. You
+    know the fix without thinking about it. You stream:
+  </p>
+
+<pre><code>total, count, best = 0.0, 0, None
+for chunk in read_in_chunks("events.json"):     # constant working set
+    for r in chunk:
+        r = enrich(normalise(r))
+        total += r.value; count += 1           # carry running statistics
+        best = r if best is None else max(best, r)
+return total / count, best</code></pre>
+
+  <p>
+    Same answer. One pass. Constant memory. That is the entire paper. The 40GB file is the n×n
+    score matrix, the swap is HBM, and the running statistics are a max and a sum — which turn
+    out to be exactly what softmax needs.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>HBM</strong></td><td>The GPU's main memory. ~40GB, ~1.5TB/s. Where your tensors live.</td><td>Disk. Big, and you pay every time you touch it</td></tr>
+      <tr><td><strong>SRAM</strong></td><td>On-chip scratch memory, ~100KB per streaming multiprocessor, an order of magnitude faster</td><td>L1 cache. Tiny, free, yours only briefly</td></tr>
+      <tr><td><strong>Memory-bound</strong></td><td>The arithmetic units are idle waiting for data to arrive</td><td>A CPU-bound job that turned out to be IO-bound</td></tr>
+      <tr><td><strong>Tiling</strong></td><td>Process the matrix in blocks that fit in SRAM</td><td>Chunked reads. <code>read(8192)</code>, not <code>read()</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why this beat the approximations</h2>
+
+  <p>
+    Between 2019 and 2022 there was a whole genre of "efficient attention" papers: Reformer,
+    Linformer, Performer, Longformer, BigBird. Each cut the asymptotic flop count by computing
+    a <em>cheaper, different</em> function — a sparse pattern, a low-rank projection, a local
+    window — and then argued the quality loss was acceptable. Most were not actually faster in
+    wall-clock time, because they cut the thing that wasn't the bottleneck. FlashAttention cut
+    the thing that was, and computes <strong>exactly the same function</strong> as the
+    attention you already have. No quality argument to make, no ablation to defend.
+  </p>
+
+  <div class="note">
+    <strong>This is the interview answer.</strong> "FlashAttention is an IO
+    result, not an arithmetic one." The paper's own subtitle is
+    <em>Fast and Memory-Efficient Exact Attention with IO-Awareness</em>. The
+    word doing the work in that title is <em>exact</em>.
+  </div>
+
+  <h2>The one formula</h2>
+
+  <p>
+    Not the attention formula — you have that already. This is the online softmax update, the
+    piece of maths that makes streaming possible. You are seeing scores one block at a time
+    and carrying two numbers: m (the biggest score so far) and l (the running sum).
+  </p>
+
+  <div class="formula">
+    m<sub>new</sub> = max(m<sub>old</sub>, max S<sub>block</sub>)<br>
+    l<sub>new</sub> = e<sup>(m<sub>old</sub> − m<sub>new</sub>)</sup>
+    l<sub>old</sub> + Σ e<sup>(S<sub>block</sub> − m<sub>new</sub>)</sup><br>
+    O<sub>new</sub> = e<sup>(m<sub>old</sub> − m<sub>new</sub>)</sup>
+    O<sub>old</sub> + e<sup>(S<sub>block</sub> − m<sub>new</sub>)</sup> V<sub>block</sub>
+  </div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>S<sub>block</sub></code></td><td>(B<sub>r</sub>, B<sub>c</sub>)</td><td>One score tile. Sized to fit in SRAM. Never written to HBM, never seen again</td></tr>
+      <tr><td><code>m</code></td><td>(B<sub>r</sub>, 1)</td><td>Running maximum per query row. The same overflow-safety max as ordinary softmax — it just learned to work incrementally</td></tr>
+      <tr><td><code>e<sup>(m<sub>old</sub>−m<sub>new</sub>)</sup></code></td><td>scalar per row</td><td><strong>The rescale.</strong> The load-bearing line. Everything accumulated against the old max gets converted to the new baseline</td></tr>
+      <tr><td><code>l</code></td><td>(B<sub>r</sub>, 1)</td><td>Running denominator. Applied once, at the very end</td></tr>
+      <tr><td><code>O</code></td><td>(B<sub>r</sub>, d)</td><td>Running unnormalised output. Rescaled alongside l, because it is a weighted sum whose weights moved</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Where the time actually goes</h2>
+
+  <p>
+    I can't benchmark a GPU I don't own and won't pretend to, so the script counts instead:
+    every byte that would cross between fast and slow memory, every multiply-add, tracked by
+    hand in a <code>Counters</code> object. Counting reads and writes is literally what the
+    paper does.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>head dim d = 64, float32
+
+      n     HBM MB    GFLOPs  bytes/flop  n^2 share
+    128       0.38     0.004       0.094      66.7%
+    512       4.50     0.067       0.070      88.9%
+   2048      66.00     1.074       0.064      97.0%
+   8192    1032.00    17.180       0.063      <span class="hl">99.2%</span></code></pre>
+
+  <p>
+    17 GFLOPs is nothing — a modern GPU eats that in under a millisecond. But it comes with
+    <strong>a gigabyte</strong> of memory traffic, and 99.2% of that gigabyte is the score
+    matrix being written out and read back three times. The one thing you never wanted to keep
+    is the only thing you're paying for.
+  </p>
+
+  <p>
+    The ratio settles at about 0.06 bytes per flop. An A100 does roughly 19.5 TFLOP/s of fp32
+    against roughly 1.5 TB/s of HBM — it can only feed itself about 0.08 bytes per flop.
+    Attention sits the wrong side of that line: the multiplying waits on the moving.
+  </p>
+
+  <h2>Online softmax: the whole idea, in two variables</h2>
+
+  <p>
+    You already met the running-max trick on the <a href="../attention/">attention page</a>,
+    where it existed purely so <code>exp()</code> wouldn't overflow. But "subtract the max"
+    assumes you can see the whole row, and streaming you can't. So you carry the max seen so
+    far, and when a later block contains a bigger one you go back and fix everything already
+    accumulated — by multiplying it by e<sup>(m<sub>old</sub> − m<sub>new</sub>)</sup>. That
+    correction is one line, and deleting it raises nothing. Same row of 32 scores, streamed in
+    four blocks of eight, with and without it:
+  </p>
+
+<pre><code>ordinary softmax vs online softmax, max abs diff: 0.00e+00  <span class="ok">exact</span>
+ordinary softmax vs NO-RESCALE version, max abs diff: 6.53e-01  <span class="hl">wrong</span>
+no-rescale weights sum to <span class="hl">0.190131</span>, not 1.0
+
+first 6 weights, side by side:
+  correct:  [0.003957 0.016505 0.003782 0.000028 0.021219 0.005355]
+  online:   [0.003957 0.016505 0.003782 0.000028 0.021219 0.005355]  <span class="ok">✓</span>
+  broken:   [0.000752 0.003138 0.000719 0.000005 0.004034 0.001018]</code></pre>
+
+  <p>
+    Zero difference — not "close enough", <em>zero</em> — against ordinary softmax. And
+    without the rescale, weights that sum to 0.19. You've added numbers that were scaled
+    against three different baselines, like summing a column of prices in three currencies.
+    Nothing throws. The answer is just wrong.
+  </p>
+
+  <p class="muted">
+    This trick isn't Dao's, and the paper says so: it's Milakov &amp; Gimelshein's online
+    normalizer calculation from 2018. FlashAttention's contribution is running the
+    <em>whole</em> attention pipeline — the <code>@ V</code> included — through it, so the n×n
+    matrix never needs to exist.
+  </p>
+
+  <h2>Tiling: same answer, flat memory</h2>
+
+  <p>
+    Now tile it. Q gets cut into row blocks, K and V into column blocks. For each query block
+    you walk every key block, carrying m, l and a running output O per row. When m moves, both
+    l and O get rescaled.
+  </p>
+
+<pre><code>      n   max abs diff   std peak KB   flash peak KB   std HBM MB  flash HBM MB
+    128       2.50e-16          64.0            64.5         0.38          0.19
+    256       1.94e-16         256.0            64.5         1.25          0.62
+    512       1.39e-16        1024.0            64.5         4.50          2.25
+   1024       9.02e-17        4096.0            64.5        17.00          8.50
+   2048       8.33e-17       <span class="hl">16384.0</span>            <span class="ok">64.5</span>        66.00         33.00</code></pre>
+
+  <p>
+    The difference column is float noise at 1e−16. The standard peak goes up 16× for every 4×
+    in n; the flash peak <em>does not move</em>, because the working set is two tiles and two
+    running statistics, none of which depend on sequence length. That flat column is why 32k
+    and 128k contexts stopped being a memory question.
+  </p>
+
+  <div class="note">
+    <strong>Quadratic against linear, in one table.</strong> The quadratic term
+    in attention's memory never went away in the maths — it went away in the
+    <em>allocation</em>. You still compute every one of the n<sup>2</sup>
+    scores. You just never keep more than a tile of them at a time.
+  </div>
+
+  <h2>How big should a tile be?</h2>
+
+  <p>
+    Bigger blocks mean fewer passes over K and V, so less traffic. Why not make the block the
+    whole sequence, then? Because the tile has to fit in SRAM; past that it spills back to HBM
+    and you have reinvented standard attention with extra loop overhead.
+  </p>
+
+<pre><code>n = 1024, d = 64, SRAM budget assumed 96 KB
+standard attention traffic: 17.00 MB
+
+  block     HBM MB   tile working set KB  fits SRAM?
+     16      32.50                  13.1  yes
+     32      16.50                  28.2  yes
+     64       8.50                  64.5  <span class="ok">yes</span>
+    128       4.50                 161.0  <span class="hl">NO -- spills</span>
+    256       2.50                 450.0  NO -- spills
+    512       1.50                1412.0  NO -- spills
+   1024       1.00                4872.0  NO -- spills</code></pre>
+
+  <p>
+    Block 16 costs 32.5 MB, <em>worse</em> than standard attention's 17 MB, because K and V
+    get re-read 64 times. Block 128 would be lovely at 4.5 MB and doesn't fit. The optimum is
+    the largest tile that still fits — here, 64. On real hardware that budget is shared memory
+    per streaming multiprocessor: an A100 has 164 KB per SM, of which a kernel can typically
+    use around 96–100 KB. That number and the head dimension pick the block size, not the
+    maths.
+  </p>
+
+  <h2>The backward pass: pay flops, save bytes</h2>
+
+  <p>
+    Standard attention's backward pass wants the n×n probability matrix that the forward pass
+    computed, so it stashes it. FlashAttention refuses, keeps only m and l — two floats per
+    row — and <em>recomputes</em> the score tiles on the way back.
+  </p>
+
+<pre><code>      n   std stored MB   flash stored MB   std GFLOPs   flash GFLOPs  extra flops
+    512            1.38              0.38         0.17           0.20          20%
+   2048           17.50              1.52         2.68           3.22          20%
+   8192          <span class="hl">262.00</span>              <span class="ok">6.06</span>        42.95          51.54          <span class="hl">20%</span></code></pre>
+
+  <p>
+    At n=8192 that's 256 MB saved per attention head for 20% more arithmetic, and it still
+    comes out faster in wall-clock, because — say it with me — the arithmetic was never the
+    bottleneck. You have made this trade before: it is what
+    <code>gradient_checkpointing=True</code> does in every training config you've ever set.
+    FlashAttention applies it to one operator instead of a whole layer, and the accounting is
+    so favourable it stops being a trade — you get the memory <em>and</em> the speed.
+  </p>
+
+  <h2>Exact means exact</h2>
+
+  <p>
+    This is the claim people get wrong, so here it is against a genuine approximation. The
+    comparison method is a 128-wide local window — a stand-in for the sparse family
+    FlashAttention displaced.
+  </p>
+
+<pre><code>flash vs standard, max abs diff:  1.665e-16
+flash vs standard, allclose:      <span class="ok">True</span>
+local-window vs standard, max abs diff: 3.224e-01
+local-window vs standard, allclose:     <span class="hl">False</span></code></pre>
+
+  <p>
+    1.665e−16 is accumulation order, not approximation. 0.32 is a different function wearing
+    attention's name. That gap is the whole argument for why FlashAttention was everywhere
+    within a year and Linformer was not.
+  </p>
+
+  <h2>And no, it is not doing less arithmetic</h2>
+
+  <p>
+    The belief I want to kill. Every multiply the standard version does, the tiled version
+    also does:
+  </p>
+
+<pre><code>      n   std GFLOPs   flash GFLOPs   std HBM MB   flash HBM MB  traffic cut
+    512        0.067          <span class="ok">0.067</span>         4.50           2.25         2.0x
+   1024        0.268          <span class="ok">0.268</span>        17.00           8.50         2.0x
+   2048        1.074          <span class="ok">1.074</span>        66.00          33.00         2.0x
+   4096        4.295          <span class="ok">4.295</span>       260.00         130.00         2.0x</code></pre>
+
+  <p>
+    Identical flop columns. Only traffic moves. (My 2× is modest because I hardcoded a 64-wide
+    tile for a 64-dim head — the ratio here scales with block size over head dimension, which
+    is what demo 4 is about. The paper reports substantial wall-clock speedups from real
+    kernels; I can't reproduce those on a laptop, so I'll leave the figures to the paper.)
+  </p>
+
+  <h2>FlashAttention-2, briefly</h2>
+
+  <p>
+    Dao's 2023 follow-up doesn't change the idea. Same tiling, same online softmax, same
+    exactness. What changes is the CUDA work partitioning: fewer non-matmul operations (the
+    rescaling gets restructured so it happens less often), parallelism over the sequence
+    dimension as well as batch and heads, and a better split of work between warps inside a
+    thread block so they share less through shared memory.
+  </p>
+
+  <p>
+    It matters enormously in practice and it is not conceptually new. If you understood the
+    tile and the running statistics, you have understood FlashAttention-2 too.
+    FlashAttention-3 goes further again, targeting Hopper-specific hardware.
+  </p>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் <a href="../attention/">attention பக்கத்தை</a> படித்தேன் — என்னுடையதையும்,
+    மற்றவர்களுடையதையும் — எல்லோரும் எடுக்கும் அதே தவறான முடிவுடன்தான் வெளியே வந்தேன்:
+    attention மெதுவாக இருக்கிறது, ஏனெனில் அது n<sup>2</sup> வேலை செய்கிறது. அதனால் ஒரு
+    வருடம் முழுக்க, தீர்வு <em>குறைவான</em> வேலை செய்வதுதான் என்று நினைத்தேன்: sparse
+    patterns, low-rank தந்திரங்கள், sliding windows. பிறகு FlashAttention வந்தது, சரியாக
+    அதே கணக்கைச் செய்தது, அதே hardware-ல் பல மடங்கு வேகமாக இருந்தது.
+  </p>
+
+  <p>
+    அந்த வாக்கியத்தில் இருக்கும் n<sup>2</sup> என்பது <strong>bytes</strong> கணக்கு,
+    flops கணக்கு அல்ல — இதை யாரும் என்னிடம் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (memory traffic, HBM, SRAM,
+    tile, block, online softmax, running maximum, recomputation, compute-bound,
+    memory-bound, exact…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற
+    papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில்,
+    சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>இந்த bug உங்களுக்கு ஏற்கனவே தெரியும்</h2>
+
+  <p>
+    இந்த function-ஐ நீங்கள் எழுதியிருக்கிறீர்கள். test file-ல் வேலை செய்யும், நிஜமான
+    file-ல் செத்துவிடும்:
+  </p>
+
+<pre><code>rows = json.load(open("events.json"))   # 40GB. laptop-ல் 16 மட்டும்.
+rows = [normalise(r) for r in rows]
+rows = [enrich(r) for r in rows]
+return summarise(rows)</code></pre>
+
+  <p>
+    மூன்று passes, மூன்று முறை முழுவதையும் memory-ல் நிறுத்துதல், machine தன் வாழ்நாளை
+    swap-ல் கழிக்கிறது. தீர்வு யோசிக்காமலே உங்களுக்குத் தெரியும். நீங்கள் stream
+    செய்கிறீர்கள்:
+  </p>
+
+<pre><code>total, count, best = 0.0, 0, None
+for chunk in read_in_chunks("events.json"):     # working set மாறாதது
+    for r in chunk:
+        r = enrich(normalise(r))
+        total += r.value; count += 1           # running statistics சுமந்து செல்
+        best = r if best is None else max(best, r)
+return total / count, best</code></pre>
+
+  <p>
+    அதே விடை. ஒரே pass. மாறாத memory. இதுதான் முழு paper-ம். அந்த 40GB file தான் n×n
+    score matrix, அந்த swap தான் HBM, அந்த running statistics தான் ஒரு max-ம் ஒரு
+    sum-ம் — அவை இரண்டும்தான் softmax-க்குத் தேவைப்படுபவை.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>HBM</strong></td><td>GPU-வின் main memory. ~40GB, ~1.5TB/s. உங்கள் tensors வாழும் இடம்.</td><td>Disk. பெரியது, தொடும் ஒவ்வொரு முறையும் விலை உண்டு</td></tr>
+      <tr><td><strong>SRAM</strong></td><td>Chip-க்குள் இருக்கும் scratch memory, ஒரு streaming multiprocessor-க்கு ~100KB, பத்து மடங்கு வேகம்</td><td>L1 cache. மிகச் சிறியது, இலவசம், கொஞ்ச நேரம் மட்டும் உங்களுடையது</td></tr>
+      <tr><td><strong>Memory-bound</strong></td><td>கணக்குப் போடும் units சும்மா உட்கார்ந்து data வருவதற்குக் காத்திருக்கின்றன</td><td>CPU-bound என நினைத்த வேலை உண்மையில் IO-bound ஆனது</td></tr>
+      <tr><td><strong>Tiling</strong></td><td>Matrix-ஐ SRAM-ல் அடங்கும் blocks-ஆகச் செயலாக்கு</td><td>Chunked reads. <code>read(8192)</code>, <code>read()</code> அல்ல</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="thanglish">
+    40GB file dhaan n×n score matrix, swap dhaan HBM. Streaming panna, working set
+    constant-a irukkum — running max-um sum-um dhaan softmax-kku thevai.
+  </p>
+
+  <h2>Approximations-ஐ இது ஏன் வென்றது?</h2>
+
+  <p>
+    2019-லிருந்து 2022 வரை "efficient attention" papers ஒரு தனி genre-ஆகவே இருந்தன:
+    Reformer, Linformer, Performer, Longformer, BigBird. ஒவ்வொன்றும் <em>வேறு, மலிவான</em>
+    ஒரு function-ஐக் கணக்கிட்டு asymptotic flop எண்ணிக்கையைக் குறைத்தன — sparse pattern,
+    low-rank projection, local window — பிறகு தரக் குறைவு ஏற்கத்தக்கது என்று வாதிட்டன.
+    பெரும்பாலானவை wall-clock நேரத்தில் உண்மையில் வேகமாக இல்லை, ஏனெனில் அவை bottleneck
+    இல்லாத ஒன்றைக் குறைத்தன. FlashAttention bottleneck-ஆக இருந்ததைக் குறைத்தது, மேலும்
+    உங்களிடம் ஏற்கனவே இருக்கும் attention-ஐப் போலவே <strong>சரியாக அதே function-ஐ</strong>
+    கணக்கிடுகிறது. தரம் பற்றி வாதம் இல்லை, ablation-ஐக் காப்பாற்ற வேண்டியதில்லை.
+  </p>
+
+  <div class="note">
+    <strong>Interview-க்கான பதில் இதுதான்.</strong> "FlashAttention என்பது ஒரு IO
+    முடிவு, arithmetic முடிவு அல்ல." Paper-ன் தலைப்பே
+    <em>Fast and Memory-Efficient Exact Attention with IO-Awareness</em>. அந்தத்
+    தலைப்பில் வேலை செய்யும் வார்த்தை <em>exact</em>.
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <p>
+    Attention சூத்திரம் அல்ல — அது உங்களிடம் ஏற்கனவே இருக்கிறது. இது online softmax
+    update, streaming-ஐச் சாத்தியமாக்கும் கணிதத் துண்டு. Scores-ஐ ஒரு block-ஆகப்
+    பார்த்துக்கொண்டே இரண்டு எண்களைச் சுமக்கிறீர்கள்: m (இதுவரை பார்த்த மிகப்பெரிய score)
+    மற்றும் l (running sum).
+  </p>
+
+  <div class="formula">
+    m<sub>new</sub> = max(m<sub>old</sub>, max S<sub>block</sub>)<br>
+    l<sub>new</sub> = e<sup>(m<sub>old</sub> − m<sub>new</sub>)</sup>
+    l<sub>old</sub> + Σ e<sup>(S<sub>block</sub> − m<sub>new</sub>)</sup><br>
+    O<sub>new</sub> = e<sup>(m<sub>old</sub> − m<sub>new</sub>)</sup>
+    O<sub>old</sub> + e<sup>(S<sub>block</sub> − m<sub>new</sub>)</sup> V<sub>block</sub>
+  </div>
+
+  <p>இதை pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>S<sub>block</sub></code></td><td>(B<sub>r</sub>, B<sub>c</sub>)</td><td>ஒரு score tile. SRAM-ல் அடங்கும் அளவு. HBM-க்கு எழுதப்படுவதே இல்லை, மீண்டும் பார்க்கப்படுவதும் இல்லை</td></tr>
+      <tr><td><code>m</code></td><td>(B<sub>r</sub>, 1)</td><td>ஒவ்வொரு query row-க்கும் running maximum. சாதாரண softmax-ன் அதே overflow-safety max — இப்போது கொஞ்சம் கொஞ்சமாக வேலை செய்யக் கற்றுக்கொண்டது</td></tr>
+      <tr><td><code>e<sup>(m<sub>old</sub>−m<sub>new</sub>)</sup></code></td><td>row-க்கு ஒரு scalar</td><td><strong>அந்த rescale.</strong> சுமை தாங்கும் வரி. பழைய max-ஐ வைத்துச் சேர்த்தது எல்லாம் புதிய baseline-க்கு மாற்றப்படுகிறது</td></tr>
+      <tr><td><code>l</code></td><td>(B<sub>r</sub>, 1)</td><td>Running denominator. கடைசியில் ஒரே ஒரு முறை பயன்படுத்தப்படுகிறது</td></tr>
+      <tr><td><code>O</code></td><td>(B<sub>r</sub>, d)</td><td>Running normalise செய்யாத output. l-உடன் சேர்ந்து rescale ஆகிறது, ஏனெனில் இது எடைகள் நகர்ந்துவிட்ட ஒரு weighted sum</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>நேரம் உண்மையில் எங்கே போகிறது</h2>
+
+  <p>
+    என்னிடம் இல்லாத GPU-ல் benchmark செய்ய முடியாது, செய்வதுபோல் நடிக்கவும் மாட்டேன்.
+    அதனால் script எண்ணுகிறது: வேகமான, மெதுவான memory-க்கு இடையே கடக்கும் ஒவ்வொரு
+    byte-ஐயும், ஒவ்வொரு multiply-add-ஐயும், ஒரு <code>Counters</code> object-ல் கையாலேயே
+    கணக்கிடுகிறது. Reads-ஐயும் writes-ஐயும் எண்ணுவதுதான் paper செய்வதும்.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>head dim d = 64, float32
+
+      n     HBM MB    GFLOPs  bytes/flop  n^2 share
+    128       0.38     0.004       0.094      66.7%
+    512       4.50     0.067       0.070      88.9%
+   2048      66.00     1.074       0.064      97.0%
+   8192    1032.00    17.180       0.063      <span class="hl">99.2%</span></code></pre>
+
+  <p>
+    17 GFLOPs என்பது ஒன்றுமே இல்லை — நவீன GPU அதை ஒரு millisecond-க்குள் விழுங்கிவிடும்.
+    ஆனால் அதனுடன் <strong>ஒரு gigabyte</strong> memory traffic வருகிறது, அந்த gigabyte-ல்
+    99.2% என்பது score matrix வெளியே எழுதப்பட்டு மூன்று முறை திரும்பப் படிக்கப்படுவதுதான்.
+    நீங்கள் வைத்திருக்கவே விரும்பாத ஒரே பொருளுக்குத்தான் நீங்கள் விலை கொடுக்கிறீர்கள்.
+  </p>
+
+  <p>
+    விகிதம் ஏறக்குறைய flop-க்கு 0.06 bytes என நிலைபெறுகிறது. ஒரு A100 fp32-ல் சுமார்
+    19.5 TFLOP/s செய்யும், HBM சுமார் 1.5 TB/s — அதனால் அது flop-க்கு சுமார் 0.08 bytes
+    மட்டுமே தனக்கு ஊட்ட முடியும். Attention அந்தக் கோட்டின் தவறான பக்கத்தில் அமர்ந்திருக்கிறது:
+    பெருக்கல் நகர்த்தலுக்குக் காத்திருக்கிறது.
+  </p>
+
+  <h2>Online softmax: முழு யோசனையும், இரண்டு variables-ல்</h2>
+
+  <p>
+    Running-max தந்திரத்தை <a href="../attention/">attention பக்கத்தில்</a> ஏற்கனவே
+    சந்தித்திருக்கிறீர்கள். அங்கே அது <code>exp()</code> overflow ஆகாமல் இருக்க மட்டுமே
+    இருந்தது. ஆனால் "max-ஐக் கழி" என்பது முழு row-ஐயும் பார்க்க முடியும் என்று
+    கருதுகிறது, streaming-ல் அது முடியாது. அதனால் இதுவரை பார்த்த max-ஐச் சுமந்து
+    செல்கிறீர்கள்; பிறகு வரும் ஒரு block-ல் அதைவிடப் பெரியது இருந்தால், ஏற்கனவே
+    சேர்த்ததையெல்லாம் திரும்பிச் சரிசெய்கிறீர்கள் — e<sup>(m<sub>old</sub> −
+    m<sub>new</sub>)</sup> ஆல் பெருக்கி. அந்தத் திருத்தம் ஒரே ஒரு வரி, அதை நீக்கினால்
+    எந்த error-ம் எழாது. அதே 32 scores கொண்ட row, எட்டு வீதம் நான்கு blocks-ஆக stream
+    செய்யப்பட்டது — அந்த வரியுடனும், இல்லாமலும்:
+  </p>
+
+<pre><code>ordinary softmax vs online softmax, max abs diff: 0.00e+00  <span class="ok">exact</span>
+ordinary softmax vs NO-RESCALE version, max abs diff: 6.53e-01  <span class="hl">wrong</span>
+no-rescale weights sum to <span class="hl">0.190131</span>, not 1.0
+
+first 6 weights, side by side:
+  correct:  [0.003957 0.016505 0.003782 0.000028 0.021219 0.005355]
+  online:   [0.003957 0.016505 0.003782 0.000028 0.021219 0.005355]  <span class="ok">✓</span>
+  broken:   [0.000752 0.003138 0.000719 0.000005 0.004034 0.001018]</code></pre>
+
+  <p>
+    பூஜ்ஜிய வேறுபாடு — "போதுமான அளவு நெருக்கம்" அல்ல, <em>பூஜ்ஜியம்</em> — சாதாரண
+    softmax-க்கு எதிராக. Rescale இல்லாமல், எடைகள் கூட்டினால் 0.19. மூன்று வெவ்வேறு
+    baselines-ஐ வைத்து அளக்கப்பட்ட எண்களைக் கூட்டியிருக்கிறீர்கள், மூன்று
+    நாணயங்களில் இருக்கும் விலைப் பட்டியலைக் கூட்டுவது போல. எதுவும் error எறியாது.
+    விடை மட்டும் தவறு.
+  </p>
+
+  <p class="thanglish">
+    Rescale illaadha version-la error onnum varaadhu — weights sum 0.19 aagum,
+    answer silently thappu. Adhu dhaan indha paper-oda mukkiya oru line.
+  </p>
+
+  <p class="muted">
+    இந்தத் தந்திரம் Dao-வுடையது அல்ல, paper-ம் அதைச் சொல்கிறது: இது Milakov &amp;
+    Gimelshein-ன் 2018 online normalizer calculation. FlashAttention-ன் பங்களிப்பு,
+    <em>முழு</em> attention pipeline-ஐயும் — <code>@ V</code> உட்பட — அதன் வழியாக ஓட்டியது,
+    அதனால் n×n matrix ஒருபோதும் இருக்க வேண்டியதில்லை.
+  </p>
+
+  <h2>Tiling: அதே விடை, தட்டையான memory</h2>
+
+  <p>
+    இப்போது tile செய்யுங்கள். Q row blocks-ஆக வெட்டப்படுகிறது, K-ம் V-ம் column
+    blocks-ஆக. ஒவ்வொரு query block-க்கும் எல்லா key blocks-ஐயும் நடந்து செல்கிறீர்கள்,
+    ஒவ்வொரு row-க்கும் m, l மற்றும் ஒரு running output O-ஐச் சுமந்து. m நகரும்போது
+    l-ம் O-ம் இரண்டுமே rescale ஆகின்றன.
+  </p>
+
+<pre><code>      n   max abs diff   std peak KB   flash peak KB   std HBM MB  flash HBM MB
+    128       2.50e-16          64.0            64.5         0.38          0.19
+    256       1.94e-16         256.0            64.5         1.25          0.62
+    512       1.39e-16        1024.0            64.5         4.50          2.25
+   1024       9.02e-17        4096.0            64.5        17.00          8.50
+   2048       8.33e-17       <span class="hl">16384.0</span>            <span class="ok">64.5</span>        66.00         33.00</code></pre>
+
+  <p>
+    வேறுபாட்டுத் தூண் 1e−16 அளவிலான float சத்தம் மட்டுமே. n 4× ஆகும்போது standard peak
+    16× ஏறுகிறது; flash peak <em>நகரவே இல்லை</em>, ஏனெனில் working set என்பது இரண்டு
+    tiles-ம் இரண்டு running statistics-ம் மட்டுமே — இவை எதுவும் sequence length-ஐச்
+    சார்ந்தவை அல்ல. அந்தத் தட்டையான தூண்தான் 32k, 128k contexts memory கேள்வியாக
+    இருப்பதை நிறுத்தியது.
+  </p>
+
+  <div class="note">
+    <strong>Quadratic vs linear, ஒரே table-ல்.</strong> Attention-ன் memory-ல்
+    இருக்கும் quadratic term கணிதத்தில் இருந்து போகவே இல்லை — அது
+    <em>allocation</em>-ல் இருந்துதான் போனது. n<sup>2</sup> scores ஒவ்வொன்றையும்
+    இன்னும் நீங்கள் கணக்கிடுகிறீர்கள். ஒரு நேரத்தில் ஒரு tile-க்கு மேல் வைத்திருப்பதில்லை,
+    அவ்வளவுதான்.
+  </div>
+
+  <h2>ஒரு tile எவ்வளவு பெரியதாக இருக்க வேண்டும்?</h2>
+
+  <p>
+    பெரிய blocks என்றால் K, V மேல் குறைவான passes, அதனால் குறைவான traffic. அப்படியானால்
+    block-ஐ முழு sequence அளவுக்கே ஏன் ஆக்கக்கூடாது? ஏனெனில் tile SRAM-ல் அடங்க வேண்டும்;
+    அதைத் தாண்டினால் அது HBM-க்குத் திரும்பிக் கசியும், நீங்கள் standard attention-ஐ
+    கூடுதல் loop overhead-உடன் மீண்டும் கண்டுபிடித்ததாகிவிடும்.
+  </p>
+
+<pre><code>n = 1024, d = 64, SRAM budget assumed 96 KB
+standard attention traffic: 17.00 MB
+
+  block     HBM MB   tile working set KB  fits SRAM?
+     16      32.50                  13.1  yes
+     32      16.50                  28.2  yes
+     64       8.50                  64.5  <span class="ok">yes</span>
+    128       4.50                 161.0  <span class="hl">NO -- spills</span>
+    256       2.50                 450.0  NO -- spills
+    512       1.50                1412.0  NO -- spills
+   1024       1.00                4872.0  NO -- spills</code></pre>
+
+  <p>
+    Block 16-க்கு 32.5 MB செலவு, standard attention-ன் 17 MB-ஐ விட <em>மோசம்</em>,
+    ஏனெனில் K-ம் V-ம் 64 முறை மீண்டும் படிக்கப்படுகின்றன. Block 128 4.5 MB-ல் அழகாக
+    இருக்கும், ஆனால் அது அடங்காது. சிறந்தது என்பது இன்னும் அடங்கும் மிகப்பெரிய tile —
+    இங்கே 64. நிஜமான hardware-ல் அந்த budget என்பது streaming multiprocessor-க்கான
+    shared memory: A100-ல் ஒரு SM-க்கு 164 KB, அதில் ஒரு kernel பொதுவாக 96–100 KB
+    பயன்படுத்த முடியும். Block size-ஐத் தேர்ந்தெடுப்பது அந்த எண்ணும் head dimension-ம்,
+    கணிதம் அல்ல.
+  </p>
+
+  <h2>Backward pass: flops கொடு, bytes மிச்சப்படுத்து</h2>
+
+  <p>
+    Standard attention-ன் backward pass-க்கு, forward pass கணக்கிட்ட n×n probability
+    matrix வேண்டும், அதனால் அதை அது சேமித்து வைக்கிறது. FlashAttention மறுக்கிறது,
+    m-ஐயும் l-ஐயும் மட்டும் வைத்துக்கொள்கிறது — row-க்கு இரண்டு floats — திரும்பி வரும்
+    வழியில் score tiles-ஐ <em>recomputation</em> செய்கிறது.
+  </p>
+
+<pre><code>      n   std stored MB   flash stored MB   std GFLOPs   flash GFLOPs  extra flops
+    512            1.38              0.38         0.17           0.20          20%
+   2048           17.50              1.52         2.68           3.22          20%
+   8192          <span class="hl">262.00</span>              <span class="ok">6.06</span>        42.95          51.54          <span class="hl">20%</span></code></pre>
+
+  <p>
+    n=8192-ல் ஒரு attention head-க்கு 256 MB மிச்சம், 20% கூடுதல் கணக்குக்கு. இருந்தும்
+    wall-clock-ல் அது வேகமாகவே வருகிறது, ஏனெனில் — என்னுடன் சேர்ந்து சொல்லுங்கள் —
+    கணக்கு ஒருபோதும் bottleneck-ஆக இருந்ததில்லை. இந்த பரிமாற்றத்தை நீங்கள் ஏற்கனவே
+    செய்திருக்கிறீர்கள்: நீங்கள் எப்போதும் அமைக்கும் training config-ல்
+    <code>gradient_checkpointing=True</code> செய்வது இதுதான். FlashAttention இதை ஒரு
+    முழு layer-க்குப் பதிலாக ஒரே operator-க்குப் பயன்படுத்துகிறது, கணக்கு அவ்வளவு
+    சாதகமாக இருக்கிறது என்பதால் இது ஒரு பரிமாற்றமாகவே இல்லாமல் போகிறது — memory-ம்
+    வேகமும் <em>இரண்டுமே</em> கிடைக்கிறது.
+  </p>
+
+  <p class="thanglish">
+    Backward pass-la n×n matrix save panna maatom — m, l mattum vachi score tiles-ai
+    thirumba compute panrom. 20% extra flops, aana 256 MB memory saving.
+  </p>
+
+  <h2>Exact என்றால் exact</h2>
+
+  <p>
+    இதைத்தான் மக்கள் தவறாகப் புரிந்துகொள்கிறார்கள், அதனால் ஒரு உண்மையான approximation-க்கு
+    எதிராக இதோ. ஒப்பிடும் முறை 128-அகல local window — FlashAttention இடம்பெயர்த்த sparse
+    குடும்பத்துக்கு ஒரு பிரதிநிதி.
+  </p>
+
+<pre><code>flash vs standard, max abs diff:  1.665e-16
+flash vs standard, allclose:      <span class="ok">True</span>
+local-window vs standard, max abs diff: 3.224e-01
+local-window vs standard, allclose:     <span class="hl">False</span></code></pre>
+
+  <p>
+    1.665e−16 என்பது கூட்டல் வரிசையின் விளைவு, approximation அல்ல. 0.32 என்பது
+    attention-ன் பெயரை அணிந்துகொண்ட வேறொரு function. அந்த இடைவெளிதான், ஒரு வருடத்துக்குள்
+    FlashAttention எல்லா இடத்திலும் இருந்ததற்கும் Linformer இல்லாததற்கும் முழுக் காரணம்.
+  </p>
+
+  <h2>இல்லை, இது குறைவான கணக்குச் செய்வதில்லை</h2>
+
+  <p>
+    நான் கொல்ல விரும்பும் நம்பிக்கை இதுதான். Standard version செய்யும் ஒவ்வொரு
+    பெருக்கலையும் tiled version-ம் செய்கிறது:
+  </p>
+
+<pre><code>      n   std GFLOPs   flash GFLOPs   std HBM MB   flash HBM MB  traffic cut
+    512        0.067          <span class="ok">0.067</span>         4.50           2.25         2.0x
+   1024        0.268          <span class="ok">0.268</span>        17.00           8.50         2.0x
+   2048        1.074          <span class="ok">1.074</span>        66.00          33.00         2.0x
+   4096        4.295          <span class="ok">4.295</span>       260.00         130.00         2.0x</code></pre>
+
+  <p>
+    Flop தூண்கள் ஒரே மாதிரி. traffic மட்டுமே நகர்கிறது. (என் 2× சாதாரணமானது, ஏனெனில் 64-dim
+    head-க்கு 64-அகல tile-ஐ நான் hardcode செய்திருக்கிறேன் — இங்கே விகிதம் block size
+    ஆனது head dimension-ஆல் என்று அளவிடப்படுகிறது, அதுதான் demo 4-ன் விஷயம். நிஜமான
+    kernels-லிருந்து கணிசமான wall-clock speedups paper சொல்கிறது; laptop-ல் அவற்றை என்னால்
+    மீண்டும் உருவாக்க முடியாது, அதனால் அந்த எண்களைப் paper-க்கே விட்டுவிடுகிறேன்.)
+  </p>
+
+  <h2>FlashAttention-2, சுருக்கமாக</h2>
+
+  <p>
+    Dao-வின் 2023 தொடர்ச்சி யோசனையை மாற்றவில்லை. அதே tiling, அதே online softmax, அதே
+    exactness. மாறுவது CUDA work partitioning: matmul அல்லாத operations குறைவு (rescaling
+    குறைவான முறை நடக்கும்படி மறுகட்டமைக்கப்படுகிறது), batch-ம் heads-ம் மட்டுமல்லாமல்
+    sequence dimension மேலும் parallelism, மேலும் ஒரு thread block-க்குள் warps-க்கு
+    இடையே வேலையை நன்றாகப் பிரிப்பது — அதனால் அவை shared memory வழியாகக் குறைவாகவே
+    பகிர்ந்துகொள்கின்றன.
+  </p>
+
+  <p>
+    நடைமுறையில் இது மிக முக்கியம், ஆனால் கருத்தளவில் இது புதிது அல்ல. Tile-ஐயும்
+    running statistics-ஐயும் நீங்கள் புரிந்துகொண்டிருந்தால், FlashAttention-2-ஐயும்
+    புரிந்துகொண்டீர்கள். FlashAttention-3 இன்னும் ஒரு படி மேலே போகிறது, Hopper-க்கே
+    உரிய hardware-ஐக் குறிவைத்து.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने <a href="../attention/">attention वाला पन्ना</a> पढ़ा था — अपना भी, और बाक़ी
+    सबका भी — और वही ग़लत नतीजा लेकर लौटा जो सब लेते हैं: attention धीमा है क्योंकि वह
+    n<sup>2</sup> काम करता है। तो पूरा एक साल मैं यही मानता रहा कि हल <em>कम</em> काम
+    करने में है: sparse patterns, low-rank तरकीबें, sliding windows. फिर FlashAttention
+    आया, बिलकुल वही गणित किया, और उसी hardware पर कई गुना तेज़ निकला।
+  </p>
+
+  <p>
+    किसी ने मुझे नहीं बताया था कि उस वाक्य का n<sup>2</sup> <strong>bytes</strong> का
+    आँकड़ा है, flops का नहीं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (memory traffic, HBM, SRAM,
+    tile, block, online softmax, running maximum, recomputation, compute-bound,
+    memory-bound, exact…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में
+    आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>यह bug आप पहले से जानते हैं</h2>
+
+  <p>
+    यह function आपने लिखा है। test file पर चलता है, असली file पर दम तोड़ देता है:
+  </p>
+
+<pre><code>rows = json.load(open("events.json"))   # 40GB. laptop में सिर्फ़ 16.
+rows = [normalise(r) for r in rows]
+rows = [enrich(r) for r in rows]
+return summarise(rows)</code></pre>
+
+  <p>
+    तीन passes, तीन बार पूरा data memory में, और machine अपनी ज़िंदगी swap में काट देती
+    है। हल आपको बिना सोचे पता है। आप stream करते हैं:
+  </p>
+
+<pre><code>total, count, best = 0.0, 0, None
+for chunk in read_in_chunks("events.json"):     # working set स्थिर रहता है
+    for r in chunk:
+        r = enrich(normalise(r))
+        total += r.value; count += 1           # running statistics साथ ले चलो
+        best = r if best is None else max(best, r)
+return total / count, best</code></pre>
+
+  <p>
+    वही जवाब। एक pass. स्थिर memory. पूरा paper यही है। वह 40GB की file ही n×n score
+    matrix है, वह swap ही HBM है, और वे running statistics एक max और एक sum हैं — और
+    यही दोनों softmax को चाहिए।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer वाली उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>HBM</strong></td><td>GPU की main memory. ~40GB, ~1.5TB/s. जहाँ आपके tensors रहते हैं।</td><td>Disk. बड़ी, और हर बार छूने की क़ीमत लगती है</td></tr>
+      <tr><td><strong>SRAM</strong></td><td>Chip पर मौजूद scratch memory, हर streaming multiprocessor के लिए ~100KB, दस गुना तेज़</td><td>L1 cache. बहुत छोटी, मुफ़्त, थोड़ी देर के लिए ही आपकी</td></tr>
+      <tr><td><strong>Memory-bound</strong></td><td>गणित करने वाली units खाली बैठकर data आने का इंतज़ार कर रही हैं</td><td>जिसे CPU-bound समझा था, वह असल में IO-bound निकला</td></tr>
+      <tr><td><strong>Tiling</strong></td><td>Matrix को ऐसे blocks में चलाओ जो SRAM में समा जाएँ</td><td>Chunked reads. <code>read(8192)</code>, <code>read()</code> नहीं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>इसने approximations को क्यों हराया</h2>
+
+  <p>
+    2019 से 2022 तक "efficient attention" papers की एक पूरी क़िस्म चली: Reformer,
+    Linformer, Performer, Longformer, BigBird. हर एक ने <em>सस्ता, अलग</em> function
+    गिनकर asymptotic flop count घटाया — कोई sparse pattern, कोई low-rank projection,
+    कोई local window — और फिर तर्क दिया कि गुणवत्ता का नुक़सान स्वीकार्य है। इनमें से
+    ज़्यादातर wall-clock समय में तेज़ थे ही नहीं, क्योंकि उन्होंने वही चीज़ घटाई जो
+    bottleneck थी ही नहीं। FlashAttention ने वह घटाया जो bottleneck था, और वह
+    <strong>बिलकुल वही function</strong> गिनता है जो आपका मौजूदा attention गिनता है।
+    न गुणवत्ता पर बहस, न किसी ablation का बचाव।
+  </p>
+
+  <div class="note">
+    <strong>Interview का जवाब यही है।</strong> "FlashAttention एक IO नतीजा है,
+    arithmetic नतीजा नहीं।" Paper का अपना उपशीर्षक है
+    <em>Fast and Memory-Efficient Exact Attention with IO-Awareness</em>. उस शीर्षक में
+    असली काम करने वाला शब्द है <em>exact</em>.
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <p>
+    Attention वाला सूत्र नहीं — वह आपके पास पहले से है। यह online softmax update है,
+    गणित का वह टुकड़ा जो streaming को मुमकिन बनाता है। आप scores एक बार में एक block
+    देखते हैं और दो संख्याएँ साथ ले चलते हैं: m (अब तक का सबसे बड़ा score) और l
+    (running sum)।
+  </p>
+
+  <div class="formula">
+    m<sub>new</sub> = max(m<sub>old</sub>, max S<sub>block</sub>)<br>
+    l<sub>new</sub> = e<sup>(m<sub>old</sub> − m<sub>new</sub>)</sup>
+    l<sub>old</sub> + Σ e<sup>(S<sub>block</sub> − m<sub>new</sub>)</sup><br>
+    O<sub>new</sub> = e<sup>(m<sub>old</sub> − m<sub>new</sub>)</sup>
+    O<sub>old</sub> + e<sup>(S<sub>block</sub> − m<sub>new</sub>)</sup> V<sub>block</sub>
+  </div>
+
+  <p>इसे pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>S<sub>block</sub></code></td><td>(B<sub>r</sub>, B<sub>c</sub>)</td><td>एक score tile. इतना बड़ा कि SRAM में समा जाए। HBM में कभी लिखा नहीं जाता, दोबारा कभी दिखता नहीं</td></tr>
+      <tr><td><code>m</code></td><td>(B<sub>r</sub>, 1)</td><td>हर query row का running maximum. वही overflow-safety max जो सामान्य softmax में है — बस अब वह टुकड़ों में काम करना सीख गया है</td></tr>
+      <tr><td><code>e<sup>(m<sub>old</sub>−m<sub>new</sub>)</sup></code></td><td>हर row के लिए एक scalar</td><td><strong>वह rescale.</strong> पूरा बोझ यही line उठाती है। पुराने max के हिसाब से जो कुछ जमा हुआ था, वह नए baseline पर बदल दिया जाता है</td></tr>
+      <tr><td><code>l</code></td><td>(B<sub>r</sub>, 1)</td><td>Running denominator. सिर्फ़ एक बार, बिलकुल अंत में लगाया जाता है</td></tr>
+      <tr><td><code>O</code></td><td>(B<sub>r</sub>, d)</td><td>Running बिना-normalise output. l के साथ ही rescale होता है, क्योंकि यह एक weighted sum है जिसके weights हिल गए</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>समय असल में जाता कहाँ है</h2>
+
+  <p>
+    जो GPU मेरे पास है ही नहीं उस पर मैं benchmark नहीं कर सकता, और नाटक भी नहीं करूँगा।
+    इसलिए script गिनती करती है: तेज़ और धीमी memory के बीच से गुज़रने वाला हर byte, हर
+    multiply-add, एक <code>Counters</code> object में हाथ से गिना हुआ। Reads और writes
+    गिनना ही तो paper करता है।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>head dim d = 64, float32
+
+      n     HBM MB    GFLOPs  bytes/flop  n^2 share
+    128       0.38     0.004       0.094      66.7%
+    512       4.50     0.067       0.070      88.9%
+   2048      66.00     1.074       0.064      97.0%
+   8192    1032.00    17.180       0.063      <span class="hl">99.2%</span></code></pre>
+
+  <p>
+    17 GFLOPs कुछ भी नहीं है — आज का GPU उसे एक millisecond से कम में खा जाता है। पर
+    उसके साथ <strong>एक gigabyte</strong> memory traffic आता है, और उस gigabyte का
+    99.2% सिर्फ़ score matrix है जो बाहर लिखी जाती है और तीन बार वापस पढ़ी जाती है।
+    जिस चीज़ को आप कभी रखना ही नहीं चाहते थे, क़ीमत सिर्फ़ उसी की चुक रही है।
+  </p>
+
+  <p>
+    अनुपात क़रीब 0.06 bytes प्रति flop पर टिक जाता है। एक A100 fp32 में लगभग
+    19.5 TFLOP/s करता है और HBM लगभग 1.5 TB/s — यानी वह ख़ुद को सिर्फ़ 0.08 bytes प्रति
+    flop ही खिला सकता है। Attention उस रेखा की ग़लत तरफ़ बैठा है: गुणा, हिलाने-डुलाने
+    का इंतज़ार करता है।
+  </p>
+
+  <h2>Online softmax: पूरा विचार, दो variables में</h2>
+
+  <p>
+    Running-max वाली तरकीब से आप <a href="../attention/">attention वाले पन्ने</a> पर
+    मिल चुके हैं, जहाँ वह सिर्फ़ इसलिए थी कि <code>exp()</code> overflow न हो। पर
+    "max घटाओ" यह मानकर चलता है कि आप पूरी row देख सकते हैं, और streaming में आप नहीं
+    देख सकते। तो आप अब तक देखा गया max साथ ले चलते हैं, और जब बाद का कोई block उससे
+    बड़ा score लाता है तो जो कुछ जमा हो चुका है उसे लौटकर ठीक करते हैं — उसे
+    e<sup>(m<sub>old</sub> − m<sub>new</sub>)</sup> से गुणा करके। वह सुधार एक ही line
+    है, और उसे हटाने पर कोई error नहीं उठता। वही 32 scores वाली row, आठ-आठ के चार
+    blocks में stream की गई, उस line के साथ और उसके बिना:
+  </p>
+
+<pre><code>ordinary softmax vs online softmax, max abs diff: 0.00e+00  <span class="ok">exact</span>
+ordinary softmax vs NO-RESCALE version, max abs diff: 6.53e-01  <span class="hl">wrong</span>
+no-rescale weights sum to <span class="hl">0.190131</span>, not 1.0
+
+first 6 weights, side by side:
+  correct:  [0.003957 0.016505 0.003782 0.000028 0.021219 0.005355]
+  online:   [0.003957 0.016505 0.003782 0.000028 0.021219 0.005355]  <span class="ok">✓</span>
+  broken:   [0.000752 0.003138 0.000719 0.000005 0.004034 0.001018]</code></pre>
+
+  <p>
+    शून्य अंतर — "काफ़ी क़रीब" नहीं, <em>शून्य</em> — सामान्य softmax के मुक़ाबले। और
+    rescale के बिना, weights का जोड़ 0.19. आपने ऐसी संख्याएँ जोड़ दीं जो तीन अलग
+    baselines पर नापी गई थीं, जैसे तीन मुद्राओं में लिखी क़ीमतों का column जोड़ देना।
+    कुछ भी throw नहीं होता। जवाब बस ग़लत होता है।
+  </p>
+
+  <p class="muted">
+    यह तरकीब Dao की नहीं है, और paper यह कहता भी है: यह Milakov &amp; Gimelshein की
+    2018 वाली online normalizer calculation है। FlashAttention का योगदान यह है कि उसने
+    <em>पूरी</em> attention pipeline को — <code>@ V</code> समेत — उसमें से गुज़ारा,
+    ताकि n×n matrix को कभी बनना ही न पड़े।
+  </p>
+
+  <h2>Tiling: वही जवाब, सपाट memory</h2>
+
+  <p>
+    अब इसे tile कीजिए। Q row blocks में कटता है, K और V column blocks में। हर query
+    block के लिए आप हर key block पर चलते हैं, और हर row के लिए m, l तथा एक running
+    output O साथ ले चलते हैं। जब m हिलता है, l और O दोनों rescale होते हैं।
+  </p>
+
+<pre><code>      n   max abs diff   std peak KB   flash peak KB   std HBM MB  flash HBM MB
+    128       2.50e-16          64.0            64.5         0.38          0.19
+    256       1.94e-16         256.0            64.5         1.25          0.62
+    512       1.39e-16        1024.0            64.5         4.50          2.25
+   1024       9.02e-17        4096.0            64.5        17.00          8.50
+   2048       8.33e-17       <span class="hl">16384.0</span>            <span class="ok">64.5</span>        66.00         33.00</code></pre>
+
+  <p>
+    अंतर वाला column 1e−16 पर float का शोर भर है। n हर बार 4× होने पर standard peak
+    16× चढ़ता है; flash peak <em>हिलता ही नहीं</em>, क्योंकि working set है दो tiles और
+    दो running statistics — इनमें से कोई भी sequence length पर निर्भर नहीं। वही सपाट
+    column है जिसकी वजह से 32k और 128k contexts memory का सवाल नहीं रहे।
+  </p>
+
+  <div class="note">
+    <strong>Quadratic बनाम linear, एक ही table में।</strong> Attention की memory का
+    quadratic term गणित से कभी गया ही नहीं — वह <em>allocation</em> से गया। आप आज भी
+    n<sup>2</sup> में से हर score गिनते हैं। बस एक बार में एक tile से ज़्यादा कभी
+    रखते नहीं।
+  </div>
+
+  <h2>Tile कितना बड़ा होना चाहिए?</h2>
+
+  <p>
+    बड़े blocks का मतलब K और V पर कम passes, यानी कम traffic. तो block को पूरी sequence
+    जितना ही क्यों न बना दें? क्योंकि tile को SRAM में समाना है; उससे आगे वह वापस HBM
+    में गिरता है और आपने standard attention को अतिरिक्त loop overhead के साथ दोबारा
+    खोज लिया।
+  </p>
+
+<pre><code>n = 1024, d = 64, SRAM budget assumed 96 KB
+standard attention traffic: 17.00 MB
+
+  block     HBM MB   tile working set KB  fits SRAM?
+     16      32.50                  13.1  yes
+     32      16.50                  28.2  yes
+     64       8.50                  64.5  <span class="ok">yes</span>
+    128       4.50                 161.0  <span class="hl">NO -- spills</span>
+    256       2.50                 450.0  NO -- spills
+    512       1.50                1412.0  NO -- spills
+   1024       1.00                4872.0  NO -- spills</code></pre>
+
+  <p>
+    Block 16 पर लागत 32.5 MB — standard attention के 17 MB से भी <em>ख़राब</em>,
+    क्योंकि K और V 64 बार दोबारा पढ़े जाते हैं। Block 128, 4.5 MB पर बहुत अच्छा होता,
+    पर वह समाता नहीं। सबसे अच्छा वही है जो सबसे बड़ा होकर भी समा जाए — यहाँ 64. असली
+    hardware पर वह budget हर streaming multiprocessor की shared memory है: A100 में
+    प्रति SM 164 KB, जिसमें से एक kernel आम तौर पर 96–100 KB इस्तेमाल कर पाता है। वही
+    संख्या और head dimension block size तय करते हैं, गणित नहीं।
+  </p>
+
+  <h2>Backward pass: flops दो, bytes बचाओ</h2>
+
+  <p>
+    Standard attention के backward pass को वही n×n probability matrix चाहिए जो forward
+    pass ने गिनी थी, इसलिए वह उसे सँभालकर रखता है। FlashAttention मना कर देता है, सिर्फ़
+    m और l रखता है — हर row के लिए दो floats — और लौटते समय score tiles का
+    <em>recomputation</em> कर लेता है।
+  </p>
+
+<pre><code>      n   std stored MB   flash stored MB   std GFLOPs   flash GFLOPs  extra flops
+    512            1.38              0.38         0.17           0.20          20%
+   2048           17.50              1.52         2.68           3.22          20%
+   8192          <span class="hl">262.00</span>              <span class="ok">6.06</span>        42.95          51.54          <span class="hl">20%</span></code></pre>
+
+  <p>
+    n=8192 पर यह हर attention head के लिए 256 MB की बचत है, बदले में 20% ज़्यादा गणित।
+    और फिर भी wall-clock में यह तेज़ ही निकलता है, क्योंकि — मेरे साथ बोलिए — गणित कभी
+    bottleneck था ही नहीं। यह सौदा आप पहले भी कर चुके हैं: हर training config में
+    <code>gradient_checkpointing=True</code> यही करता है। FlashAttention इसे पूरी layer
+    के बजाय एक ही operator पर लगाता है, और हिसाब इतना फ़ायदे का है कि यह सौदा रह ही
+    नहीं जाता — memory <em>और</em> रफ़्तार, दोनों मिलते हैं।
+  </p>
+
+  <h2>Exact का मतलब exact</h2>
+
+  <p>
+    यही दावा लोग सबसे ज़्यादा ग़लत समझते हैं, इसलिए इसे एक असली approximation के सामने
+    रखते हैं। तुलना का तरीक़ा है 128 चौड़ी local window — उसी sparse परिवार का प्रतिनिधि
+    जिसे FlashAttention ने हटाया।
+  </p>
+
+<pre><code>flash vs standard, max abs diff:  1.665e-16
+flash vs standard, allclose:      <span class="ok">True</span>
+local-window vs standard, max abs diff: 3.224e-01
+local-window vs standard, allclose:     <span class="hl">False</span></code></pre>
+
+  <p>
+    1.665e−16 जोड़ने के क्रम का असर है, approximation नहीं। 0.32 attention का नाम पहने
+    हुए एक अलग function है। वही फ़ासला पूरी दलील है कि FlashAttention साल भर में हर
+    जगह क्यों था और Linformer क्यों नहीं।
+  </p>
+
+  <h2>और नहीं, यह कम गणित नहीं कर रहा</h2>
+
+  <p>
+    यही धारणा मैं मारना चाहता हूँ। standard version जो भी गुणा करता है, tiled version
+    भी वही करता है:
+  </p>
+
+<pre><code>      n   std GFLOPs   flash GFLOPs   std HBM MB   flash HBM MB  traffic cut
+    512        0.067          <span class="ok">0.067</span>         4.50           2.25         2.0x
+   1024        0.268          <span class="ok">0.268</span>        17.00           8.50         2.0x
+   2048        1.074          <span class="ok">1.074</span>        66.00          33.00         2.0x
+   4096        4.295          <span class="ok">4.295</span>       260.00         130.00         2.0x</code></pre>
+
+  <p>
+    Flop वाले columns एक जैसे हैं। सिर्फ़ traffic हिलता है। (मेरा 2× मामूली है क्योंकि
+    मैंने 64-dim head के लिए 64 चौड़ा tile hardcode किया है — यहाँ अनुपात block size
+    बटा head dimension के साथ चलता है, demo 4 इसी के बारे में है। Paper असली kernels से
+    काफ़ी बड़े wall-clock speedups बताता है; उन्हें मैं laptop पर दोहरा नहीं सकता,
+    इसलिए वे आँकड़े paper के लिए छोड़ देता हूँ।)
+  </p>
+
+  <h2>FlashAttention-2, संक्षेप में</h2>
+
+  <p>
+    Dao का 2023 वाला follow-up विचार नहीं बदलता। वही tiling, वही online softmax, वही
+    exactness. बदलता है CUDA work partitioning: matmul के अलावा वाले operations कम
+    (rescaling को इस तरह बदला गया कि वह कम बार हो), batch और heads के साथ-साथ sequence
+    dimension पर भी parallelism, और एक thread block के भीतर warps के बीच काम का बेहतर
+    बँटवारा ताकि वे shared memory के ज़रिए कम साझा करें।
+  </p>
+
+  <p>
+    व्यवहार में इसका बहुत फ़र्क़ पड़ता है, पर सैद्धांतिक रूप से यह नया नहीं है। अगर
+    आपने tile और running statistics समझ लिए, तो आपने FlashAttention-2 भी समझ लिया।
+    FlashAttention-3 और आगे जाता है, Hopper-विशिष्ट hardware को निशाना बनाकर।
+  </p>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no GPU, no fake benchmark. The memory hierarchy is a counter object —
+  every read and write is added up by hand, because reads and writes are the paper's actual
+  subject. Every function under 30 lines.
+</p>
+<p>
+  <a href="flash_attention_from_scratch.py" download><strong>Download the full
+  script</strong></a> — about 180 lines of mechanism plus nine runnable demos.
+  <code>softmax</code> and <code>standard_attention</code> are in there too: the ones from the
+  <a href="../attention/">attention page</a>, with counter calls added. Then:
+</p>
+<pre><code>python3 flash_attention_from_scratch.py</code></pre>
+
+<pre><code>def online_softmax(row, block=8, rescale=True):
+    m = -np.inf        # running max
+    l = 0.0            # running sum of exp(x - m)
+    for j in range(0, len(row), block):
+        chunk = row[j:j + block]
+        m_new = max(m, chunk.max())
+        if rescale:
+            l = l * np.exp(m - m_new) if m &gt; -np.inf else l
+        l = l + np.exp(chunk - m_new).sum()
+        m = m_new
+    # Second pass only because we want the full vector back for comparison;
+    # attention does not need it, because it accumulates O as it goes.
+    return np.exp(row - m) / l
+
+
+def flash_attention(Q, K, V, c, Br=64, Bc=64, rescale=True, keep_full_S=False):
+    n, d = Q.shape
+    O = np.zeros((n, d))
+
+    for i in range(0, n, Br):
+        Qi = Q[i:i + Br]
+        c.move(Qi.size)                       # load the query tile
+        Oi = np.zeros_like(Qi)
+        mi = np.full((Qi.shape[0], 1), -np.inf)
+        li = np.zeros((Qi.shape[0], 1))
+        # working set: one Q tile, one K tile, one V tile, one score tile,
+        # plus the two running statistics. Independent of n.
+        c.scratch(Qi.size + 2 * Bc * d + Qi.shape[0] * Bc + 2 * Qi.shape[0])
+
+        for j in range(0, n, Bc):
+            Kj, Vj = K[j:j + Bc], V[j:j + Bc]
+            c.move(Kj.size + Vj.size)         # load the key/value tile
+
+            Sij = Qi @ Kj.T                   # (Br, Bc) -- lives in SRAM only
+            c.matmul(Qi.shape[0], d, Kj.shape[0])
+
+            m_new = np.maximum(mi, Sij.max(axis=1, keepdims=True))
+            P = np.exp(Sij - m_new)           # unnormalised weights
+            if rescale:
+                correction = np.exp(mi - m_new)
+                correction[np.isnan(correction)] = 0.0   # -inf minus -inf
+                li = correction * li + P.sum(axis=1, keepdims=True)
+                Oi = correction * Oi + P @ Vj            # rescale the output too
+            else:
+                li = li + P.sum(axis=1, keepdims=True)   # THE BUG
+                Oi = Oi + P @ Vj
+            c.matmul(Qi.shape[0], Kj.shape[0], d)
+            mi = m_new
+
+        O[i:i + Br] = Oi / li                 # normalise once, at the end
+        c.move(Oi.size)
+
+    return O</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a living —
+  reverse-engineering from broken behaviour is your native mode, and every row here is a real
+  edit to the script you just downloaded.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Pass <code>rescale=False</code> to <code>flash_attention</code> — drop the <code>correction *</code> on l and O</td><td>Demo 2's row: weights sum to 0.190131 instead of 1.0, max abs error 6.53e−01. No exception, no warning.</td></tr>
+    <tr><td>Call <code>flash_attention(..., Br=512, Bc=512)</code> on demo 4's SRAM budget</td><td>Working set jumps to 1412.0 KB against a 96 KB budget. On real hardware the tile spills to HBM and the traffic saving evaporates.</td></tr>
+    <tr><td>Set <code>Br=Bc=16</code></td><td>Traffic climbs to 32.50 MB — <em>worse</em> than standard attention's 17.00 MB, because K and V get re-read 64 times.</td></tr>
+    <tr><td>Pass <code>keep_full_S=True</code> to keep the score matrix "just for debugging"</td><td>Peak extra memory goes 64.5 KB → 4096.0 KB. 64× worse. The tiling saved you nothing; the saving was in never allocating.</td></tr>
+    <tr><td>In <code>online_softmax</code>, replace <code>np.exp(chunk - m_new)</code> with <code>np.exp(chunk)</code></td><td>Demo 9's failure: on scores near 800, <code>exp()</code> returns <code>inf</code> and the weights come back <code>[nan nan nan nan]</code>.</td></tr>
+    <tr><td>Believe the speedup is fewer flops — then read demo 7's flop columns</td><td><code>0.067 / 0.067</code>, <code>0.268 / 0.268</code>, <code>1.074 / 1.074</code>. Identical. Only the traffic column moves.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — the introduction, the algorithm
+  section with Algorithm 1, and the IO-complexity analysis that follows it.
+  Skip the CUDA-kernel details and the benchmark tables on a first pass. The
+  proof you actually want is the one showing standard attention moves
+  Θ(nd + n<sup>2</sup>) bytes while the tiled version moves Θ(n<sup>2</sup>d<sup>2</sup>/M),
+  where M is the SRAM size — that's demo 4, written as a theorem.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is almost none here, and what there is you already have. The online softmax update is
+  one algebraic identity: e<sup>(a−c)</sup> = e<sup>(a−b)</sup>·e<sup>(b−c)</sup>. That's it.
+  That's the paper's maths. If you can see why rescaling a running total by a constant factor
+  keeps it correct, you can derive the update yourself.
+</p>
+<p>
+  What the paper actually demands is a skill you already have: knowing a memory hierarchy
+  exists and that crossing it costs. FlashAttention took five years to appear after the
+  transformer not because the maths was hard, but because ML people were counting flops.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the traffic counter, and why the number in it is the whole
+  story. It deliberately skips the CUDA, the proof, and anything about inference. Four people
+  cover those better than I would.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2205.14135">
+      <span class="paper-title">FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness</span>
+      <span class="paper-meta">Dao, Fu, Ermon, Rudra &amp; Ré, 2022. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the algorithm section and the IO-complexity analysis: the algorithm box is the
+      function you just ran in the paper's notation, and the analysis is demo 4 stated as a
+      bound. The kernel-fusion discussion is the part I couldn't reproduce in NumPy.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2307.08691">
+      <span class="paper-title">FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning</span>
+      <span class="paper-meta">Dao, 2023. The follow-up.</span>
+    </a>
+    <p class="paper-pitch">
+      Short, readable straight after the first, and it is the "we profiled it and the
+      non-matmul operations were eating us" paper. Read it for how a GPU kernel actually gets
+      tuned, not for a new idea.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://horace.io/brrr_intro.html">
+      <span class="paper-title">Making Deep Learning Go Brrrr From First Principles</span>
+      <span class="paper-meta">Horace He. The mental model, no maths.</span>
+    </a>
+    <p class="paper-pitch">
+      The best explanation anywhere of compute-bound versus memory-bound versus
+      overhead-bound, and how to tell which one you're in. My first section is one instance of
+      what this post generalises. Read it before the paper.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1805.02867">
+      <span class="paper-title">Online normalizer calculation for softmax</span>
+      <span class="paper-meta">Milakov &amp; Gimelshein, 2018. Four pages.</span>
+    </a>
+    <p class="paper-pitch">
+      The running-max trick on its own, before anyone applied it to attention. Four pages, and
+      it makes clear which half of FlashAttention was already known and which half was new.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Horace He first for the mental
+  model, then the FlashAttention paper, then Milakov if the softmax update
+  still feels like magic, then FlashAttention-2 last. And if you want the same
+  memory-bound argument at inference time rather than training time, that's
+  the <a href="../kv-cache/">KV cache page</a> — same lesson, different
+  bottleneck. The maths underneath both is on the
+  <a href="../attention/">attention page</a>.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

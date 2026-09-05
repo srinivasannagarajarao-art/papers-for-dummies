@@ -47,14 +47,24 @@
   <ul class="paper-list">
 
     <li class="paper">
+      <a class="paper-link" href="papers/tokenization/">
+        <span class="paper-title">Byte-Pair Encoding: the tokeniser you inherited</span>
+        <span class="paper-meta">Sennrich et al., 2015</span>
+      </a>
+      <p class="paper-pitch">Train BPE in a for loop, then watch why the model can't count letters and why the same sentence costs several times more in Tamil.</p>
+      <p class="paper-langs">
+        <a href="papers/tokenization/?lang=en">English</a>
+        <a href="papers/tokenization/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/tokenization/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
       <a class="paper-link" href="papers/attention/">
         <span class="paper-title">Attention Is All You Need</span>
         <span class="paper-meta">Vaswani et al., 2017</span>
       </a>
-      <p class="paper-pitch">
-        Attention is a dictionary lookup with fuzzy keys — everything else is
-        plumbing. Runnable NumPy, four demos that prove it by breaking it.
-      </p>
+      <p class="paper-pitch">Attention is a dictionary lookup with fuzzy keys — everything else is plumbing. Runnable NumPy, four demos that prove it by breaking it.</p>
       <p class="paper-langs">
         <a href="papers/attention/?lang=en">English</a>
         <a href="papers/attention/?lang=ta" lang="ta">தமிழ்</a>
@@ -67,10 +77,7 @@
         <span class="paper-title">RoFormer: Rotary Position Embedding</span>
         <span class="paper-meta">Su et al., 2021</span>
       </a>
-      <p class="paper-pitch">
-        Rotate q and k instead of adding a position vector, and the dot product
-        only sees distance. Every claim is a printed number.
-      </p>
+      <p class="paper-pitch">Rotate q and k instead of adding a position vector, and the dot product only sees distance. Every claim is a printed number.</p>
       <p class="paper-langs">
         <a href="papers/rope/?lang=en">English</a>
         <a href="papers/rope/?lang=ta" lang="ta">தமிழ்</a>
@@ -79,30 +86,11 @@
     </li>
 
     <li class="paper">
-      <a class="paper-link" href="papers/gpt/">
-        <span class="paper-title">GPT: Generative Pre-trained Transformers</span>
-        <span class="paper-meta">Radford et al., 2018 to Brown et al., 2020</span>
-      </a>
-      <p class="paper-pitch">
-        Decoder-only, next token, then scale. The generation loop is a while
-        loop. A character-level GPT trained in your terminal.
-      </p>
-      <p class="paper-langs">
-        <a href="papers/gpt/?lang=en">English</a>
-        <a href="papers/gpt/?lang=ta" lang="ta">தமிழ்</a>
-        <a href="papers/gpt/?lang=hi" lang="hi">हिंदी</a>
-      </p>
-    </li>
-
-    <li class="paper">
       <a class="paper-link" href="papers/bert/">
         <span class="paper-title">BERT: Deep Bidirectional Transformers</span>
         <span class="paper-meta">Devlin et al., 2018</span>
       </a>
-      <p class="paper-pitch">
-        Remove the causal mask, hide 15% of the tokens, guess them. Then bolt a
-        head on per task. A tiny masked model, trained live.
-      </p>
+      <p class="paper-pitch">Remove the causal mask, hide 15% of the tokens, guess them. Then bolt a head on per task. A tiny masked model, trained live.</p>
       <p class="paper-langs">
         <a href="papers/bert/?lang=en">English</a>
         <a href="papers/bert/?lang=ta" lang="ta">தமிழ்</a>
@@ -111,34 +99,15 @@
     </li>
 
     <li class="paper">
-      <a class="paper-link" href="papers/llama/">
-        <span class="paper-title">LLaMA: Open and Efficient Foundation Models</span>
-        <span class="paper-meta">Touvron et al., 2023</span>
+      <a class="paper-link" href="papers/gpt/">
+        <span class="paper-title">GPT: Generative Pre-trained Transformers</span>
+        <span class="paper-meta">Radford et al., 2018 to Brown et al., 2020</span>
       </a>
-      <p class="paper-pitch">
-        Not a new idea, a recipe: four deltas on the 2017 transformer and far
-        more tokens than the scaling laws said. Parameter arithmetic included.
-      </p>
+      <p class="paper-pitch">Decoder-only, next token, then scale. The generation loop is a while loop. A character-level GPT trained in your terminal.</p>
       <p class="paper-langs">
-        <a href="papers/llama/?lang=en">English</a>
-        <a href="papers/llama/?lang=ta" lang="ta">தமிழ்</a>
-        <a href="papers/llama/?lang=hi" lang="hi">हिंदी</a>
-      </p>
-    </li>
-
-    <li class="paper">
-      <a class="paper-link" href="papers/moe/">
-        <span class="paper-title">Mixture of Experts: the Sparsely-Gated Layer</span>
-        <span class="paper-meta">Shazeer et al., 2017</span>
-      </a>
-      <p class="paper-pitch">
-        A load balancer in front of eight small networks. Eight times the
-        parameters, twice the compute. Hot shards and dropped tokens, as in production.
-      </p>
-      <p class="paper-langs">
-        <a href="papers/moe/?lang=en">English</a>
-        <a href="papers/moe/?lang=ta" lang="ta">தமிழ்</a>
-        <a href="papers/moe/?lang=hi" lang="hi">हिंदी</a>
+        <a href="papers/gpt/?lang=en">English</a>
+        <a href="papers/gpt/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/gpt/?lang=hi" lang="hi">हिंदी</a>
       </p>
     </li>
 
@@ -147,10 +116,7 @@
         <span class="paper-title">An Image Is Worth 16×16 Words (ViT)</span>
         <span class="paper-meta">Dosovitskiy et al., 2020</span>
       </a>
-      <p class="paper-pitch">
-        The whole paper is a reshape: cut the image into patches and it's a
-        sentence. Shapes printed at every step.
-      </p>
+      <p class="paper-pitch">The whole paper is a reshape: cut the image into patches and it's a sentence. Shapes printed at every step.</p>
       <p class="paper-langs">
         <a href="papers/vit/?lang=en">English</a>
         <a href="papers/vit/?lang=ta" lang="ta">தமிழ்</a>
@@ -159,19 +125,103 @@
     </li>
 
     <li class="paper">
+      <a class="paper-link" href="papers/llama/">
+        <span class="paper-title">LLaMA: Open and Efficient Foundation Models</span>
+        <span class="paper-meta">Touvron et al., 2023</span>
+      </a>
+      <p class="paper-pitch">Not a new idea, a recipe: four deltas on the 2017 transformer and far more tokens than the scaling laws said. Parameter arithmetic included.</p>
+      <p class="paper-langs">
+        <a href="papers/llama/?lang=en">English</a>
+        <a href="papers/llama/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/llama/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+  </ul>
+
+  <h2 class="papers-group">ai-ml/scaling/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
+      <a class="paper-link" href="papers/scaling-laws/">
+        <span class="paper-title">Chinchilla: how big a model should you train?</span>
+        <span class="paper-meta">Hoffmann et al., 2022</span>
+      </a>
+      <p class="paper-pitch">Fixed compute budget: spend it on a bigger model or more data? Roughly twenty tokens per parameter, swept and plotted.</p>
+      <p class="paper-langs">
+        <a href="papers/scaling-laws/?lang=en">English</a>
+        <a href="papers/scaling-laws/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/scaling-laws/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/moe/">
+        <span class="paper-title">Mixture of Experts: the Sparsely-Gated Layer</span>
+        <span class="paper-meta">Shazeer et al., 2017</span>
+      </a>
+      <p class="paper-pitch">A load balancer in front of eight small networks. Eight times the parameters, twice the compute. Hot shards and dropped tokens, as in production.</p>
+      <p class="paper-langs">
+        <a href="papers/moe/?lang=en">English</a>
+        <a href="papers/moe/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/moe/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+  </ul>
+
+  <h2 class="papers-group">ai-ml/inference/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
       <a class="paper-link" href="papers/kv-cache/">
         <span class="paper-title">KV caching and the generation loop</span>
         <span class="paper-meta">Folklore, and the papers that fixed it</span>
       </a>
-      <p class="paper-pitch">
-        Why inference is affordable. The causal mask makes keys and values
-        immutable, so you memoise them. Includes the cache-size arithmetic
-        that decides what you can serve.
-      </p>
+      <p class="paper-pitch">Why inference is affordable. The causal mask makes keys and values immutable, so you memoise them. Includes the cache-size arithmetic that decides what you can serve.</p>
       <p class="paper-langs">
         <a href="papers/kv-cache/?lang=en">English</a>
         <a href="papers/kv-cache/?lang=ta" lang="ta">தமிழ்</a>
         <a href="papers/kv-cache/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/flash-attention/">
+        <span class="paper-title">FlashAttention: attention was never compute-bound</span>
+        <span class="paper-meta">Dao et al., 2022</span>
+      </a>
+      <p class="paper-pitch">The n² cost is memory traffic, not arithmetic. Tile it, keep a running softmax, never store the score matrix.</p>
+      <p class="paper-langs">
+        <a href="papers/flash-attention/?lang=en">English</a>
+        <a href="papers/flash-attention/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/flash-attention/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/quantization/">
+        <span class="paper-title">Quantisation: what fits on your GPU</span>
+        <span class="paper-meta">Dettmers et al., 2022, and what followed</span>
+      </a>
+      <p class="paper-pitch">Divide, round, store. LLM.int8, GPTQ, AWQ and QLoRA's NF4 are four arguments about which numbers you may be sloppy with.</p>
+      <p class="paper-langs">
+        <a href="papers/quantization/?lang=en">English</a>
+        <a href="papers/quantization/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/quantization/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/speculative-decoding/">
+        <span class="paper-title">Speculative decoding: guess, then check</span>
+        <span class="paper-meta">Leviathan et al., 2022</span>
+      </a>
+      <p class="paper-pitch">A cheap model guesses ahead, the big one verifies in a single pass. Branch prediction for tokens, with the output provably unchanged.</p>
+      <p class="paper-langs">
+        <a href="papers/speculative-decoding/?lang=en">English</a>
+        <a href="papers/speculative-decoding/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/speculative-decoding/?lang=hi" lang="hi">हिंदी</a>
       </p>
     </li>
 
@@ -185,10 +235,7 @@
         <span class="paper-title">LoRA: Low-Rank Adaptation</span>
         <span class="paper-meta">Hu et al., 2021</span>
       </a>
-      <p class="paper-pitch">
-        A fine-tune is a diff on the weights, and the diff is low-rank. Store
-        the patch, not the repo. Merge it for free at inference.
-      </p>
+      <p class="paper-pitch">A fine-tune is a diff on the weights, and the diff is low-rank. Store the patch, not the repo. Merge it for free at inference.</p>
       <p class="paper-langs">
         <a href="papers/lora/?lang=en">English</a>
         <a href="papers/lora/?lang=ta" lang="ta">தமிழ்</a>
@@ -201,10 +248,7 @@
         <span class="paper-title">Parameter-Efficient Fine-Tuning: the family</span>
         <span class="paper-meta">Houlsby et al., 2019, and what followed</span>
       </a>
-      <p class="paper-pitch">
-        One question five ways: where do you insert the small trainable thing?
-        Adapters, prefixes, prompts, (IA)³ and LoRA, with parameter counts.
-      </p>
+      <p class="paper-pitch">One question five ways: where do you insert the small trainable thing? Adapters, prefixes, prompts, (IA)³ and LoRA, with parameter counts.</p>
       <p class="paper-langs">
         <a href="papers/peft/?lang=en">English</a>
         <a href="papers/peft/?lang=ta" lang="ta">தமிழ்</a>
@@ -222,10 +266,7 @@
         <span class="paper-title">Reinforcement Learning from Human Feedback</span>
         <span class="paper-meta">Christiano et al., 2017</span>
       </a>
-      <p class="paper-pitch">
-        You can't write the loss for "helpful", but you can ask which of two
-        answers is better. Reward hacking, reproduced on purpose.
-      </p>
+      <p class="paper-pitch">You can't write the loss for "helpful", but you can ask which of two answers is better. Reward hacking, reproduced on purpose.</p>
       <p class="paper-langs">
         <a href="papers/rlhf/?lang=en">English</a>
         <a href="papers/rlhf/?lang=ta" lang="ta">தமிழ்</a>
@@ -238,14 +279,24 @@
         <span class="paper-title">InstructGPT: Following Instructions with Human Feedback</span>
         <span class="paper-meta">Ouyang et al., 2022</span>
       </a>
-      <p class="paper-pitch">
-        The three-stage recipe that turned a completion engine into an
-        assistant. Each stage's gain in one table. This is ChatGPT's recipe.
-      </p>
+      <p class="paper-pitch">The three-stage recipe that turned a completion engine into an assistant. Each stage's gain in one table. This is ChatGPT's recipe.</p>
       <p class="paper-langs">
         <a href="papers/instructgpt/?lang=en">English</a>
         <a href="papers/instructgpt/?lang=ta" lang="ta">தமிழ்</a>
         <a href="papers/instructgpt/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="papers/dpo/">
+        <span class="paper-title">Direct Preference Optimization</span>
+        <span class="paper-meta">Rafailov et al., 2023</span>
+      </a>
+      <p class="paper-pitch">The RLHF objective has an exact answer, and rearranging it makes the reward model disappear. Preference tuning becomes one classifier loss.</p>
+      <p class="paper-langs">
+        <a href="papers/dpo/?lang=en">English</a>
+        <a href="papers/dpo/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/dpo/?lang=hi" lang="hi">हिंदी</a>
       </p>
     </li>
 
@@ -259,10 +310,7 @@
         <span class="paper-title">Auto-Encoding Variational Bayes (VAE)</span>
         <span class="paper-meta">Kingma and Welling, 2013</span>
       </a>
-      <p class="paper-pitch">
-        An autoencoder whose bottleneck is a distribution. The reparameterisation
-        trick is moving the random number outside the function.
-      </p>
+      <p class="paper-pitch">An autoencoder whose bottleneck is a distribution. The reparameterisation trick is moving the random number outside the function.</p>
       <p class="paper-langs">
         <a href="papers/vae/?lang=en">English</a>
         <a href="papers/vae/?lang=ta" lang="ta">தமிழ்</a>
@@ -275,10 +323,7 @@
         <span class="paper-title">Generative Adversarial Nets</span>
         <span class="paper-meta">Goodfellow et al., 2014</span>
       </a>
-      <p class="paper-pitch">
-        A forger and a detective train each other. Mode collapse and vanishing
-        gradients, triggered deliberately on a toy problem.
-      </p>
+      <p class="paper-pitch">A forger and a detective train each other. Mode collapse and vanishing gradients, triggered deliberately on a toy problem.</p>
       <p class="paper-langs">
         <a href="papers/gan/?lang=en">English</a>
         <a href="papers/gan/?lang=ta" lang="ta">தமிழ்</a>
@@ -291,10 +336,7 @@
         <span class="paper-title">Denoising Diffusion Probabilistic Models</span>
         <span class="paper-meta">Ho et al., 2020</span>
       </a>
-      <p class="paper-pitch">
-        Learn to undo a noise-adding for-loop one step at a time. The forward
-        process is a formula; the model is a one-step undo.
-      </p>
+      <p class="paper-pitch">Learn to undo a noise-adding for-loop one step at a time. The forward process is a formula; the model is a one-step undo.</p>
       <p class="paper-langs">
         <a href="papers/diffusion/?lang=en">English</a>
         <a href="papers/diffusion/?lang=ta" lang="ta">தமிழ்</a>
@@ -308,18 +350,46 @@
   <ul class="paper-list">
 
     <li class="paper">
+      <a class="paper-link" href="papers/embeddings/">
+        <span class="paper-title">Sentence-BERT and CLIP: making distance mean something</span>
+        <span class="paper-meta">Reimers &amp; Gurevych, 2019 · Radford et al., 2021</span>
+      </a>
+      <p class="paper-pitch">Where embeddings come from. A model trained for something else gives a useless distance, measured and then fixed with contrastive loss.</p>
+      <p class="paper-langs">
+        <a href="papers/embeddings/?lang=en">English</a>
+        <a href="papers/embeddings/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/embeddings/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
       <a class="paper-link" href="papers/rag/">
         <span class="paper-title">Retrieval-Augmented Generation</span>
         <span class="paper-meta">Lewis et al., 2020</span>
       </a>
-      <p class="paper-pitch">
-        An open-book exam. The retriever is the index, the prompt is the page
-        you slide across. The failures are retrieval bugs, not model bugs.
-      </p>
+      <p class="paper-pitch">An open-book exam. The retriever is the index, the prompt is the page you slide across. The failures are retrieval bugs, not model bugs.</p>
       <p class="paper-langs">
         <a href="papers/rag/?lang=en">English</a>
         <a href="papers/rag/?lang=ta" lang="ta">தமிழ்</a>
         <a href="papers/rag/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+  </ul>
+
+  <h2 class="papers-group">ai-ml/prompting/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
+      <a class="paper-link" href="papers/chain-of-thought/">
+        <span class="paper-title">Chain-of-Thought and ReAct</span>
+        <span class="paper-meta">Wei et al., 2022 · Yao et al., 2022</span>
+      </a>
+      <p class="paper-pitch">A model gets fixed compute per token. Thinking out loud is how it buys more, and ReAct is how it buys facts.</p>
+      <p class="paper-langs">
+        <a href="papers/chain-of-thought/?lang=en">English</a>
+        <a href="papers/chain-of-thought/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="papers/chain-of-thought/?lang=hi" lang="hi">हिंदी</a>
       </p>
     </li>
 
