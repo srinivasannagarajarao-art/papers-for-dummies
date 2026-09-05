@@ -1,0 +1,1132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentence-BERT and CLIP — for programmers</title>
+<meta name="description" content="Where embeddings come from, and why a network trained for something else does not give you a usable distance. Sentence-BERT and CLIP as runnable code: NumPy for the maths, a tiny CPU PyTorch training run for the contrastive objective.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+  <div class="title-block">
+    <h1>Sentence-BERT and CLIP: making distance mean something</h1>
+    <p class="paper-meta">Reimers &amp; Gurevych, 2019 · Radford et al., 2021</p>
+    <p class="lede">
+      Two papers, one idea: you have to train for the property you want to measure.
+    </p>
+    <p>
+      <a href="embeddings_from_scratch.py" download>Download embeddings_from_scratch.py</a> —
+      everything below runs from it. NumPy, plus a tiny CPU PyTorch model for the training step.
+      About 11 seconds.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+  <p>
+    The <a href="../rag/">RAG page</a> cheats. It says so out loud: the retriever there is
+    hashed bag-of-words, because the real thing needed a page of its own. This is that page.
+    Where the vectors come from.
+  </p>
+  <p>
+    I assumed for an embarrassingly long time that any decent language model hands you
+    embeddings for free. Run <a href="../bert/">BERT</a>, take the CLS vector, cosine away. It
+    doesn't work, and the reason it doesn't work is the finding in Sentence-BERT: raw BERT
+    output was never trained to put similar things close together, so it doesn't. The vectors
+    all crowd into a narrow cone and everything is 0.9 similar to everything.
+  </p>
+
+  <h2>A hash function versus a similarity index</h2>
+  <p>You've written both. This one:</p>
+<pre><code>h = hashlib.sha256(doc.encode()).hexdigest()   # a thing -&gt; a number</code></pre>
+  <p>
+    Perfectly good identity. Deterministic, fast, collision-resistant. And completely useless
+    for "find me documents like this one", because two nearly identical documents hash to two
+    unrelated values. Distance in hash space means nothing. That's the whole design goal — a
+    good hash <em>destroys</em> structure.
+  </p>
+  <p>Then there's the other kind:</p>
+<pre><code>v = embed(doc)                     # a thing -&gt; a vector
+near = sorted(corpus, key=lambda d: -cosine(v, embed(d)))[:5]</code></pre>
+  <p>
+    Same signature. Thing in, number out. But this one has to <em>preserve</em> structure, and
+    preserving structure is not something that happens by accident. It happens because somebody
+    trained it to.
+  </p>
+  <p>
+    Both papers do the same thing in the same way. Sentence-BERT takes BERT, runs two copies of
+    it in a siamese setup with a pooling step, and fine-tunes so cosine similarity between the
+    two output vectors matches whether the sentences actually mean the same thing. CLIP takes an
+    image encoder and a text encoder, runs them on a large set of image-caption pairs, and
+    trains so a photo lands near its own caption and far from everyone else's.
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Embedding</strong></td><td>A vector where direction encodes meaning</td><td>A sort key, not an ID</td></tr>
+      <tr><td><strong>Bi-encoder</strong></td><td>Encode each item once, compare vectors</td><td>Build an index, then look up</td></tr>
+      <tr><td><strong>Cross-encoder</strong></td><td>Feed both items in together, score the pair</td><td>A full table scan with a join predicate</td></tr>
+      <tr><td><strong>Anisotropy</strong></td><td>All vectors crammed into a narrow cone</td><td>A hash with a terrible distribution</td></tr>
+      <tr><td><strong>In-batch negative</strong></td><td>Every other item in the batch, used as a wrong answer</td><td>Free test data you already loaded</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why the bi-encoder mattered: it made search affordable</h2>
+  <p>
+    Before Sentence-BERT, the good way to compare two sentences with BERT was a cross-encoder:
+    concatenate them, push both through the model, read a score off the top. Accurate. Also
+    quadratic. Comparing every pair in a collection of n sentences is n²/2 forward passes
+    through a large transformer, and you cannot cache anything, because the score only exists
+    for the pair.
+  </p>
+  <p>
+    A bi-encoder embeds each sentence <em>once</em> — n forward passes, done offline — and then
+    comparison is a dot product. That's the difference between a job you run overnight and a job
+    you run never.
+  </p>
+  <div class="note">
+    <strong>The trade is real and it's the interview question.</strong> A cross-encoder is
+    usually more accurate, because it lets the two texts attend to each other. A bi-encoder is
+    enormously faster. Production systems use both: bi-encoder to fetch a hundred candidates
+    from millions, cross-encoder to rerank the hundred. That's what a reranker <em>is</em>, and
+    it's the piece the <a href="../rag/">RAG page</a> leaves as a stub.
+  </div>
+
+  <h2>The one formula</h2>
+  <p>
+    Not an architecture. A loss. This is InfoNCE, and it is what both papers are actually
+    contributing:
+  </p>
+  <div class="formula">L = −log [ exp(sim(a<sub>i</sub>, b<sub>i</sub>) / τ) ÷ Σ<sub>j</sub> exp(sim(a<sub>i</sub>, b<sub>j</sub>) / τ) ]</div>
+  <p>
+    Squint and it's cross-entropy, because that's exactly what it is. Read it as pipeline
+    stages:
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>a, b</code></td><td>(B, d) each</td><td>A batch of B matched pairs, L2-normalised, one row per item</td></tr>
+      <tr><td><code>a @ b.T</code></td><td>(B, B)</td><td><strong>The score matrix.</strong> The diagonal is the B correct pairings; everything off it is a wrong answer you got free</td></tr>
+      <tr><td><code>/ τ</code></td><td>scalar</td><td>Temperature. How sharply the softmax discriminates</td></tr>
+      <tr><td><code>softmax</code></td><td>row-wise</td><td>Row i becomes "how confident am I that b<sub>j</sub> is the match for a<sub>i</sub>"</td></tr>
+      <tr><td><code>cross_entropy</code></td><td>labels = 0..B−1</td><td>The label for row i <em>is</em> i. That's the whole trick</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    You never write a single label. The batch index is the label. Load 64 matched pairs and you
+    have handed the model 64 questions with 63 wrong answers each — 4032 negatives, for free.
+  </p>
+
+  <h2>The cone: why raw CLS vectors aren't embeddings</h2>
+  <p>
+    My script's stand-in for "a network trained for something else" is a randomly initialised
+    encoder. Not identical to BERT, but it has the property that matters — real weights, real
+    non-linearity, never trained for this distance. Measure the average cosine between unrelated
+    items, before and after training:
+  </p>
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+<pre><code>untrained encoder, mean pairwise cosine: <span class="hl">+0.6781</span>
+                   min / max cosine:     -0.1540 / +0.9814
+
+trained   encoder, mean pairwise cosine: <span class="ok">+0.0041</span>
+                   min / max cosine:     -0.9113 / +0.9316</code></pre>
+  <p>
+    Before training, two items with nothing in common sit at 0.68, and plenty of pairs are above
+    0.98. Your similarity threshold has nowhere to go: the whole distribution is jammed into the
+    top of the range. After training the cosines use the range they're supposed to, and the
+    average unrelated pair is at zero, which is what "unrelated" ought to look like.
+  </p>
+  <p>
+    This is measurable, so measure it. If you inherit an embedding service and want to know in
+    one minute whether it's any good, take 200 random items, compute the mean off-diagonal
+    cosine, and see if it's near zero.
+  </p>
+
+  <h2>The objective, running</h2>
+  <p>
+    This is the one place I use torch. The mechanism — similarity, retrieval, the anisotropy
+    measurement — is NumPy, but the paper's idea <em>is</em> a training objective, and
+    hand-rolled backprop would bury it under plumbing.
+  </p>
+<pre><code>batch 64, temperature 0.07. Chance loss = ln(64) = 4.1589
+
+  step    1   loss <span class="hl">5.6448</span>
+  step   50   loss 0.6859
+  step  100   loss 0.3321
+  step  200   loss 0.3079
+  step  300   loss 0.3596
+  step  400   loss <span class="ok">0.2470</span></code></pre>
+  <p>
+    Step 1 is worse than guessing, which is right — the encoders are random. Fifty steps in, the
+    loss is well under <code>ln(64)</code> and the model has learned the only thing it was asked
+    to learn: put matching pairs closer together than the other 63 items in the batch.
+  </p>
+
+  <h2>Retrieval before and after: the whole argument, in two numbers</h2>
+  <p>
+    Loss curves are easy to fool yourself with. The number that settles it is retrieval
+    accuracy: query with item i from one side, score all 200 items on the other, and check
+    whether i comes out on top.
+  </p>
+<pre><code>chance (1/200)                 : 0.0050
+untrained encoders, top-1      : <span class="hl">0.0050</span>
+trained encoders,   top-1      : <span class="ok">0.8650</span></code></pre>
+  <p>
+    Same architecture. Same data. Same cosine function. The untrained encoders score
+    <em>exactly</em> at chance — one hit in two hundred. Cosine distance over vectors from a
+    model that wasn't trained for it is not a weak signal. It is no signal.
+  </p>
+  <div class="note">
+    <strong>That is Sentence-BERT's finding, restated.</strong> Their experiments found mean
+    pooling over BERT's token outputs generally beat using the CLS vector — but the real point
+    is that neither is any good <em>until you fine-tune for the similarity objective</em>.
+    Pooling choice is a detail. Training for the property is the paper.
+  </div>
+
+  <h2>Temperature: both ends of the dial are broken</h2>
+  <p>
+    τ divides the similarities before the softmax. Small τ makes the distribution sharp, so the
+    loss obsesses over the single hardest negative. Large τ flattens it, so the loss barely
+    distinguishes the right answer from the wrong ones. Sweeping it, retraining from scratch
+    each time:
+  </p>
+<pre><code>   tau  final loss    top-1   sim std  mean top score
+ 0.005      0.5941   <span class="hl">0.6950</span>    <span class="hl">0.0914</span>          0.8183
+ 0.020      0.3950   0.8500    0.2666          0.9030
+ 0.070      0.3506   <span class="ok">0.8650</span>    0.3451          0.8836
+ 0.300      1.9828   <span class="ok">0.8650</span>    0.3559          0.9080
+ 1.000      3.3512   0.8150    0.3896          0.9265
+10.000      4.0698   <span class="hl">0.6200</span>    0.4861          0.9458</code></pre>
+  <p>
+    <code>sim std</code> is how spread out the similarity distribution is. At τ=0.005 it
+    collapses to 0.09 — the space folds up, because chasing one hard negative per step is a
+    terrible training signal — and accuracy drops to 0.695. At τ=10 the loss barely moves off
+    <code>ln(64)</code>, so nothing separates, and accuracy drops to 0.62. The usable band in
+    the middle is wide and flat, and both edges are cliffs.
+  </p>
+  <p>
+    CLIP's answer to picking a number is to not pick one: the temperature is a learned
+    parameter, optimised along with the weights.
+  </p>
+
+  <h2>Normalisation, or the longest vector wins</h2>
+  <p>
+    Cosine is a dot product divided by both lengths. That division is not decoration. Here are
+    the same trained embeddings, with the indexed items given varying magnitudes — the way real
+    documents have varying lengths:
+  </p>
+<pre><code>cosine (normalised),   top-1 : <span class="ok">0.8650</span>
+raw dot product,       top-1 : <span class="hl">0.3100</span>
+raw dot product, distinct items ever returned: <span class="hl">66</span> of 200
+raw dot product, most-returned item index    : 197</code></pre>
+  <p>
+    Two thirds of the corpus becomes unreachable. Not because those items are irrelevant —
+    because they're short. This is the identical bug the <a href="../rag/">RAG page</a>
+    demonstrates on unnormalised document scores, and it's the same fix: divide by the norm, or
+    store the vectors already normalised so you can't forget.
+  </p>
+
+  <h2>Two towers, one space</h2>
+  <p>
+    CLIP's structural idea in one sentence: two encoders that share nothing, reading two
+    different input types, producing vectors in the same space, trained only by the loss that
+    pulls matched pairs together.
+  </p>
+  <p>
+    In my script, modality A is 32 features and modality B is 24. They're generated from a
+    shared hidden cause plus noise. They stand in for images and captions — they are not images
+    and not text, and I'm not going to pretend otherwise. What they preserve is the only
+    structural thing that matters: two unrelated input formats, one thing underneath.
+  </p>
+<pre><code> query (A)   best match (B)   its cosine   runner-up   correct?
+         0                0       0.7954      0.7021       True
+         1                1       0.9028      0.8699       True
+         2                2       0.8894      0.7815       True
+         3              <span class="hl">140</span>       0.8045      0.7582      False
+         4              <span class="hl">179</span>       0.8307      0.7893      False
+         5                5       0.7668      0.7065       True
+
+A-&gt;B top-1: <span class="ok">0.8650</span>     B-&gt;A top-1: <span class="ok">0.8450</span></code></pre>
+  <p>
+    Note rows 3 and 4 — this toy is noisy enough to fail sometimes, which is honest. Note also
+    that it works in both directions, because the loss is symmetric: A retrieves B, and B
+    retrieves A.
+  </p>
+  <div class="note">
+    <strong>This is where zero-shot classification comes from.</strong> Once images and text
+    share a space, you classify by embedding the image, then embedding a text prompt for each
+    candidate class, and taking the nearest. No classifier head, no training on your label set.
+    The classes are just strings you typed. CLIP's paper is largely about how far that gets you
+    across a lot of benchmarks — go read their numbers rather than mine.
+  </div>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+  <p>
+    <a href="../rag/">RAG பக்கம்</a> ஒரு சின்ன ஏமாற்று வேலை செய்கிறது — அதை
+    வெளிப்படையாகவே சொல்லியும் இருக்கிறது. அங்கே இருக்கும் retriever வெறும்
+    hashed bag-of-words; உண்மையான விஷயத்திற்குத் தனி ஒரு பக்கம் தேவைப்பட்டது.
+    அதுதான் இந்தப் பக்கம். Vectors எங்கிருந்து வருகின்றன என்பது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (embedding, cosine
+    similarity, contrastive, InfoNCE, in-batch negatives, temperature,
+    anisotropy, bi-encoder, cross-encoder, reranker, two-tower, L2
+    normalisation, pooling…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும்
+    மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>
+    வெட்கப்படும் அளவுக்கு நீண்ட காலம் நான் நினைத்துக்கொண்டிருந்தேன்: நல்ல
+    language model எதுவானாலும் embeddings-ஐ இலவசமாகக் கொடுத்துவிடும் என்று.
+    <a href="../bert/">BERT</a>-ஐ ஓட்டு, CLS vector-ஐ எடு, cosine போடு. அது
+    வேலை செய்யாது. ஏன் வேலை செய்யாது என்பதுதான் Sentence-BERT-இன் கண்டுபிடிப்பு:
+    raw BERT output ஒரே மாதிரியான விஷயங்களை அருகருகே வைக்கப் பயிற்சி
+    பெறவேயில்லை; ஆகவே அது வைப்பதில்லை. Vectors எல்லாம் ஒரு குறுகிய cone-க்குள்
+    நெரிசலாகிக் கிடக்கின்றன, எல்லாமே எல்லாவற்றுக்கும் 0.9 ஒத்திருக்கிறது.
+  </p>
+
+  <h2>Hash function-ம் similarity index-ம்</h2>
+  <p>இரண்டையும் நீங்கள் எழுதியிருக்கிறீர்கள். இதை:</p>
+<pre><code>h = hashlib.sha256(doc.encode()).hexdigest()   # ஒரு பொருள் -&gt; ஒரு எண்</code></pre>
+  <p>
+    Identity-க்கு இது மிகச் சிறந்தது. Deterministic, வேகமானது,
+    collision-resistant. ஆனால் "இதைப் போன்ற documents-ஐக் கண்டுபிடி" என்பதற்கு
+    முற்றிலும் பயனற்றது — ஏனெனில் கிட்டத்தட்ட ஒரே மாதிரியான இரண்டு documents
+    முற்றிலும் தொடர்பில்லாத இரண்டு மதிப்புகளுக்கு hash ஆகும். Hash
+    space-ல் தூரத்திற்கு எந்த அர்த்தமும் இல்லை. அதுதான் அதன் design
+    இலக்கே — நல்ல hash ஒன்று structure-ஐ <em>அழிக்கிறது</em>.
+  </p>
+  <p>பிறகு இன்னொரு வகை இருக்கிறது:</p>
+<pre><code>v = embed(doc)                     # ஒரு பொருள் -&gt; ஒரு vector
+near = sorted(corpus, key=lambda d: -cosine(v, embed(d)))[:5]</code></pre>
+  <p>
+    Signature ஒன்றுதான். பொருள் உள்ளே, எண் வெளியே. ஆனால் இது structure-ஐ
+    <em>காப்பாற்ற</em> வேண்டும். Structure-ஐக் காப்பாற்றுவது தற்செயலாக
+    நடக்கும் ஒன்று அல்ல. யாரோ ஒருவர் அதற்காகப் பயிற்றுவித்ததால்தான் நடக்கிறது.
+  </p>
+  <p>
+    இரண்டு papers-ம் ஒரே விஷயத்தை ஒரே வழியில் செய்கின்றன. Sentence-BERT
+    BERT-ஐ எடுத்து, அதன் இரண்டு நகல்களை siamese அமைப்பில் ஒரு pooling
+    step-உடன் ஓட்டி, இரண்டு output vectors-க்கு இடையேயான cosine similarity
+    இரண்டு வாக்கியங்களும் உண்மையில் ஒரே பொருள் தருகின்றனவா என்பதோடு
+    பொருந்தும்படி fine-tune செய்கிறது. CLIP ஒரு image encoder-ஐயும் ஒரு text
+    encoder-ஐயும் எடுத்து, பெரிய அளவிலான image-caption ஜோடிகள் மீது ஓட்டி,
+    ஒரு photo தன்னுடைய caption-க்கு அருகிலும் மற்ற எல்லாவற்றுக்கும் தூரமாகவும்
+    விழும்படி பயிற்றுவிக்கிறது.
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Embedding</strong></td><td>திசையே பொருளைக் குறிக்கும் ஒரு vector</td><td>ஒரு sort key, ID அல்ல</td></tr>
+      <tr><td><strong>Bi-encoder</strong></td><td>ஒவ்வொரு item-ஐயும் ஒரு முறை encode செய்து, vectors-ஐ ஒப்பிடு</td><td>Index கட்டு, பிறகு lookup செய்</td></tr>
+      <tr><td><strong>Cross-encoder</strong></td><td>இரு item-களையும் சேர்த்து உள்ளே கொடுத்து, ஜோடிக்கு score கொடு</td><td>Join predicate-உடன் ஒரு full table scan</td></tr>
+      <tr><td><strong>Anisotropy</strong></td><td>எல்லா vectors-ம் ஒரு குறுகிய cone-க்குள் நெரிசலாக</td><td>மோசமான distribution உள்ள hash</td></tr>
+      <tr><td><strong>In-batch negative</strong></td><td>Batch-ல் உள்ள மற்ற ஒவ்வொரு item-ம், தவறான விடையாகப் பயன்படுத்தப்படுவது</td><td>ஏற்கனவே load ஆகியிருக்கும் இலவச test data</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="thanglish">
+    Hash oru thing-ai number-a maathudhu, aana distance-ku artham illa —
+    nalla hash structure-ai azhikkiradhu. Embedding-um number dhaan kudukkudhu,
+    aana structure-ai kaapaathanum; adhu thaana nadakkaadhu, train pannina dhaan.
+  </p>
+
+  <h2>Bi-encoder ஏன் முக்கியமானது: அது தேடலை மலிவாக்கியது</h2>
+  <p>
+    Sentence-BERT-க்கு முன், BERT வைத்து இரண்டு வாக்கியங்களை ஒப்பிடும் நல்ல
+    வழி cross-encoder: இரண்டையும் இணைத்து, model வழியாக அனுப்பி, மேலிருந்து
+    ஒரு score-ஐப் படி. துல்லியமானது. அதே நேரம் quadratic-ம் கூட. n
+    வாக்கியங்கள் உள்ள ஒரு தொகுப்பில் ஒவ்வொரு ஜோடியையும் ஒப்பிடுவது என்பது ஒரு
+    பெரிய transformer வழியாக n²/2 forward passes; எதையும் cache செய்ய முடியாது,
+    ஏனெனில் score என்பது அந்த ஜோடிக்கு மட்டுமே இருக்கிறது.
+  </p>
+  <p>
+    Bi-encoder ஒவ்வொரு வாக்கியத்தையும் <em>ஒரு முறை</em> embed செய்கிறது — n
+    forward passes, offline-ல் முடிந்தது — பிறகு ஒப்பீடு என்பது ஒரு dot
+    product. இரவு முழுவதும் ஓடும் ஒரு வேலைக்கும், நீங்கள் ஒருபோதும் ஓட்டவே
+    மாட்டீர்கள் என்ற ஒரு வேலைக்கும் இடையேயான வேறுபாடு அது.
+  </p>
+  <div class="note">
+    <strong>இந்த trade உண்மையானது, இதுதான் interview கேள்வியும்.</strong>
+    Cross-encoder பொதுவாக அதிகத் துல்லியமானது, ஏனெனில் இரு texts-ம் ஒன்றையொன்று
+    attend செய்ய அது அனுமதிக்கிறது. Bi-encoder மிக மிக வேகமானது. Production
+    systems இரண்டையும் பயன்படுத்தும்: மில்லியன்களிலிருந்து நூறு candidates-ஐ
+    எடுக்க bi-encoder, அந்த நூறை rerank செய்ய cross-encoder. ஒரு reranker
+    என்பது <em>அதுதான்</em>; <a href="../rag/">RAG பக்கம்</a> அதை ஒரு stub-ஆக
+    விட்டுவைக்கிறது.
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+  <p>
+    Architecture அல்ல. ஒரு loss. இதுதான் InfoNCE; இரண்டு papers-ம் உண்மையில்
+    தருவது இதைத்தான்:
+  </p>
+  <div class="formula">L = −log [ exp(sim(a<sub>i</sub>, b<sub>i</sub>) / τ) ÷ Σ<sub>j</sub> exp(sim(a<sub>i</sub>, b<sub>j</sub>) / τ) ]</div>
+  <p>
+    கண்ணைச் சுருக்கிப் பார்த்தால் இது cross-entropy — ஏனெனில் அதுதான் இது.
+    Pipeline stages-ஆகப் படியுங்கள்:
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>a, b</code></td><td>(B, d) each</td><td>B பொருந்திய ஜோடிகளின் ஒரு batch, L2-normalised, ஒரு item-க்கு ஒரு row</td></tr>
+      <tr><td><code>a @ b.T</code></td><td>(B, B)</td><td><strong>Score matrix.</strong> Diagonal-ல் B சரியான ஜோடிப்புகள்; அதற்கு வெளியே இருப்பதெல்லாம் இலவசமாகக் கிடைத்த தவறான விடைகள்</td></tr>
+      <tr><td><code>/ τ</code></td><td>scalar</td><td>Temperature. Softmax எவ்வளவு கூர்மையாக வேறுபடுத்துகிறது</td></tr>
+      <tr><td><code>softmax</code></td><td>row-wise</td><td>Row i என்பது "a<sub>i</sub>-க்கான match b<sub>j</sub> என்பதில் எனக்கு எவ்வளவு நம்பிக்கை" ஆகிறது</td></tr>
+      <tr><td><code>cross_entropy</code></td><td>labels = 0..B−1</td><td>Row i-க்கான label <em>i</em>தான். இதுதான் முழுத் தந்திரம்</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    ஒரு label-ஐக் கூட நீங்கள் எழுதுவதில்லை. Batch index-தான் label. 64
+    பொருந்திய ஜோடிகளை load செய்தால், ஒவ்வொன்றுக்கும் 63 தவறான விடைகளுடன் 64
+    கேள்விகளை model-க்குக் கொடுத்திருக்கிறீர்கள் — 4032 negatives, இலவசமாக.
+  </p>
+
+  <h2>அந்த cone: raw CLS vectors ஏன் embeddings அல்ல</h2>
+  <p>
+    "வேறு எதற்கோ பயிற்றுவிக்கப்பட்ட ஒரு network"-க்கு என் script-ல் நான்
+    வைத்திருக்கும் பதிலி, randomly initialised encoder ஒன்று. BERT-ஐப் போல
+    அப்படியே அல்ல; ஆனால் முக்கியமான பண்பு அதற்கு இருக்கிறது — உண்மையான
+    weights, உண்மையான non-linearity, இந்த distance-க்காக ஒருபோதும்
+    பயிற்றுவிக்கப்படாதது. தொடர்பில்லாத items-க்கு இடையேயான சராசரி cosine-ஐ
+    பயிற்சிக்கு முன்னும் பின்னும் அளவிடுங்கள்:
+  </p>
+  <p><strong>என் சொல்லை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+<pre><code>untrained encoder, mean pairwise cosine: <span class="hl">+0.6781</span>
+                   min / max cosine:     -0.1540 / +0.9814
+
+trained   encoder, mean pairwise cosine: <span class="ok">+0.0041</span>
+                   min / max cosine:     -0.9113 / +0.9316</code></pre>
+  <p>
+    பயிற்சிக்கு முன், ஒன்றுக்கொன்று சம்பந்தமே இல்லாத இரண்டு items 0.68-ல்
+    அமர்ந்திருக்கின்றன; நிறைய ஜோடிகள் 0.98-க்கும் மேலே. உங்கள் similarity
+    threshold-க்குப் போக இடமே இல்லை: முழு distribution-ம் range-இன் உச்சியில்
+    நெரிசலாகியிருக்கிறது. பயிற்சிக்குப் பிறகு cosines தாங்கள் பயன்படுத்த
+    வேண்டிய range-ஐப் பயன்படுத்துகின்றன; தொடர்பில்லாத ஜோடியின் சராசரி
+    பூஜ்ஜியத்தில் இருக்கிறது — "தொடர்பில்லை" என்பது அப்படித்தான்
+    இருக்க வேண்டும்.
+  </p>
+  <p>
+    இது அளவிடக்கூடியது; ஆகவே அளவிடுங்கள். ஒரு embedding service உங்களுக்கு
+    வந்து சேர்ந்து, அது நல்லதா என்று ஒரு நிமிடத்தில் தெரிந்துகொள்ள
+    வேண்டுமென்றால், 200 சீரற்ற items எடுத்து, off-diagonal cosine-இன்
+    சராசரியைக் கணக்கிட்டு, அது பூஜ்ஜியத்திற்கு அருகில் இருக்கிறதா எனப்
+    பாருங்கள்.
+  </p>
+
+  <p class="thanglish">
+    Untrained encoder-la mean cosine 0.68 — ellaam ellaathukkum close, adhanaala
+    "close"-ku artham illa. Train pannina appuram average 0.00; idhu dhaan
+    anisotropy-ai oru nimisham-la measure panra vazhi.
+  </p>
+
+  <h2>Objective, ஓடுகிறது</h2>
+  <p>
+    torch-ஐ நான் பயன்படுத்தும் ஒரே இடம் இதுதான். Mechanism — similarity,
+    retrieval, anisotropy அளவீடு — எல்லாம் NumPy; ஆனால் paper-இன் கருத்தே ஒரு
+    training objective-தான், கையால் எழுதிய backprop அதைக் குழாய்ப்
+    பணிகளுக்குள் புதைத்துவிடும்.
+  </p>
+<pre><code>batch 64, temperature 0.07. Chance loss = ln(64) = 4.1589
+
+  step    1   loss <span class="hl">5.6448</span>
+  step   50   loss 0.6859
+  step  100   loss 0.3321
+  step  200   loss 0.3079
+  step  300   loss 0.3596
+  step  400   loss <span class="ok">0.2470</span></code></pre>
+  <p>
+    Step 1 ஊகிப்பதைவிட மோசமாக இருக்கிறது; அது சரிதான் — encoders சீரற்றவை.
+    ஐம்பது steps-ல், loss <code>ln(64)</code>-க்கு நன்றாகக் கீழே இறங்குகிறது;
+    கேட்கப்பட்ட ஒரே விஷயத்தை model கற்றுக்கொண்டது: batch-ல் உள்ள மற்ற 63
+    items-ஐ விட, பொருந்தும் ஜோடிகளை நெருக்கமாக வை.
+  </p>
+
+  <h2>பயிற்சிக்கு முன்னும் பின்னும் retrieval: முழு வாதமும், இரண்டு எண்களில்</h2>
+  <p>
+    Loss curves வைத்து உங்களை நீங்களே ஏமாற்றிக்கொள்வது எளிது. முடிவைத்
+    தீர்மானிக்கும் எண் retrieval accuracy: ஒரு பக்கத்திலிருந்து item i-ஐ
+    query-ஆக வைத்து, மறுபக்கத்தில் உள்ள 200 items-க்கும் score கொடுத்து, i
+    முதலிடத்தில் வருகிறதா எனப் பார்.
+  </p>
+<pre><code>chance (1/200)                 : 0.0050
+untrained encoders, top-1      : <span class="hl">0.0050</span>
+trained encoders,   top-1      : <span class="ok">0.8650</span></code></pre>
+  <p>
+    ஒரே architecture. ஒரே data. ஒரே cosine function. Untrained encoders
+    <em>சரியாக</em> chance அளவில் score செய்கின்றன — இருநூறில் ஒன்று. அதற்காகப்
+    பயிற்றுவிக்கப்படாத ஒரு model-இன் vectors மீதான cosine distance ஒரு பலவீனமான
+    signal அல்ல. அது signal-ஏ இல்லை.
+  </p>
+  <div class="note">
+    <strong>அதுதான் Sentence-BERT-இன் கண்டுபிடிப்பு, வேறு வார்த்தைகளில்.</strong>
+    BERT-இன் token outputs மீது mean pooling பொதுவாக CLS vector-ஐ விட
+    சிறப்பாக இருந்தது என்று அவர்களது சோதனைகள் கண்டன — ஆனால் உண்மையான விஷயம்
+    இது: <em>similarity objective-க்காக fine-tune செய்யும் வரை</em> இரண்டுமே
+    பயனற்றவை. Pooling தேர்வு ஒரு விவரம். அந்தப் பண்புக்காகப் பயிற்றுவிப்பதுதான்
+    paper.
+  </div>
+
+  <h2>Temperature: dial-இன் இரு முனைகளுமே உடைந்தவை</h2>
+  <p>
+    Softmax-க்கு முன் similarities-ஐ τ வகுக்கிறது. சிறிய τ distribution-ஐக்
+    கூர்மையாக்குகிறது; ஆகவே loss மிகக் கடினமான ஒரே ஒரு negative-ஐப் பற்றியே
+    வெறிபிடித்து அலைகிறது. பெரிய τ அதைத் தட்டையாக்குகிறது; ஆகவே சரியான
+    விடைக்கும் தவறானவற்றுக்கும் loss பெரிதாக வேறுபாடு காணுவதில்லை. ஒவ்வொரு
+    முறையும் புதிதாகப் பயிற்றுவித்து, அதை sweep செய்தால்:
+  </p>
+<pre><code>   tau  final loss    top-1   sim std  mean top score
+ 0.005      0.5941   <span class="hl">0.6950</span>    <span class="hl">0.0914</span>          0.8183
+ 0.020      0.3950   0.8500    0.2666          0.9030
+ 0.070      0.3506   <span class="ok">0.8650</span>    0.3451          0.8836
+ 0.300      1.9828   <span class="ok">0.8650</span>    0.3559          0.9080
+ 1.000      3.3512   0.8150    0.3896          0.9265
+10.000      4.0698   <span class="hl">0.6200</span>    0.4861          0.9458</code></pre>
+  <p>
+    <code>sim std</code> என்பது similarity distribution எவ்வளவு விரிந்திருக்கிறது
+    என்பது. τ=0.005-ல் அது 0.09-ஆகச் சுருங்குகிறது — space மடிந்துவிடுகிறது,
+    ஏனெனில் ஒவ்வொரு step-லும் ஒரே ஒரு கடினமான negative-ஐத் துரத்துவது மோசமான
+    training signal — accuracy 0.695-க்கு விழுகிறது. τ=10-ல் loss
+    <code>ln(64)</code>-ஐ விட்டு அசையவே இல்லை; எதுவும் பிரிவதில்லை, accuracy
+    0.62-க்கு விழுகிறது. நடுவில் உள்ள பயன்படக்கூடிய பட்டை அகலமானது, தட்டையானது;
+    இரு விளிம்புகளும் பள்ளங்கள்.
+  </p>
+  <p>
+    ஒரு எண்ணைத் தேர்ந்தெடுப்பதற்கான CLIP-இன் பதில், எதையும் தேர்ந்தெடுக்காமல்
+    இருப்பது: temperature ஒரு learned parameter, weights-உடன் சேர்ந்தே
+    optimise செய்யப்படுகிறது.
+  </p>
+
+  <h2>Normalisation, அல்லது நீளமான vector ஜெயிக்கிறது</h2>
+  <p>
+    Cosine என்பது இரு நீளங்களாலும் வகுக்கப்பட்ட ஒரு dot product. அந்த வகுத்தல்
+    அலங்காரம் அல்ல. இதோ அதே trained embeddings, index செய்யப்பட்ட items-க்கு
+    வெவ்வேறு magnitudes கொடுக்கப்பட்டிருக்கின்றன — உண்மையான documents வெவ்வேறு
+    நீளங்களில் இருப்பதைப் போல:
+  </p>
+<pre><code>cosine (normalised),   top-1 : <span class="ok">0.8650</span>
+raw dot product,       top-1 : <span class="hl">0.3100</span>
+raw dot product, distinct items ever returned: <span class="hl">66</span> of 200
+raw dot product, most-returned item index    : 197</code></pre>
+  <p>
+    Corpus-ல் மூன்றில் இரண்டு பங்கு எட்டவே முடியாததாகிவிடுகிறது. அந்த items
+    தொடர்பற்றவை என்பதால் அல்ல — அவை சிறியவை என்பதால். Normalise செய்யப்படாத
+    document scores மீது <a href="../rag/">RAG பக்கம்</a> காட்டும் அதே bug
+    இது; தீர்வும் அதுதான்: norm-ஆல் வகுங்கள், அல்லது vectors-ஐ ஏற்கனவே
+    normalise செய்து சேமியுங்கள் — அப்போது மறக்கவே முடியாது.
+  </p>
+
+  <h2>இரண்டு towers, ஒரே space</h2>
+  <p>
+    CLIP-இன் கட்டமைப்புக் கருத்து ஒரே வாக்கியத்தில்: ஒன்றையொன்று
+    பகிர்ந்துகொள்ளாத இரண்டு encoders, இரண்டு வெவ்வேறு input வகைகளைப் படித்து,
+    ஒரே space-ல் vectors-ஐ உருவாக்குகின்றன; பொருந்திய ஜோடிகளை இழுத்து
+    நெருக்கும் loss மட்டுமே அவற்றைப் பயிற்றுவிக்கிறது.
+  </p>
+  <p>
+    என் script-ல் modality A என்பது 32 features, modality B என்பது 24. ஒரு
+    பகிரப்பட்ட மறைவான காரணத்திலிருந்து noise-உடன் அவை உருவாக்கப்படுகின்றன.
+    Images-க்கும் captions-க்கும் அவை பதிலிகள் — அவை images அல்ல, text-ம்
+    அல்ல; வேறுவிதமாகப் பாசாங்கு செய்யப்போவதில்லை. அவை காப்பாற்றுவது முக்கியமான
+    ஒரே கட்டமைப்பு விஷயத்தை: தொடர்பில்லாத இரண்டு input formats, அடியில் ஒரே
+    ஒரு விஷயம்.
+  </p>
+<pre><code> query (A)   best match (B)   its cosine   runner-up   correct?
+         0                0       0.7954      0.7021       True
+         1                1       0.9028      0.8699       True
+         2                2       0.8894      0.7815       True
+         3              <span class="hl">140</span>       0.8045      0.7582      False
+         4              <span class="hl">179</span>       0.8307      0.7893      False
+         5                5       0.7668      0.7065       True
+
+A-&gt;B top-1: <span class="ok">0.8650</span>     B-&gt;A top-1: <span class="ok">0.8450</span></code></pre>
+  <p>
+    3, 4 rows-ஐக் கவனியுங்கள் — இந்த சிறு பொம்மை சில நேரம் தோற்கும் அளவுக்கு
+    noisy; அது நேர்மையானது. இரு திசைகளிலும் அது வேலை செய்கிறது என்பதையும்
+    கவனியுங்கள், ஏனெனில் loss symmetric: A, B-ஐ retrieve செய்கிறது; B, A-ஐ
+    retrieve செய்கிறது.
+  </p>
+  <div class="note">
+    <strong>Zero-shot classification வருவது இங்கிருந்துதான்.</strong> Images-ம்
+    text-ம் ஒரே space-ஐப் பகிர்ந்துகொண்டதும், image-ஐ embed செய்து, பிறகு
+    ஒவ்வொரு candidate class-க்கும் ஒரு text prompt-ஐ embed செய்து, மிக
+    அருகில் இருப்பதை எடுத்தால் classification முடிந்தது. Classifier head
+    இல்லை, உங்கள் label set மீது பயிற்சி இல்லை. Classes என்பவை நீங்கள் தட்டச்சு
+    செய்த strings மட்டுமே. அது எவ்வளவு தூரம் அழைத்துச் செல்கிறது என்பதைப் பற்றியே
+    CLIP-இன் paper பெரும்பாலும் பேசுகிறது — என்னுடைய எண்களைவிட அவர்களுடையதைப்
+    படியுங்கள்.
+  </div>
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+  <p>
+    <a href="../rag/">RAG वाला पन्ना</a> एक छोटी-सी बेईमानी करता है — और वह
+    खुद यह कहता भी है। वहाँ का retriever सिर्फ़ hashed bag-of-words है, क्योंकि
+    असली चीज़ के लिए एक अलग पन्ना चाहिए था। यही वह पन्ना है। कि vectors आते
+    कहाँ से हैं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (embedding, cosine
+    similarity, contrastive, InfoNCE, in-batch negatives, temperature,
+    anisotropy, bi-encoder, cross-encoder, reranker, two-tower, L2
+    normalisation, pooling…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी
+    papers में आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English
+    में।</strong>
+  </div>
+
+  <p>
+    शर्मनाक रूप से लंबे समय तक मैं यही मानता रहा कि कोई भी ढंग का language
+    model आपको embeddings मुफ़्त में दे देता है। <a href="../bert/">BERT</a>
+    चलाओ, CLS vector लो, cosine लगा दो। यह काम नहीं करता, और क्यों नहीं करता —
+    यही Sentence-BERT की खोज है: raw BERT output को कभी यह सिखाया ही नहीं गया
+    कि मिलती-जुलती चीज़ों को पास-पास रखे, इसलिए वह रखता नहीं। सारे vectors एक
+    सँकरे cone में ठुँस जाते हैं और हर चीज़ हर चीज़ से 0.9 मिलती-जुलती लगती है।
+  </p>
+
+  <h2>Hash function बनाम similarity index</h2>
+  <p>आपने दोनों लिखे हैं। यह वाला:</p>
+<pre><code>h = hashlib.sha256(doc.encode()).hexdigest()   # एक चीज़ -&gt; एक संख्या</code></pre>
+  <p>
+    Identity के लिए बिल्कुल सही। Deterministic, तेज़, collision-resistant। और
+    "मुझे इस जैसे documents ढूँढ़ो" के लिए पूरी तरह बेकार, क्योंकि लगभग एक जैसे
+    दो documents दो बिल्कुल असंबंधित मानों पर hash होते हैं। Hash space में
+    दूरी का कोई मतलब नहीं। यही तो पूरा design लक्ष्य है — अच्छा hash structure
+    को <em>नष्ट</em> करता है।
+  </p>
+  <p>फिर दूसरी क़िस्म है:</p>
+<pre><code>v = embed(doc)                     # एक चीज़ -&gt; एक vector
+near = sorted(corpus, key=lambda d: -cosine(v, embed(d)))[:5]</code></pre>
+  <p>
+    Signature वही। चीज़ अंदर, संख्या बाहर। लेकिन इसे structure को
+    <em>बचाना</em> है, और structure बचना कोई संयोग से होने वाली बात नहीं है।
+    यह इसलिए होता है क्योंकि किसी ने इसे इसके लिए train किया।
+  </p>
+  <p>
+    दोनों papers एक ही काम एक ही तरीक़े से करते हैं। Sentence-BERT, BERT को
+    लेता है, उसकी दो प्रतियाँ एक siamese ढाँचे में एक pooling step के साथ
+    चलाता है, और इस तरह fine-tune करता है कि दोनों output vectors के बीच की
+    cosine similarity इस बात से मेल खाए कि वाक्यों का मतलब सचमुच एक है या नहीं।
+    CLIP एक image encoder और एक text encoder लेता है, उन्हें image-caption
+    जोड़ों के बड़े संग्रह पर चलाता है, और ऐसे train करता है कि एक तस्वीर अपने
+    caption के पास और बाक़ी सबके caption से दूर गिरे।
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Embedding</strong></td><td>ऐसा vector जिसमें दिशा ही अर्थ है</td><td>एक sort key, ID नहीं</td></tr>
+      <tr><td><strong>Bi-encoder</strong></td><td>हर item को एक बार encode करो, फिर vectors की तुलना</td><td>Index बनाओ, फिर lookup करो</td></tr>
+      <tr><td><strong>Cross-encoder</strong></td><td>दोनों items साथ में डालो, जोड़े को score दो</td><td>Join predicate के साथ पूरा table scan</td></tr>
+      <tr><td><strong>Anisotropy</strong></td><td>सारे vectors एक सँकरे cone में ठुँसे हुए</td><td>बेहद ख़राब distribution वाला hash</td></tr>
+      <tr><td><strong>In-batch negative</strong></td><td>Batch का हर दूसरा item, ग़लत जवाब के रूप में इस्तेमाल</td><td>मुफ़्त test data जो पहले से load है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Bi-encoder क्यों मायने रखा: उसने खोज को सस्ता बनाया</h2>
+  <p>
+    Sentence-BERT से पहले, BERT से दो वाक्यों की तुलना का अच्छा तरीक़ा
+    cross-encoder था: दोनों को जोड़ो, model से गुज़ारो, ऊपर से एक score पढ़ लो।
+    सटीक। और quadratic भी। n वाक्यों के संग्रह में हर जोड़े की तुलना यानी एक
+    बड़े transformer से n²/2 forward passes, और आप कुछ भी cache नहीं कर सकते,
+    क्योंकि score सिर्फ़ उस जोड़े के लिए ही मौजूद है।
+  </p>
+  <p>
+    Bi-encoder हर वाक्य को <em>एक बार</em> embed करता है — n forward passes,
+    offline निपटे हुए — और उसके बाद तुलना बस एक dot product है। यही फ़र्क़ है
+    उस काम में जो आप रात-भर चलाते हैं और उस काम में जो आप कभी नहीं चलाते।
+  </p>
+  <div class="note">
+    <strong>यह trade असली है और यही interview का सवाल है।</strong> Cross-encoder
+    आमतौर पर ज़्यादा सटीक होता है, क्योंकि वह दोनों texts को एक-दूसरे पर attend
+    करने देता है। Bi-encoder बेहद तेज़ है। Production systems दोनों इस्तेमाल
+    करते हैं: लाखों में से सौ candidates लाने के लिए bi-encoder, उन सौ को
+    rerank करने के लिए cross-encoder। एक reranker यही <em>है</em>, और यही वह
+    टुकड़ा है जिसे <a href="../rag/">RAG वाला पन्ना</a> stub छोड़ देता है।
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+  <p>
+    कोई architecture नहीं। एक loss। यह InfoNCE है, और दोनों papers असल में
+    यही योगदान दे रहे हैं:
+  </p>
+  <div class="formula">L = −log [ exp(sim(a<sub>i</sub>, b<sub>i</sub>) / τ) ÷ Σ<sub>j</sub> exp(sim(a<sub>i</sub>, b<sub>j</sub>) / τ) ]</div>
+  <p>
+    आँखें सिकोड़कर देखिए तो यह cross-entropy है, क्योंकि यह ठीक वही है। इसे
+    pipeline के चरणों की तरह पढ़िए:
+  </p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>a, b</code></td><td>(B, d) each</td><td>B मिलान वाले जोड़ों का एक batch, L2-normalised, हर item के लिए एक row</td></tr>
+      <tr><td><code>a @ b.T</code></td><td>(B, B)</td><td><strong>Score matrix.</strong> Diagonal पर B सही जोड़ियाँ; उससे बाहर सब कुछ मुफ़्त में मिला ग़लत जवाब</td></tr>
+      <tr><td><code>/ τ</code></td><td>scalar</td><td>Temperature। Softmax कितनी तीक्ष्णता से भेद करता है</td></tr>
+      <tr><td><code>softmax</code></td><td>row-wise</td><td>Row i बन जाती है "मुझे कितना भरोसा है कि a<sub>i</sub> का मिलान b<sub>j</sub> है"</td></tr>
+      <tr><td><code>cross_entropy</code></td><td>labels = 0..B−1</td><td>Row i का label <em>i</em> ही है। पूरी चाल यही है</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    आप एक भी label नहीं लिखते। Batch index ही label है। 64 मिलान वाले जोड़े
+    load कीजिए और आपने model को 64 सवाल थमा दिए, हर एक के साथ 63 ग़लत जवाब —
+    4032 negatives, मुफ़्त में।
+  </p>
+
+  <h2>वह cone: raw CLS vectors embeddings क्यों नहीं हैं</h2>
+  <p>
+    "किसी और काम के लिए train किया गया network" की जगह मेरी script में एक
+    randomly initialised encoder है। BERT जैसा हूबहू नहीं, पर जो गुण मायने
+    रखता है वह उसमें है — असली weights, असली non-linearity, और इस distance के
+    लिए कभी train नहीं हुआ। असंबंधित items के बीच औसत cosine नापिए, training
+    से पहले और बाद में:
+  </p>
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। यह रहा असली output:</strong></p>
+<pre><code>untrained encoder, mean pairwise cosine: <span class="hl">+0.6781</span>
+                   min / max cosine:     -0.1540 / +0.9814
+
+trained   encoder, mean pairwise cosine: <span class="ok">+0.0041</span>
+                   min / max cosine:     -0.9113 / +0.9316</code></pre>
+  <p>
+    Training से पहले, जिन दो items में कुछ भी साझा नहीं है वे 0.68 पर बैठे हैं,
+    और बहुत सारे जोड़े 0.98 से ऊपर हैं। आपकी similarity threshold के पास जाने
+    को जगह ही नहीं: पूरी distribution range के ऊपरी सिरे में ठुँसी है। Training
+    के बाद cosines उस range का इस्तेमाल करते हैं जिसका उन्हें करना चाहिए, और
+    असंबंधित जोड़े का औसत शून्य पर है — "असंबंधित" को ऐसा ही दिखना चाहिए।
+  </p>
+  <p>
+    यह नापी जा सकती है, तो नापिए। अगर कोई embedding service आपके ज़िम्मे आ जाए
+    और एक मिनट में जानना हो कि वह किसी काम की है या नहीं, तो 200 यादृच्छिक
+    items लीजिए, off-diagonal cosine का औसत निकालिए, और देखिए कि वह शून्य के
+    पास है या नहीं।
+  </p>
+
+  <h2>Objective, चलता हुआ</h2>
+  <p>
+    यही एक जगह है जहाँ मैं torch इस्तेमाल करता हूँ। तंत्र — similarity,
+    retrieval, anisotropy की नाप — NumPy है, लेकिन paper का विचार <em>है ही</em>
+    एक training objective, और हाथ से लिखा backprop उसे plumbing के नीचे दबा
+    देता।
+  </p>
+<pre><code>batch 64, temperature 0.07. Chance loss = ln(64) = 4.1589
+
+  step    1   loss <span class="hl">5.6448</span>
+  step   50   loss 0.6859
+  step  100   loss 0.3321
+  step  200   loss 0.3079
+  step  300   loss 0.3596
+  step  400   loss <span class="ok">0.2470</span></code></pre>
+  <p>
+    Step 1 अंदाज़ा लगाने से भी बुरा है, जो ठीक ही है — encoders यादृच्छिक हैं।
+    पचास steps में loss <code>ln(64)</code> से काफ़ी नीचे है और model ने वही
+    एक चीज़ सीख ली है जो उससे माँगी गई थी: मिलान वाले जोड़ों को batch के बाक़ी
+    63 items से ज़्यादा पास लाओ।
+  </p>
+
+  <h2>Retrieval पहले और बाद में: पूरी बहस, दो संख्याओं में</h2>
+  <p>
+    Loss curves से ख़ुद को धोखा देना आसान है। जो संख्या फ़ैसला करती है वह है
+    retrieval accuracy: एक तरफ़ के item i से query कीजिए, दूसरी तरफ़ के सभी
+    200 items को score दीजिए, और देखिए कि i सबसे ऊपर आता है या नहीं।
+  </p>
+<pre><code>chance (1/200)                 : 0.0050
+untrained encoders, top-1      : <span class="hl">0.0050</span>
+trained encoders,   top-1      : <span class="ok">0.8650</span></code></pre>
+  <p>
+    वही architecture। वही data। वही cosine function। Untrained encoders
+    <em>ठीक</em> chance पर स्कोर करते हैं — दो सौ में एक। जिस model को इसके लिए
+    train ही नहीं किया गया, उसके vectors पर cosine distance कोई कमज़ोर signal
+    नहीं है। वह signal है ही नहीं।
+  </p>
+  <div class="note">
+    <strong>यही Sentence-BERT की खोज है, दूसरे शब्दों में।</strong> उनके प्रयोगों
+    में BERT के token outputs पर mean pooling आमतौर पर CLS vector से बेहतर
+    निकला — पर असली बात यह है कि <em>जब तक आप similarity objective के लिए
+    fine-tune नहीं करते</em> तब तक दोनों में से कोई भी काम का नहीं। Pooling का
+    चुनाव एक ब्यौरा है। जिस गुण की ज़रूरत है उसी के लिए train करना — वही paper है।
+  </div>
+
+  <h2>Temperature: dial के दोनों सिरे टूटे हुए हैं</h2>
+  <p>
+    τ, softmax से पहले similarities को भाग देता है। छोटा τ distribution को
+    तीखा कर देता है, तो loss सबसे कठिन एक ही negative के पीछे पड़ जाता है। बड़ा
+    τ उसे चपटा कर देता है, तो loss सही जवाब और ग़लत जवाबों में मुश्किल से कोई
+    फ़र्क़ करता है। हर बार शुरू से train करते हुए इसे sweep कीजिए:
+  </p>
+<pre><code>   tau  final loss    top-1   sim std  mean top score
+ 0.005      0.5941   <span class="hl">0.6950</span>    <span class="hl">0.0914</span>          0.8183
+ 0.020      0.3950   0.8500    0.2666          0.9030
+ 0.070      0.3506   <span class="ok">0.8650</span>    0.3451          0.8836
+ 0.300      1.9828   <span class="ok">0.8650</span>    0.3559          0.9080
+ 1.000      3.3512   0.8150    0.3896          0.9265
+10.000      4.0698   <span class="hl">0.6200</span>    0.4861          0.9458</code></pre>
+  <p>
+    <code>sim std</code> बताता है कि similarity distribution कितनी फैली हुई है।
+    τ=0.005 पर वह सिमटकर 0.09 रह जाती है — space मुड़कर बैठ जाता है, क्योंकि
+    हर step में एक ही कठिन negative के पीछे भागना बहुत बुरा training signal है
+    — और accuracy गिरकर 0.695 हो जाती है। τ=10 पर loss <code>ln(64)</code> से
+    मुश्किल से हिलता है, तो कुछ अलग ही नहीं होता, और accuracy 0.62 पर आ जाती
+    है। बीच की काम की पट्टी चौड़ी और सपाट है, और दोनों किनारे खाई हैं।
+  </p>
+  <p>
+    संख्या चुनने का CLIP का जवाब है — चुनो ही मत: temperature एक learned
+    parameter है, जो weights के साथ ही optimise होता है।
+  </p>
+
+  <h2>Normalisation, यानी सबसे लंबा vector जीत जाता है</h2>
+  <p>
+    Cosine एक dot product है जिसे दोनों लंबाइयों से भाग दिया गया है। वह भाग
+    सजावट नहीं है। ये रहीं वही trained embeddings, जिनमें indexed items को
+    अलग-अलग magnitudes दी गई हैं — जैसे असली documents की लंबाई अलग-अलग होती है:
+  </p>
+<pre><code>cosine (normalised),   top-1 : <span class="ok">0.8650</span>
+raw dot product,       top-1 : <span class="hl">0.3100</span>
+raw dot product, distinct items ever returned: <span class="hl">66</span> of 200
+raw dot product, most-returned item index    : 197</code></pre>
+  <p>
+    Corpus का दो-तिहाई हिस्सा पहुँच से बाहर हो जाता है। इसलिए नहीं कि वे items
+    अप्रासंगिक हैं — इसलिए कि वे छोटे हैं। यह ठीक वही bug है जो
+    <a href="../rag/">RAG वाला पन्ना</a> बिना normalise किए document scores पर
+    दिखाता है, और इलाज भी वही है: norm से भाग दीजिए, या vectors को पहले से
+    normalise करके रखिए ताकि भूलना मुमकिन ही न हो।
+  </p>
+
+  <h2>दो towers, एक space</h2>
+  <p>
+    CLIP का ढाँचागत विचार एक वाक्य में: दो encoders जो आपस में कुछ भी साझा नहीं
+    करते, दो अलग तरह के inputs पढ़ते हैं, एक ही space में vectors बनाते हैं, और
+    सिर्फ़ उस loss से train होते हैं जो मिलान वाले जोड़ों को पास खींचता है।
+  </p>
+  <p>
+    मेरी script में modality A में 32 features हैं और modality B में 24। वे एक
+    साझा छिपे कारण और noise से बनाए गए हैं। वे images और captions की जगह खड़े
+    हैं — वे न images हैं, न text, और मैं ऐसा दिखावा भी नहीं करूँगा। वे सिर्फ़
+    उसी ढाँचागत बात को बचाते हैं जो मायने रखती है: दो असंबंधित input formats,
+    नीचे एक ही चीज़।
+  </p>
+<pre><code> query (A)   best match (B)   its cosine   runner-up   correct?
+         0                0       0.7954      0.7021       True
+         1                1       0.9028      0.8699       True
+         2                2       0.8894      0.7815       True
+         3              <span class="hl">140</span>       0.8045      0.7582      False
+         4              <span class="hl">179</span>       0.8307      0.7893      False
+         5                5       0.7668      0.7065       True
+
+A-&gt;B top-1: <span class="ok">0.8650</span>     B-&gt;A top-1: <span class="ok">0.8450</span></code></pre>
+  <p>
+    Rows 3 और 4 पर ध्यान दीजिए — यह खिलौना इतना noisy है कि कभी-कभी फ़ेल होता
+    है, और यही ईमानदारी है। यह भी देखिए कि यह दोनों दिशाओं में काम करता है,
+    क्योंकि loss symmetric है: A, B को खोजता है और B, A को।
+  </p>
+  <div class="note">
+    <strong>Zero-shot classification यहीं से आता है।</strong> जैसे ही images और
+    text एक space साझा करते हैं, आप classification ऐसे करते हैं: image को embed
+    कीजिए, फिर हर candidate class के लिए एक text prompt embed कीजिए, और सबसे
+    पास वाला चुन लीजिए। न कोई classifier head, न आपके label set पर कोई training।
+    Classes बस वे strings हैं जो आपने टाइप कीं। CLIP का paper काफ़ी हद तक इसी
+    बारे में है कि यह तरीक़ा बहुत सारे benchmarks पर कहाँ तक ले जाता है — मेरे
+    नहीं, उनके आँकड़े पढ़िए।
+  </div>
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism: cosine similarity, the anisotropy measurement, the retrieval
+  evaluation. A tiny PyTorch model, CPU only, for the one part that needs gradients. Every
+  function under 15 lines.
+</p>
+<p>
+  <a href="embeddings_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 100 lines of mechanism plus seven runnable demos. Then:
+</p>
+<pre><code>python3 embeddings_from_scratch.py</code></pre>
+<pre><code>import numpy as np
+import torch
+import torch.nn as nn
+
+
+# STAGE 1 -- cosine similarity, and the two things people get wrong about it.
+# cos(u, v) = (u . v) / (|u| |v|). Dividing by the lengths is what makes it
+# a similarity and not a dot product. Skip the division and the longest
+# vector wins every time -- the same bug the RAG page demonstrates on
+# unnormalised document scores.
+def l2_normalise(X, eps=1e-9):
+    return X / (np.linalg.norm(X, axis=-1, keepdims=True) + eps)
+
+
+def cosine_matrix(A, B):
+    """(n, d) x (m, d) -&gt; (n, m) of cosines. Normalise, then one matmul."""
+    return l2_normalise(A) @ l2_normalise(B).T
+
+
+def mean_pairwise_cosine(X):
+    """Anisotropy, measured. Average cosine between distinct random vectors.
+
+    If the vectors are spread over the sphere this sits near 0.0. If they all
+    crowd into a narrow cone it sits near 1.0, and 'close' stops meaning
+    anything -- everything is close to everything.
+    """
+    C = cosine_matrix(X, X)
+    n = C.shape[0]
+    off_diagonal = C[~np.eye(n, dtype=bool)]
+    return float(off_diagonal.mean())
+
+
+# STAGE 2 -- retrieval evaluation. The only number that settles an argument.
+# Query with row i of A, score every row of B, and check whether row i comes
+# out on top. Chance level is 1/n.
+def top1_accuracy(A, B, normalise=True):
+    scores = cosine_matrix(A, B) if normalise else A @ B.T
+    return float((scores.argmax(axis=1) == np.arange(len(A))).mean())
+
+
+# STAGE 3 -- the two towers. One encoder per input type, one shared output
+# space. CLIP's image encoder and text encoder; Sentence-BERT's two copies of
+# BERT with tied weights and a pooling step on top.
+# Nothing here is clever. Two small MLPs. What matters is the objective they
+# are trained under, not the architecture.
+class Tower(nn.Module):
+    def __init__(self, d_in, d_out=D_EMB, hidden=64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_in, hidden), nn.ReLU(), nn.Linear(hidden, d_out)
+        )
+
+    def forward(self, x):
+        # L2-normalise on the way out, so the space we train is the space we
+        # search: cosine similarity becomes a plain dot product.
+        return nn.functional.normalize(self.net(x), dim=-1)
+
+
+# STAGE 4 -- InfoNCE with in-batch negatives. The whole contribution, in six
+# lines.
+# For a batch of B matched pairs, build the (B, B) matrix of similarities.
+# The diagonal holds the B correct pairings. Every off-diagonal cell is a
+# negative you got for free -- no negative sampling, no mining, just the rest
+# of the batch. Then it is a B-way classification problem, and the label of
+# row i is i.
+# The temperature divides the scores before the softmax. Small temperature =
+# sharp, the loss cares only about the hardest negative. Large temperature =
+# flat, the loss barely distinguishes anything.
+def info_nce_loss(emb_a, emb_b, temperature):
+    logits = emb_a @ emb_b.T / temperature      # (B, B) -- diagonal is correct
+    labels = torch.arange(len(emb_a))
+    loss_a = nn.functional.cross_entropy(logits, labels)      # A retrieves B
+    loss_b = nn.functional.cross_entropy(logits.T, labels)    # B retrieves A
+    return (loss_a + loss_b) / 2                # symmetric, as in CLIP</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a living —
+  reverse-engineering from broken behaviour is your native mode, and every row below is one
+  edit away.
+</p>
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Skip training: score with <code>untrained_towers()</code> instead of <code>train_towers()</code></td>
+      <td>Top-1 retrieval falls from 0.8650 to 0.0050 — exactly chance on 200 items. The raw-CLS-vector mistake, measured.</td>
+    </tr>
+    <tr>
+      <td>Pass <code>normalise=False</code> to <code>top1_accuracy</code></td>
+      <td>0.8650 → 0.3100, and only 66 of 200 items are ever returned. Magnitude beats meaning. Same failure as the <a href="../rag/">RAG page</a>'s unnormalised scores.</td>
+    </tr>
+    <tr>
+      <td><code>train_towers(temperature=10.0)</code></td>
+      <td>Final loss sits at 4.0698, barely under <code>ln(64)</code>=4.1589. The softmax is flat, the gradient can't tell right from wrong, accuracy 0.6200.</td>
+    </tr>
+    <tr>
+      <td><code>train_towers(temperature=0.005)</code></td>
+      <td>The other cliff. Similarity std collapses to 0.0914 and accuracy drops to 0.6950 — the space folds up chasing one hard negative per step.</td>
+    </tr>
+    <tr>
+      <td><code>train_towers(batch_size=2)</code></td>
+      <td>One negative per query instead of 63. Accuracy 0.3050. Batch size <em>is</em> the difficulty of the task here.</td>
+    </tr>
+    <tr>
+      <td>Query with run A's encoder against run B's index: <code>train_towers(seed=7)</code> for the second tower only</td>
+      <td>Top-1 <strong>0.0000</strong> — below chance. Same code, same data, different seed, unrelated spaces. Nothing throws.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<div class="note">
+  <strong>That last row is the production incident.</strong> You upgrade your embedding model,
+  re-embed half the corpus, and ship. No error, no alert, no exception — the vectors are still
+  the right shape and the cosines still come back as plausible-looking floats. Retrieval
+  quality just quietly dies for half your documents. Version your index by model, and re-embed
+  all of it or none of it.
+</div>
+<div class="note">
+  <strong>Then</strong> read the papers. For Sentence-BERT: the approach section (the pooling
+  strategies and the siamese setup) and the ablation table where mean pooling is compared
+  against CLS. Skip the per-dataset result tables unless you're chasing a specific benchmark.
+  For CLIP: the approach section, including the pseudocode figure for the loss — it's about
+  fifteen lines and it's the same six lines you've just run — and the zero-shot
+  prompt-engineering discussion. Skip most of the evaluation, it's very long.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There's less here than the notation suggests. A dot product is "how aligned are these two
+  arrows". Dividing by both lengths turns it into cosine, so only direction counts. Softmax
+  turns any row of numbers into percentages summing to one. Cross-entropy is "how surprised
+  was the model by the right answer". You've now used all four.
+</p>
+<p>
+  InfoNCE looks fearsome written out with the sum in the denominator, but the denominator is
+  just "every candidate in the batch" and the whole expression is <code>cross_entropy(a @ b.T
+  / tau, arange(B))</code>. One line. If the formula and the line ever disagree in your head,
+  trust the line.
+</p>
+<p>
+  What I did <em>not</em> do here, and what this page skips: why anisotropy arises in
+  transformer representations in the first place (there's real literature on that, and it's
+  more subtle than "training didn't ask for it"), the alignment-and-uniformity analysis of why
+  contrastive losses work, and any actual text or images. This is the mechanism, not the
+  phenomenon.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: why an untrained distance is worthless, and the six-line loss
+  that fixes it, in code you can break. Everything else — real sentences, real images, real
+  benchmarks — is elsewhere, and these four are better at it than I would be.
+</p>
+<ul class="paper-list">
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1908.10084">
+      <span class="paper-title">Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks</span>
+      <span class="paper-meta">Reimers &amp; Gurevych, 2019. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Short and unusually readable. Go for the pooling comparison and the argument about
+      cross-encoder cost — the concrete framing of why comparing every sentence pair with BERT is
+      not a thing you can afford. That cost argument is the half of the paper people forget.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2103.00020">
+      <span class="paper-title">Learning Transferable Visual Models From Natural Language Supervision</span>
+      <span class="paper-meta">Radford et al., 2021. CLIP. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Long, but the part you need is short: the approach section and its pseudocode figure for the
+      contrastive loss. Then skim the prompt engineering discussion — "a photo of a {label}"
+      beating a bare label is the most practically useful paragraph in the paper.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2021-05-31-contrastive/">
+      <span class="paper-title">Contrastive Representation Learning</span>
+      <span class="paper-meta">Lilian Weng. The survey, with the maths.</span>
+    </a>
+    <p class="paper-pitch">
+      Where my one loss becomes a family: triplet, NCE, InfoNCE, SimCLR, MoCo, and the memory-bank
+      tricks people use when your batch can't be big enough for good negatives. Read it when
+      "bigger batch, better negatives" stops being a satisfying answer.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://sbert.net/">
+      <span class="paper-title">Sentence Transformers documentation</span>
+      <span class="paper-meta">Reimers et al. The library, and its training guide.</span>
+    </a>
+    <p class="paper-pitch">
+      The paper as a maintained tool. The training pages cover the loss functions for the data you
+      actually have — pairs, triplets, scored pairs — and the cross-encoder reranking pages are
+      the piece the <a href="../rag/">RAG page</a> and this one both leave as a stub.
+    </p>
+  </li>
+</ul>
+<div class="note">
+  <strong>Order I'd take them in:</strong> Sentence-BERT first (it's the shortest and it's the
+  one whose problem you've just felt), then the Sentence Transformers docs to build something,
+  then CLIP, then Weng when you want the theory underneath. Weng first will just be symbols.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

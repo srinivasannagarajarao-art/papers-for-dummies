@@ -1,0 +1,1399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quantisation: what fits on your GPU &mdash; for programmers</title>
+<meta name="description" content="LLM.int8(), GPTQ, AWQ and QLoRA's NF4 explained as one question: which numbers are you allowed to be sloppy about? Runnable NumPy, seven demos, real error numbers and real memory arithmetic.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128196;</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Quantisation: what fits on your GPU</h1>
+    <p class="paper-meta">Dettmers et al., 2022 &mdash; with Frantar et al. 2022, Lin et al. 2023, Dettmers et al. 2023</p>
+    <p class="lede">
+      Four papers, one question: which numbers are you allowed to be sloppy about?
+    </p>
+    <p>
+      <a href="quantization_from_scratch.py" download>Download quantization_from_scratch.py</a> &mdash; everything below
+      runs from it. NumPy only.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
+
+  <p>
+    I'm an AI Engineer. I've passed <code>load_in_4bit=True</code> to <code>from_pretrained</code>, watched a 13B model
+    appear on a card that should not have held it, and had no idea what I'd just agreed to. What is <em>NF4</em>? Why is
+    <code>group_size=128</code> in every config file? Why does GPTQ need a calibration dataset when bitsandbytes
+    doesn't? Nobody told me the whole field is one operation and one argument about it.
+  </p>
+
+  <h2>A float is a storage budget, and most of it is wasted</h2>
+
+  <p>
+    You already know this idea. It's JPEG. Almost none of a photograph's exactness survives being saved at quality 80,
+    and it looks the same. You can throw away a <em>lot</em> before anyone notices &mdash; but throw away the wrong
+    thing and it's obvious instantly: ringing round the text, banding across the sky.
+  </p>
+
+  <p>
+    A weight matrix is the same bargain. fp16 spends 16 bits per number on a range up to 65504, and your weights all sit
+    between about &minus;3 and 3. So compress them:
+  </p>
+
+<pre><code>scale = abs(x).max() / 127        # map your range onto 255 slots
+q     = round(x / scale)          # &lt;- the lossy step. Information dies here
+store(q)                          # one byte per weight instead of two
+x2    = q * scale                 # multiply back. Close to x. Not x.</code></pre>
+
+  <p>
+    That's it. That is every paper on this page. Everything else &mdash; LLM.int8(), GPTQ, AWQ, NF4 &mdash; is an
+    argument about <strong>which numbers share a scale</strong>, <strong>where the levels sit</strong>, and
+    <strong>which numbers you refuse to compress at all</strong>.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Scale</strong></td><td>The float that maps your range onto the integer grid</td><td>The JPEG quality slider</td></tr>
+      <tr><td><strong>Zero point</strong></td><td>An integer offset, so the grid need not be centred on 0</td><td>An unsigned type with a bias</td></tr>
+      <tr><td><strong>Granularity</strong></td><td>How many numbers share one scale: tensor, channel, or group of 128</td><td>Chunk size. Smaller chunks, more headers</td></tr>
+      <tr><td><strong>Outlier</strong></td><td>One huge value that drags the scale coarse for everyone else</td><td>One 4&nbsp;GB row in a table you're paging</td></tr>
+      <tr><td><strong>PTQ / QAT</strong></td><td>Quantise a finished model, vs train it knowing it will be quantised</td><td>Post-processing vs building for the target</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The number that decides everything</h2>
+
+  <p>
+    Before any of the cleverness: parameters &times; bytes-per-parameter. That is the decision.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code> model        fp16        int8        int4
+    7B      13.0 GB       6.5 GB       3.3 GB
+   13B      24.2 GB      12.1 GB       6.1 GB
+   70B     130.4 GB      65.2 GB      32.6 GB
+
+fits on the card? weights only, nothing left for activations:
+
+ model    fp16 24/80    int8 24/80    int4 24/80
+    7B      yes  yes      yes  yes      yes  yes
+   13B       <span class="hl">NO</span>  yes      yes  yes      yes  yes
+   70B       <span class="hl">NO</span>   <span class="hl">NO</span>       NO  yes       NO  <span class="ok">yes</span></code></pre>
+
+  <p>
+    Weights are only half the budget. The KV cache is a second one, and it grows with context rather than with
+    parameters &mdash; the arithmetic for it is on the <a href="../kv-cache/">KV cache page</a>. Adding it at 4096
+    tokens, one sequence, fp16, using Llama-2 shapes:
+  </p>
+
+<pre><code>    7B fp16: weights   13.0 GB + KV  2.00 GB =   15.0 GB   24GB card: fits
+    7B int4: weights    3.3 GB + KV  2.00 GB =    5.3 GB   24GB card: fits
+   13B fp16: weights   24.2 GB + KV  3.12 GB =   27.3 GB   24GB card: <span class="hl">no</span>
+   13B int4: weights    6.1 GB + KV  3.12 GB =    9.2 GB   24GB card: <span class="ok">fits</span>
+   70B fp16: weights  130.4 GB + KV  1.25 GB =  131.6 GB   24GB card: no
+   70B int4: weights   32.6 GB + KV  1.25 GB =   33.8 GB   24GB card: no</code></pre>
+
+  <div class="note">
+    <strong>The 70B has the smallest KV cache of the three.</strong> That is not a typo &mdash; it uses grouped-query
+    attention with 8 KV heads instead of 80, so its cache is smaller than the 13B's. Model size and cache size are
+    separate budgets set by separate architecture choices.
+  </div>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">q = clamp(round(x / s), &minus;2<sup>b&minus;1</sup>+1, 2<sup>b&minus;1</sup>&minus;1)&nbsp;&nbsp;&nbsp;x&#770; = q &middot; s&nbsp;&nbsp;&nbsp;where s = max|x| / (2<sup>b&minus;1</sup>&minus;1)</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>max|x|</code></td><td>scalar (or per column, or per group)</td><td><strong>The only choice you make.</strong> Everything on this page is an argument about this line</td></tr>
+      <tr><td><code>x / s</code></td><td>(n, d)</td><td>Rescale into integer units. Now the numbers mean "how many slots"</td></tr>
+      <tr><td><code>round</code></td><td>(n, d)</td><td><strong>The lossy step.</strong> Worst case half a slot of error, per weight</td></tr>
+      <tr><td><code>clamp</code></td><td>(n, d)</td><td>Anything past the end saturates. Cheap in int8, brutal if you clipped an outlier</td></tr>
+      <tr><td><code>q &middot; s</code></td><td>(n, d)</td><td>Back to float, in the kernel, just before the matmul. This is <em>weight-only</em> quantisation</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Symmetric assumes the data straddles zero. If it doesn't &mdash; a ReLU output, say &mdash; you waste the negative
+    half of the grid, and an integer <code>zero_point</code> shifts the grid to fix it:
+  </p>
+
+<pre><code>now shift the data to [0.17, 2.60] -- nothing is negative:
+  symmetric  relative error: <span class="hl">0.003939</span>  (half the grid unused)
+  asymmetric relative error: <span class="ok">0.001680</span>  zero_point=-18
+  symmetric  int8 codes: 8 .. 127 (of -127..127, <span class="hl">47%</span> of the grid used)
+  asymmetric int8 codes: 0 .. 255 (of 0..255, <span class="ok">100%</span> used)</code></pre>
+
+  <h2>Where the scale lives is the whole game</h2>
+
+  <p>
+    One scale for a whole tensor means the loudest channel decides the resolution for every quiet one. This is the
+    single most useful thing on this page, and it is why naive quantisation fails.
+  </p>
+
+  <p>
+    Here's a 64&times;8 matrix where one column has been made 50&times; louder and one 50&times; quieter, quantised to
+    int8 both ways:
+  </p>
+
+<pre><code>channel absmax: [135.558  31.      2.466   1.988   2.553   2.176   2.138   0.057]
+
+per-tensor  one scale  = 1.067387
+per-channel scales     = [1.067 0.244 0.019 0.016 0.02  0.017 0.017 0.   ]
+
+per-channel error, column by column:
+  col 0: per-tensor  0.007493   per-channel 0.007493
+  col 2: per-tensor  0.290450   per-channel 0.005758
+  col 7: per-tensor  <span class="hl">1.000000</span>   per-channel <span class="ok">0.007100</span>
+
+distinct int8 codes in the quietest column (col 7):
+  per-tensor : <span class="hl">1</span> of 255
+  per-channel: <span class="ok">53</span> of 255</code></pre>
+
+  <p>
+    Column 7 has relative error <strong>1.0</strong>. Every value in it rounded to zero. The column is gone. It cost one
+    float per column to save it &mdash; eight floats for the whole matrix.
+  </p>
+
+  <p>
+    Group-wise scales are the same idea at finer grain: chop each column into groups of <em>g</em> weights and give each
+    group a scale. Here is 4096 weights at int4, eight of them 30&times; larger than the rest:
+  </p>
+
+<pre><code>   group   rel error   scales   bits/weight
+   whole    <span class="hl">0.662549</span>        1         4.004
+     128    0.257297       32         4.125
+      64    0.187432       64         4.250
+      32    <span class="ok">0.146733</span>      128         4.500
+
+same sweep with NO outliers, so you can see what the outliers cost:
+   whole    0.152834
+     128    0.116649</code></pre>
+
+  <div class="note">
+    <strong>Now you know why every config file says <code>group_size: 128</code>.</strong> It buys most of the accuracy
+    back for 0.125 extra bits per weight &mdash; one fp16 scale per 128 weights. Going to 32 costs four times the
+    overhead for a fraction more. QLoRA's <em>double quantisation</em> then quantises those scales too, which the paper
+    reports saves about 0.37 bits per parameter.
+  </div>
+
+  <h2>LLM.int8(): the outliers are systematic</h2>
+
+  <p>
+    Dettmers et al. found something that is not obvious: past roughly 6.7B parameters, transformers develop
+    <strong>outlier features</strong> &mdash; a small number of hidden dimensions whose activations are far larger than
+    everything else, and they appear in the same dimensions across layers and across inputs. They are not noise. Zero
+    them out and the model's performance collapses.
+  </p>
+
+  <p>
+    They're also fatal for per-tensor int8, because the scale is set by the max. One huge value spends the whole grid on
+    empty space. Here are 32 tokens &times; 16 dimensions, with outliers injected into dims 3 and 11:
+  </p>
+
+<pre><code>clean activations, absmax 3.056
+  per-tensor int8 relative error: 0.006828
+
+with outliers in dims 3 and 11, absmax 105.047
+  per-tensor scale went 0.024066 -&gt; 0.827141  (34.4x coarser)
+  per-tensor int8 relative error: 0.017330
+  error on the NON-outlier dims only: <span class="hl">0.243144</span>
+  distinct int8 codes used by dim 0: <span class="hl">5</span> of 255
+
+mixed precision: keep columns [3, 11] in 16-bit,
+  that is 2/16 = 12.5% of the dimensions
+  relative error, whole tensor : <span class="ok">0.000466</span>
+  relative error, non-outlier  : <span class="ok">0.006992</span></code></pre>
+
+  <p>
+    Whole-tensor error looks like 1.7%, which is survivable. That average is a lie: it's dominated by the two outliers,
+    which are huge and quantise fine. The dimensions that matter to everything else are at <strong>24% error</strong>,
+    and dimension 0 is using five of its 255 codes. The damage is hidden by the metric.
+  </p>
+
+  <p>
+    LLM.int8()'s fix is not clever, and that's the point. Pull the outlier columns out, do those in fp16, do the other
+    99.9% in int8, add the two results. One mixed-precision matmul. The paper's claim is that this holds full 16-bit
+    quality while halving the weight memory &mdash; the first int8 method that survived 175B scale.
+  </p>
+
+  <div class="note">
+    <strong>This is where weight quantisation and activation quantisation part company.</strong> Weights are
+    well-behaved: bounded, roughly normal, known ahead of time. Activations depend on the input and are where the
+    outliers live. That is why GPTQ, AWQ and NF4 are all <em>weight-only</em> &mdash; they shrink the checkpoint and
+    dequantise before the matmul. LLM.int8() is doing the harder thing.
+  </div>
+
+  <h2>GPTQ: quantise in an order, and apologise as you go</h2>
+
+  <p>
+    Everything above quantises every weight independently, in one shot, and accepts the error. GPTQ asks a better
+    question: when I round this weight <em>down</em>, can I nudge the weights I haven't done yet to compensate?
+  </p>
+
+  <p>
+    It goes column by column. Quantise a column, measure the error, then update the columns not yet done so they absorb
+    it &mdash; using approximate second-order information (a Hessian, estimated from a small calibration set) to decide
+    how. Each rounding decision leaves a debt, and the not-yet-frozen weights pay it.
+  </p>
+
+  <p>
+    Three things follow, and they are the interview material. It is <strong>one-shot post-training</strong>: no
+    retraining, no gradients, no labels. It <strong>needs calibration data</strong>, which bitsandbytes' int8 and NF4
+    don't &mdash; the usual reason a GPTQ build is awkward in a pipeline. And it is <strong>weight-only, 3 to 4
+    bit</strong>: the paper's headline is 3 and 4-bit quantisation up to 175B with negligible accuracy loss, which is
+    why GPTQ checkpoints are everywhere on the Hub. The Hessian update is not in my script &mdash; it needs a
+    calibration set and a Cholesky, and it would bury the idea.
+  </p>
+
+  <h2>AWQ: protect the weights the activations care about</h2>
+
+  <p>
+    AWQ's finding: a small fraction of weights are <strong>salient</strong>, and protecting roughly 1% of them recovers
+    most of the quality. The non-obvious part is how you find them. Not by weight magnitude &mdash; by
+    <strong>activation</strong> magnitude. The weights that matter are the ones multiplying the input channels carrying
+    large activations. That is the LLM.int8() finding again, seen from the weight side.
+  </p>
+
+  <p>
+    And AWQ does not keep them in fp16, because mixed precision is ugly in a kernel: ragged layout, slow paths. Instead
+    it scales the salient channels up before quantising and scales the matching activations down, so the maths is
+    unchanged and the important weights land on a finer part of the grid. Everything stays uniform int4, which is why
+    AWQ kernels are fast.
+  </p>
+
+  <div class="note">
+    <strong>The distinction to keep straight:</strong> LLM.int8() is mixed-precision and finds outliers at runtime, per
+    batch, in the activations. AWQ is uniform int4 and uses activation statistics once, at quantisation time, to decide
+    how to scale the weights. GPTQ uses a calibration set to correct rounding error. Three answers to "which numbers do
+    I protect", and no backprop in any of them.
+  </div>
+
+  <h2>QLoRA and NF4: put the levels where the data is</h2>
+
+  <p>
+    Every scheme so far spaces its levels evenly, and QLoRA's argument is that this is obviously wrong. Pretrained
+    weights are roughly normally distributed, piled up around zero, so evenly spaced levels spend most of their
+    resolution in the tails where almost nothing lives. <strong>4-bit NormalFloat</strong> puts the 16 levels at
+    equal-probability quantiles of a normal distribution instead. Same 4 bits, levels crowded where the weights are
+    &mdash; here are both sets, and the error on 100,000 draws from N(0,1):
+  </p>
+
+<pre><code>linear int4 levels (evenly spaced):
+  [-1.    -0.867 -0.733 -0.6   -0.467 -0.333 -0.2   -0.067  0.067 ...]
+normal-quantile levels (NF4-style):
+  [-1.    -0.708 -0.542 -0.417 -0.311 -0.216 -0.127 -0.042  0.042 ...]
+
+weights ~ N(0,1), n=100000, absmax 4.369
+  linear int4 relative error: <span class="hl">0.167915</span>
+  NF4-style   relative error: <span class="ok">0.118978</span>
+  improvement: 29.1%
+
+how much data each of the 16 levels actually gets:
+  linear: emptiest level      1  busiest  22082  levels under 1% of the data: <span class="hl">8/16</span>
+  NF4   : emptiest level     10  busiest  14431  levels under 1% of the data: <span class="ok">4/16</span>
+</code></pre>
+
+  <p>
+    Half the linear levels are holding under 1% of the data each. One of them caught a single weight out of a hundred
+    thousand. That is half your bit budget spent on the tails.
+  </p>
+
+  <p class="muted">
+    Honest caveat: the real NF4 table in the paper is built asymmetrically, so that exact zero is one of the levels and
+    zero-padding stays exact. Mine is the same construction idea in five lines, and the error numbers above are from my
+    version, not theirs.
+  </p>
+
+  <h3>Why QLoRA needs LoRA</h3>
+
+  <p>
+    Here is the bit that made QLoRA click for me. Once weights are on a 4-bit grid you <em>cannot fine-tune them</em>. A
+    gradient step smaller than half the grid step rounds straight back to where it started:
+  </p>
+
+<pre><code>4-bit grid step (the scale) = 0.189194
+
+after one SGD step at lr=0.001:
+  moved by         : [-0.001 -0.002 -0.     0.001  0.001 -0.002 -0.     0.002]
+  after re-quantise: [0. 0. 0. 0. 0. 0. 0. 0.]
+  weights that actually changed: <span class="hl">0 of 8</span>
+
+same gradient at lr=0.5: 7 of 8 weights changed
+  step sizes taken : [-0.378  0.    -0.189  0.568  0.189 -0.757 -0.189  0.946]
+
+frozen 4-bit base + fp16 LoRA adapter, same lr=0.001:
+  adapter output after : max |delta| = 9.424e-07
+  weights that actually changed: <span class="ok">8 of 8</span>, by steps smaller than
+  the 4-bit grid step of 0.189194</code></pre>
+
+  <p>
+    The update silently disappears. Turn the learning rate up until something moves and every step is a whole grid step
+    &mdash; that isn't fine-tuning, it's vandalism. So QLoRA freezes the 4-bit base and trains a small higher-precision
+    <a href="../lora/">LoRA</a> adapter on top of it. Gradients flow <em>through</em> the frozen quantised weights into
+    the adapter; the base is never updated. I won't re-explain LoRA &mdash; <a href="../lora/">that page</a> does.
+  </p>
+
+  <p>
+    The paper's three contributions: NF4; <strong>double quantisation</strong>, which quantises the block scales
+    themselves; and <strong>paged optimisers</strong>, which use unified memory to survive the gradient-checkpointing
+    spikes that would otherwise OOM you. The headline result is finetuning a 65B model on one 48GB GPU without degrading
+    16-bit finetuning performance.
+  </p>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. <code>from_pretrained</code>-க்கு
+    <code>load_in_4bit=True</code> கொடுத்திருக்கிறேன், தாங்காது என்று நினைத்த ஒரு
+    card-ல் 13B model வந்து உட்கார்ந்ததைப் பார்த்திருக்கிறேன் — ஆனால் நான் எதற்கு
+    சம்மதித்தேன் என்றே தெரியாது. <em>NF4</em> என்றால் என்ன? ஒவ்வொரு config
+    file-லும் ஏன் <code>group_size=128</code> இருக்கிறது? bitsandbytes கேட்காத
+    calibration dataset-ஐ GPTQ மட்டும் ஏன் கேட்கிறது? இந்தத் துறை முழுவதுமே ஒரே
+    ஒரு operation-ம், அதைப் பற்றிய ஒரு வாதமும்தான் என்று யாரும் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (quantisation, scale, zero
+    point, per-tensor, per-channel, outlier, int8, int4, NF4, group size…)
+    அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் config file-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>ஒரு float என்பது ஒரு storage budget — அதில் பெரும்பாலானது வீண்</h2>
+
+  <p>
+    இந்தக் கருத்து உங்களுக்கு ஏற்கனவே தெரியும். இது JPEG. ஒரு புகைப்படத்தை quality
+    80-ல் சேமித்தால் அதன் துல்லியத்தில் கிட்டத்தட்ட எதுவும் மிஞ்சுவதில்லை — ஆனாலும்
+    பார்க்க அதே மாதிரிதான் இருக்கும். <em>நிறைய</em> தூக்கி எறியலாம், யாரும்
+    கவனிக்க மாட்டார்கள் — ஆனால் தவறான ஒன்றைத் தூக்கி எறிந்தால் உடனே தெரிந்துவிடும்:
+    எழுத்துகளைச் சுற்றி ringing, வானத்தில் banding.
+  </p>
+
+  <p>
+    Weight matrix-ம் இதே பேரம்தான். fp16 ஒவ்வொரு எண்ணுக்கும் 16 bits செலவழிக்கிறது,
+    65504 வரையிலான range-க்காக — உங்கள் weights எல்லாம் தோராயமாக &minus;3 முதல் 3
+    வரைதான் இருக்கின்றன. அப்படியென்றால் அவற்றைச் சுருக்குங்கள்:
+  </p>
+
+<pre><code>scale = abs(x).max() / 127        # range-ஐ 255 slots-க்குள் அடக்கு
+q     = round(x / scale)          # &lt;- lossy step. தகவல் இங்கே சாகிறது
+store(q)                          # weight-க்கு இரண்டு byte அல்ல, ஒன்று
+x2    = q * scale                 # திரும்பப் பெருக்கு. x-க்கு அருகில். x அல்ல.</code></pre>
+
+  <p>
+    அவ்வளவுதான். இந்தப் பக்கத்தில் உள்ள எல்லா paper-ம் இதுதான். மற்றதெல்லாம் &mdash;
+    LLM.int8(), GPTQ, AWQ, NF4 &mdash; <strong>எந்த எண்கள் ஒரே scale-ஐப்
+    பகிர்ந்துகொள்கின்றன</strong>, <strong>levels எங்கே அமர்கின்றன</strong>,
+    <strong>எந்த எண்களை நீங்கள் சுருக்கவே மறுக்கிறீர்கள்</strong> என்பதைப் பற்றிய
+    வாதம் மட்டுமே.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Scale</strong></td><td>உங்கள் range-ஐ integer grid-ஆக மாற்றும் float</td><td>JPEG quality slider</td></tr>
+      <tr><td><strong>Zero point</strong></td><td>ஒரு integer offset — grid 0-ஐ மையமாகக் கொள்ள வேண்டியதில்லை</td><td>bias உள்ள ஒரு unsigned type</td></tr>
+      <tr><td><strong>Granularity</strong></td><td>எத்தனை எண்கள் ஒரே scale-ஐப் பகிர்கின்றன: tensor, channel, அல்லது 128-ன் group</td><td>Chunk size. சிறிய chunks, அதிக headers</td></tr>
+      <tr><td><strong>Outlier</strong></td><td>மற்ற எல்லாருக்கும் scale-ஐ முரடாக்கும் ஒரு பெரிய மதிப்பு</td><td>Page செய்யும் table-ல் ஒரு 4&nbsp;GB row</td></tr>
+      <tr><td><strong>PTQ / QAT</strong></td><td>முடிந்த model-ஐ quantise செய்வது, vs quantise ஆகும் என்று தெரிந்தே அதைப் பயிற்றுவிப்பது</td><td>Post-processing vs target-க்காகவே கட்டுவது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>எல்லாவற்றையும் தீர்மானிக்கும் எண்</h2>
+
+  <p>
+    எந்தப் புத்திசாலித்தனத்துக்கும் முன்: parameters &times; ஒரு parameter-க்கான
+    bytes. அதுதான் முடிவு.
+  </p>
+
+  <p><strong>என் சொல்லை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code> model        fp16        int8        int4
+    7B      13.0 GB       6.5 GB       3.3 GB
+   13B      24.2 GB      12.1 GB       6.1 GB
+   70B     130.4 GB      65.2 GB      32.6 GB
+
+fits on the card? weights only, nothing left for activations:
+
+ model    fp16 24/80    int8 24/80    int4 24/80
+    7B      yes  yes      yes  yes      yes  yes
+   13B       <span class="hl">NO</span>  yes      yes  yes      yes  yes
+   70B       <span class="hl">NO</span>   <span class="hl">NO</span>       NO  yes       NO  <span class="ok">yes</span></code></pre>
+
+  <p>
+    Weights என்பது budget-ல் பாதிதான். KV cache இரண்டாவது budget — அது
+    parameters-உடன் அல்ல, context-உடன் வளர்கிறது; அதற்கான கணக்கு
+    <a href="../kv-cache/">KV cache பக்கத்தில்</a> இருக்கிறது. 4096 tokens, ஒரு
+    sequence, fp16, Llama-2 shapes வைத்து அதைச் சேர்த்தால்:
+  </p>
+
+<pre><code>    7B fp16: weights   13.0 GB + KV  2.00 GB =   15.0 GB   24GB card: fits
+    7B int4: weights    3.3 GB + KV  2.00 GB =    5.3 GB   24GB card: fits
+   13B fp16: weights   24.2 GB + KV  3.12 GB =   27.3 GB   24GB card: <span class="hl">no</span>
+   13B int4: weights    6.1 GB + KV  3.12 GB =    9.2 GB   24GB card: <span class="ok">fits</span>
+   70B fp16: weights  130.4 GB + KV  1.25 GB =  131.6 GB   24GB card: no
+   70B int4: weights   32.6 GB + KV  1.25 GB =   33.8 GB   24GB card: no</code></pre>
+
+  <div class="note">
+    <strong>மூன்றிலும் மிகச் சிறிய KV cache 70B-க்குத்தான்.</strong> இது எழுத்துப்
+    பிழை அல்ல — அது 80 KV heads-க்குப் பதிலாக 8 KV heads வைத்து grouped-query
+    attention பயன்படுத்துகிறது, எனவே அதன் cache 13B-ஐ விடச் சிறியது. Model size-ம்
+    cache size-ம் தனித்தனி budget-கள், தனித்தனி architecture முடிவுகளால்
+    தீர்மானிக்கப்படுபவை.
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">q = clamp(round(x / s), &minus;2<sup>b&minus;1</sup>+1, 2<sup>b&minus;1</sup>&minus;1)&nbsp;&nbsp;&nbsp;x&#770; = q &middot; s&nbsp;&nbsp;&nbsp;where s = max|x| / (2<sup>b&minus;1</sup>&minus;1)</div>
+
+  <p>இதை pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>max|x|</code></td><td>scalar (அல்லது per column, அல்லது per group)</td><td><strong>நீங்கள் எடுக்கும் ஒரே முடிவு.</strong> இந்தப் பக்கம் முழுவதும் இந்த ஒரு வரியைப் பற்றிய வாதம்தான்</td></tr>
+      <tr><td><code>x / s</code></td><td>(n, d)</td><td>Integer units-க்கு rescale. இப்போது எண்கள் "எத்தனை slots" என்று அர்த்தம் தருகின்றன</td></tr>
+      <tr><td><code>round</code></td><td>(n, d)</td><td><strong>Lossy step.</strong> மோசமான நிலையில் ஒரு weight-க்கு அரை slot பிழை</td></tr>
+      <tr><td><code>clamp</code></td><td>(n, d)</td><td>முனையைத் தாண்டியது saturate ஆகும். int8-ல் மலிவு; ஒரு outlier-ஐ clip செய்தால் கொடூரம்</td></tr>
+      <tr><td><code>q &middot; s</code></td><td>(n, d)</td><td>matmul-க்கு சற்று முன், kernel-க்குள்ளேயே float-க்குத் திரும்பு. இதுதான் <em>weight-only</em> quantisation</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Symmetric என்பது data பூஜ்ஜியத்தின் இரு பக்கமும் பரவியிருக்கிறது என்று
+    கருதுகிறது. இல்லையென்றால் — உதாரணமாக ஒரு ReLU output — grid-ன் எதிர்மறைப் பாதி
+    வீணாகிறது; ஒரு integer <code>zero_point</code> grid-ஐ நகர்த்தி அதைச் சரி
+    செய்கிறது:
+  </p>
+
+<pre><code>now shift the data to [0.17, 2.60] -- nothing is negative:
+  symmetric  relative error: <span class="hl">0.003939</span>  (half the grid unused)
+  asymmetric relative error: <span class="ok">0.001680</span>  zero_point=-18
+  symmetric  int8 codes: 8 .. 127 (of -127..127, <span class="hl">47%</span> of the grid used)
+  asymmetric int8 codes: 0 .. 255 (of 0..255, <span class="ok">100%</span> used)</code></pre>
+
+  <p class="thanglish">
+    Oru scale, oru range. Symmetric-la data zero-va suthi irukkanum;
+    illainaa grid-oda paadhi vinaa pogum, zero_point adha nagarthi sari pannum.
+  </p>
+
+  <h2>Scale எங்கே இருக்கிறது என்பதுதான் முழு விளையாட்டு</h2>
+
+  <p>
+    ஒரு tensor முழுமைக்கும் ஒரே scale என்றால், மிகச் சத்தமான channel எல்லா அமைதியான
+    channel-க்கும் resolution-ஐத் தீர்மானிக்கிறது. இந்தப் பக்கத்தில் இதுதான் மிகவும்
+    பயனுள்ள விஷயம், மேலும் naive quantisation தோற்பதற்கான காரணமும் இதுதான்.
+  </p>
+
+  <p>
+    இதோ ஒரு 64&times;8 matrix — ஒரு column 50&times; சத்தமாகவும், இன்னொன்று
+    50&times; அமைதியாகவும் ஆக்கப்பட்டிருக்கிறது, இரு வழிகளிலும் int8-க்கு
+    quantise செய்யப்பட்டது:
+  </p>
+
+<pre><code>channel absmax: [135.558  31.      2.466   1.988   2.553   2.176   2.138   0.057]
+
+per-tensor  one scale  = 1.067387
+per-channel scales     = [1.067 0.244 0.019 0.016 0.02  0.017 0.017 0.   ]
+
+per-channel error, column by column:
+  col 0: per-tensor  0.007493   per-channel 0.007493
+  col 2: per-tensor  0.290450   per-channel 0.005758
+  col 7: per-tensor  <span class="hl">1.000000</span>   per-channel <span class="ok">0.007100</span>
+
+distinct int8 codes in the quietest column (col 7):
+  per-tensor : <span class="hl">1</span> of 255
+  per-channel: <span class="ok">53</span> of 255</code></pre>
+
+  <p>
+    Column 7-ன் relative error <strong>1.0</strong>. அதிலுள்ள ஒவ்வொரு மதிப்பும்
+    பூஜ்ஜியமாக round ஆகிவிட்டது. அந்த column போய்விட்டது. அதைக் காப்பாற்ற ஒரு
+    column-க்கு ஒரு float செலவு &mdash; முழு matrix-க்கும் எட்டு floats.
+  </p>
+
+  <p>
+    Group-wise scales என்பது இதே கருத்து இன்னும் நுணுக்கமான அளவில்: ஒவ்வொரு
+    column-ஐயும் <em>g</em> weights கொண்ட groups-ஆக வெட்டி, ஒவ்வொரு group-க்கும்
+    ஒரு scale கொடுங்கள். இதோ int4-ல் 4096 weights, அவற்றில் எட்டு மற்றவற்றை விட
+    30&times; பெரியவை:
+  </p>
+
+<pre><code>   group   rel error   scales   bits/weight
+   whole    <span class="hl">0.662549</span>        1         4.004
+     128    0.257297       32         4.125
+      64    0.187432       64         4.250
+      32    <span class="ok">0.146733</span>      128         4.500
+
+same sweep with NO outliers, so you can see what the outliers cost:
+   whole    0.152834
+     128    0.116649</code></pre>
+
+  <div class="note">
+    <strong>ஒவ்வொரு config file-லும் ஏன் <code>group_size: 128</code> இருக்கிறது
+    என்று இப்போது தெரியும்.</strong> ஒரு weight-க்கு கூடுதலாக 0.125 bits
+    செலவழித்து accuracy-ல் பெரும்பகுதியைத் திரும்பப் பெறுகிறது &mdash; 128
+    weights-க்கு ஒரு fp16 scale. 32-க்குப் போனால் overhead நான்கு மடங்கு, ஆனால்
+    கிடைப்பது கொஞ்சமே. பிறகு QLoRA-வின் <em>double quantisation</em> அந்த
+    scales-ஐயும் quantise செய்கிறது; அது ஒரு parameter-க்கு தோராயமாக 0.37 bits
+    சேமிப்பதாக paper சொல்கிறது.
+  </div>
+
+  <p class="thanglish">
+    Ellaa weights-um oru scale-a share panna, loud channel dhaan resolution-a
+    decide pannum — quiet column zero-va poidum. Per-channel or group=128
+    scales adha sari pannum, weight-kku 0.125 bits dhaan extra.
+  </p>
+
+  <h2>LLM.int8(): outliers ஒழுங்கானவை</h2>
+
+  <p>
+    Dettmers et al. வெளிப்படையாகத் தெரியாத ஒன்றைக் கண்டுபிடித்தார்கள்: தோராயமாக
+    6.7B parameters-ஐத் தாண்டியதும் transformers-ல் <strong>outlier
+    features</strong> உருவாகின்றன &mdash; சில hidden dimensions-ன் activations
+    மற்ற எல்லாவற்றையும் விட மிகப் பெரியவை; அவை layers முழுவதும், inputs முழுவதும்
+    ஒரே dimensions-ல் தோன்றுகின்றன. அவை noise அல்ல. அவற்றைப் பூஜ்ஜியமாக்கினால்
+    model-ன் செயல்திறன் சரிந்துவிடும்.
+  </p>
+
+  <p>
+    Per-tensor int8-க்கு அவை கொலைகாரர்களும் கூட, ஏனெனில் scale-ஐ max
+    தீர்மானிக்கிறது. ஒரு பெரிய மதிப்பு முழு grid-ஐயும் காலி இடத்துக்குச்
+    செலவழிக்கிறது. இதோ 32 tokens &times; 16 dimensions, dims 3 மற்றும் 11-ல்
+    outliers செலுத்தப்பட்டவை:
+  </p>
+
+<pre><code>clean activations, absmax 3.056
+  per-tensor int8 relative error: 0.006828
+
+with outliers in dims 3 and 11, absmax 105.047
+  per-tensor scale went 0.024066 -&gt; 0.827141  (34.4x coarser)
+  per-tensor int8 relative error: 0.017330
+  error on the NON-outlier dims only: <span class="hl">0.243144</span>
+  distinct int8 codes used by dim 0: <span class="hl">5</span> of 255
+
+mixed precision: keep columns [3, 11] in 16-bit,
+  that is 2/16 = 12.5% of the dimensions
+  relative error, whole tensor : <span class="ok">0.000466</span>
+  relative error, non-outlier  : <span class="ok">0.006992</span></code></pre>
+
+  <p>
+    முழு tensor-ன் பிழை 1.7% போலத் தெரிகிறது — அது தாங்கக்கூடியது. ஆனால் அந்தச்
+    சராசரி ஒரு பொய்: அது இரண்டு outliers-ஆல் ஆளப்படுகிறது, அவை பெரியவை, நன்றாகவே
+    quantise ஆகின்றன. மற்ற எல்லாவற்றுக்கும் முக்கியமான dimensions
+    <strong>24% பிழையில்</strong> இருக்கின்றன, dimension 0 அதன் 255 codes-ல்
+    ஐந்தையே பயன்படுத்துகிறது. சேதத்தை metric மறைக்கிறது.
+  </p>
+
+  <p>
+    LLM.int8()-ன் தீர்வு புத்திசாலித்தனமானது அல்ல — அதுதான் முக்கியம். Outlier
+    columns-ஐ வெளியே எடுங்கள், அவற்றை fp16-ல் செய்யுங்கள், மீதி 99.9%-ஐ int8-ல்
+    செய்யுங்கள், இரு முடிவுகளையும் கூட்டுங்கள். ஒரு mixed-precision matmul. Weight
+    memory-ஐ பாதியாக்கியும் முழு 16-bit தரத்தைத் தக்கவைக்கிறது என்பது paper-ன்
+    கூற்று &mdash; 175B அளவில் தாக்குப்பிடித்த முதல் int8 முறை.
+  </p>
+
+  <div class="note">
+    <strong>இங்கேதான் weight quantisation-ம் activation quantisation-ம்
+    பிரிகின்றன.</strong> Weights நல்ல நடத்தை உள்ளவை: வரம்புக்குட்பட்டவை, தோராயமாக
+    normal, முன்கூட்டியே தெரிந்தவை. Activations input-ஐச் சார்ந்தவை, outliers
+    வாழ்வதும் அங்கேதான். அதனால்தான் GPTQ, AWQ, NF4 எல்லாமே
+    <em>weight-only</em> &mdash; அவை checkpoint-ஐச் சுருக்கி, matmul-க்கு முன்
+    dequantise செய்கின்றன. LLM.int8() கடினமான வேலையைச் செய்கிறது.
+  </div>
+
+  <h2>GPTQ: ஒரு வரிசையில் quantise செய், போகும்போதே மன்னிப்புக் கேள்</h2>
+
+  <p>
+    மேலே உள்ள எல்லாமே ஒவ்வொரு weight-ஐயும் தனித்தனியாக, ஒரே முறையில் quantise
+    செய்து, பிழையை ஏற்றுக்கொள்கின்றன. GPTQ சிறந்த ஒரு கேள்வி கேட்கிறது: இந்த
+    weight-ஐ <em>கீழ்நோக்கி</em> round செய்யும்போது, இன்னும் செய்யாத weights-ஐச்
+    சிறிது நகர்த்தி அதை ஈடுகட்ட முடியுமா?
+  </p>
+
+  <p>
+    அது column by column-ஆகச் செல்கிறது. ஒரு column-ஐ quantise செய், பிழையை அளவிடு,
+    பிறகு இன்னும் செய்யாத columns-ஐ அந்தப் பிழையை உள்வாங்கும்படி update செய் —
+    எப்படி என்பதை தோராயமான second-order தகவல் வைத்து (ஒரு Hessian, ஒரு சிறிய
+    calibration set-லிருந்து மதிப்பிடப்பட்டது) தீர்மானிக்கிறது. ஒவ்வொரு rounding
+    முடிவும் ஒரு கடனை விட்டுச் செல்கிறது; இன்னும் உறையவைக்கப்படாத weights அதைக்
+    கட்டுகின்றன.
+  </p>
+
+  <p>
+    இதிலிருந்து மூன்று விஷயங்கள் வருகின்றன, அவைதான் interview material. இது
+    <strong>one-shot post-training</strong>: retraining இல்லை, gradients இல்லை,
+    labels இல்லை. இதற்கு <strong>calibration data தேவை</strong> — bitsandbytes-ன்
+    int8-க்கும் NF4-க்கும் அது தேவையில்லை; pipeline-ல் ஒரு GPTQ build சிக்கலாக
+    இருப்பதற்கான வழக்கமான காரணம் இதுதான். மேலும் இது <strong>weight-only, 3 முதல்
+    4 bit</strong>: 175B வரை 3 மற்றும் 4-bit quantisation, கண்டுகொள்ளத்தக்க
+    accuracy இழப்பின்றி என்பதுதான் paper-ன் தலைப்புச் செய்தி; அதனால்தான் Hub
+    முழுவதும் GPTQ checkpoints. Hessian update என் script-ல் இல்லை &mdash;
+    அதற்கு ஒரு calibration set-ம் ஒரு Cholesky-ம் தேவை, அது கருத்தையே புதைத்துவிடும்.
+  </p>
+
+  <h2>AWQ: activations கவலைப்படும் weights-ஐக் காப்பாற்று</h2>
+
+  <p>
+    AWQ-ன் கண்டுபிடிப்பு: weights-ல் ஒரு சிறு பகுதி <strong>salient</strong>,
+    அவற்றில் தோராயமாக 1%-ஐக் காப்பாற்றினால் தரத்தில் பெரும்பகுதி திரும்பக்
+    கிடைக்கிறது. வெளிப்படையாகத் தெரியாத பகுதி — அவற்றை எப்படிக் கண்டுபிடிப்பது
+    என்பது. Weight magnitude-ஆல் அல்ல &mdash; <strong>activation</strong>
+    magnitude-ஆல். பெரிய activations சுமக்கும் input channels-ஐப் பெருக்கும்
+    weights-தான் முக்கியமானவை. இது LLM.int8()-ன் கண்டுபிடிப்பேதான், weight
+    பக்கத்திலிருந்து பார்த்தால்.
+  </p>
+
+  <p>
+    மேலும் AWQ அவற்றை fp16-ல் வைத்துக்கொள்வதில்லை, ஏனெனில் kernel-ல் mixed
+    precision அசிங்கமானது: ragged layout, மெதுவான paths. அதற்குப் பதிலாக, quantise
+    செய்வதற்கு முன் salient channels-ஐ மேலே scale செய்து, அதற்கேற்ப activations-ஐக்
+    கீழே scale செய்கிறது — கணிதம் மாறாது, முக்கியமான weights grid-ன் நுணுக்கமான
+    பகுதியில் வந்து விழுகின்றன. எல்லாமே சீரான int4-ஆகவே இருக்கிறது; அதனால்தான் AWQ
+    kernels வேகமானவை.
+  </p>
+
+  <div class="note">
+    <strong>தெளிவாக வைத்திருக்க வேண்டிய வேறுபாடு:</strong> LLM.int8() என்பது
+    mixed-precision; அது outliers-ஐ runtime-ல், ஒவ்வொரு batch-க்கும், activations-ல்
+    கண்டுபிடிக்கிறது. AWQ சீரான int4; weights-ஐ எப்படி scale செய்வது என்பதைத்
+    தீர்மானிக்க activation statistics-ஐ quantisation நேரத்தில் ஒரு முறை மட்டும்
+    பயன்படுத்துகிறது. GPTQ rounding பிழையைத் திருத்த ஒரு calibration set-ஐப்
+    பயன்படுத்துகிறது. "நான் எந்த எண்களைக் காப்பாற்றுவது" என்பதற்கு மூன்று பதில்கள்,
+    எதிலும் backprop இல்லை.
+  </div>
+
+  <h2>QLoRA மற்றும் NF4: data இருக்கும் இடத்தில் levels-ஐ வை</h2>
+
+  <p>
+    இதுவரை உள்ள ஒவ்வொரு முறையும் தன் levels-ஐச் சமமான இடைவெளியில் வைக்கிறது; அது
+    வெளிப்படையாகத் தவறு என்பதுதான் QLoRA-ன் வாதம். Pretrained weights தோராயமாக
+    normal distribution-ல், பூஜ்ஜியத்தைச் சுற்றிக் குவிந்திருக்கின்றன; எனவே சமமான
+    இடைவெளி levels தங்கள் resolution-ல் பெரும்பகுதியை கிட்டத்தட்ட எதுவும் இல்லாத
+    tails-ல் செலவழிக்கின்றன. <strong>4-bit NormalFloat</strong> அதற்குப் பதிலாக 16
+    levels-ஐ ஒரு normal distribution-ன் சம-நிகழ்தகவு quantiles-ல் வைக்கிறது. அதே 4
+    bits, weights இருக்கும் இடத்தில் நெருக்கமான levels &mdash; இதோ இரு
+    தொகுப்புகளும், N(0,1)-லிருந்து 100,000 draws-ல் ஏற்படும் பிழையும்:
+  </p>
+
+<pre><code>linear int4 levels (evenly spaced):
+  [-1.    -0.867 -0.733 -0.6   -0.467 -0.333 -0.2   -0.067  0.067 ...]
+normal-quantile levels (NF4-style):
+  [-1.    -0.708 -0.542 -0.417 -0.311 -0.216 -0.127 -0.042  0.042 ...]
+
+weights ~ N(0,1), n=100000, absmax 4.369
+  linear int4 relative error: <span class="hl">0.167915</span>
+  NF4-style   relative error: <span class="ok">0.118978</span>
+  improvement: 29.1%
+
+how much data each of the 16 levels actually gets:
+  linear: emptiest level      1  busiest  22082  levels under 1% of the data: <span class="hl">8/16</span>
+  NF4   : emptiest level     10  busiest  14431  levels under 1% of the data: <span class="ok">4/16</span>
+</code></pre>
+
+  <p>
+    Linear levels-ல் பாதி ஒவ்வொன்றும் data-வில் 1%-க்கும் குறைவாகவே
+    வைத்திருக்கின்றன. அவற்றில் ஒன்று ஒரு லட்சத்தில் ஒரே ஒரு weight-ஐப்
+    பிடித்திருக்கிறது. அது உங்கள் bit budget-ல் பாதியை tails-ல் செலவழித்தது.
+  </p>
+
+  <p class="muted">
+    நேர்மையான எச்சரிக்கை: paper-ல் உள்ள உண்மையான NF4 table asymmetric-ஆகக்
+    கட்டப்பட்டது — அதனால் சரியான பூஜ்ஜியம் ஒரு level-ஆக இருக்கும், zero-padding
+    துல்லியமாகவே இருக்கும். என்னுடையது அதே கட்டுமானக் கருத்து ஐந்து வரிகளில்;
+    மேலே உள்ள பிழை எண்கள் என் version-லிருந்து வந்தவை, அவர்களுடையதிலிருந்து அல்ல.
+  </p>
+
+  <h3>QLoRA-க்கு ஏன் LoRA தேவை</h3>
+
+  <p>
+    QLoRA எனக்குப் புரிய வைத்த பகுதி இதுதான். Weights ஒரு 4-bit grid-க்கு வந்த
+    பிறகு நீங்கள் <em>அவற்றை fine-tune செய்ய முடியாது</em>. Grid step-ன் பாதியை விடச்
+    சிறிய ஒரு gradient step, ஆரம்பித்த இடத்துக்கே round ஆகித் திரும்பிவிடும்:
+  </p>
+
+<pre><code>4-bit grid step (the scale) = 0.189194
+
+after one SGD step at lr=0.001:
+  moved by         : [-0.001 -0.002 -0.     0.001  0.001 -0.002 -0.     0.002]
+  after re-quantise: [0. 0. 0. 0. 0. 0. 0. 0.]
+  weights that actually changed: <span class="hl">0 of 8</span>
+
+same gradient at lr=0.5: 7 of 8 weights changed
+  step sizes taken : [-0.378  0.    -0.189  0.568  0.189 -0.757 -0.189  0.946]
+
+frozen 4-bit base + fp16 LoRA adapter, same lr=0.001:
+  adapter output after : max |delta| = 9.424e-07
+  weights that actually changed: <span class="ok">8 of 8</span>, by steps smaller than
+  the 4-bit grid step of 0.189194</code></pre>
+
+  <p>
+    Update சத்தமில்லாமல் மறைந்துவிடுகிறது. ஏதாவது நகரும் வரை learning rate-ஐ
+    ஏற்றினால் ஒவ்வொரு step-ம் ஒரு முழு grid step ஆகிவிடும் &mdash; அது fine-tuning
+    அல்ல, அது சேதம். எனவே QLoRA 4-bit base-ஐ உறையவைத்து, அதன் மேல் ஒரு சிறிய
+    உயர்-துல்லிய <a href="../lora/">LoRA</a> adapter-ஐப் பயிற்றுவிக்கிறது.
+    Gradients உறைந்த quantised weights <em>வழியாகப்</em> பாய்ந்து adapter-ஐ
+    அடைகின்றன; base ஒருபோதும் update ஆவதில்லை. LoRA-ஐ நான் மீண்டும் விளக்கப்
+    போவதில்லை &mdash; <a href="../lora/">அந்தப் பக்கம்</a> செய்கிறது.
+  </p>
+
+  <p class="thanglish">
+    4-bit grid-la fine-tune panna mudiyaadhu: chinna gradient step round aagi
+    poyidum, 0 of 8 weights dhaan maarum. Adhaan QLoRA base-a freeze pannitu
+    mela oru fp16 LoRA adapter-a train pannuthu.
+  </p>
+
+  <p>
+    Paper-ன் மூன்று பங்களிப்புகள்: NF4; <strong>double quantisation</strong>, அது
+    block scales-ஐயே quantise செய்கிறது; மேலும் <strong>paged optimisers</strong>,
+    அவை unified memory-ஐப் பயன்படுத்தி, இல்லையேல் உங்களை OOM ஆக்கிவிடும்
+    gradient-checkpointing உச்சங்களைத் தாண்டி வர உதவுகின்றன. தலைப்பு முடிவு: ஒரே
+    48GB GPU-ல் ஒரு 65B model-ஐ finetune செய்வது, 16-bit finetuning செயல்திறனைக்
+    குறைக்காமல்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने <code>from_pretrained</code> को
+    <code>load_in_4bit=True</code> पास किया है, एक ऐसे card पर 13B model को खड़ा
+    होते देखा है जिस पर वह आना ही नहीं चाहिए था — और मुझे पता ही नहीं था कि मैंने
+    किस बात के लिए हामी भर दी है। <em>NF4</em> है क्या? हर config file में
+    <code>group_size=128</code> क्यों लिखा रहता है? GPTQ को calibration dataset
+    क्यों चाहिए जबकि bitsandbytes को नहीं? किसी ने नहीं बताया कि यह पूरा क्षेत्र
+    एक ही operation है और उसी पर एक बहस।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (quantisation, scale, zero
+    point, per-tensor, per-channel, outlier, int8, int4, NF4, group size…) मैंने
+    वैसे ही रखे हैं, क्योंकि code में और config file में आपको वही शब्द मिलेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>एक float एक storage budget है, और उसका ज़्यादातर हिस्सा बर्बाद जाता है</h2>
+
+  <p>
+    यह विचार आप पहले से जानते हैं। यह JPEG है। किसी तस्वीर को quality 80 पर सेव
+    करने के बाद उसकी सटीकता में लगभग कुछ नहीं बचता, फिर भी वह वैसी ही दिखती है।
+    आप <em>बहुत कुछ</em> फेंक सकते हैं और किसी को पता नहीं चलेगा — पर गलत चीज़
+    फेंक दीजिए और तुरंत दिख जाएगा: अक्षरों के चारों ओर ringing, आसमान में banding।
+  </p>
+
+  <p>
+    Weight matrix भी वही सौदा है। fp16 हर संख्या पर 16 bits खर्च करता है, 65504 तक
+    की range के लिए, जबकि आपके सारे weights लगभग &minus;3 और 3 के बीच बैठे हैं।
+    तो उन्हें compress कीजिए:
+  </p>
+
+<pre><code>scale = abs(x).max() / 127        # अपनी range को 255 slots पर बिठाओ
+q     = round(x / scale)          # &lt;- lossy step. जानकारी यहीं मरती है
+store(q)                          # हर weight पर दो नहीं, एक byte
+x2    = q * scale                 # वापस गुणा। x के पास। x नहीं।</code></pre>
+
+  <p>
+    बस इतना ही। इस पेज का हर paper यही है। बाकी सब कुछ &mdash; LLM.int8(), GPTQ,
+    AWQ, NF4 &mdash; इसी बात पर बहस है कि <strong>कौन-सी संख्याएँ एक scale साझा
+    करती हैं</strong>, <strong>levels कहाँ बैठते हैं</strong>, और
+    <strong>किन संख्याओं को आप compress करने से साफ़ इनकार कर देते हैं</strong>।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>अर्थ</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Scale</strong></td><td>वह float जो आपकी range को integer grid पर बिठाता है</td><td>JPEG quality slider</td></tr>
+      <tr><td><strong>Zero point</strong></td><td>एक integer offset, ताकि grid को 0 पर केंद्रित होना ज़रूरी न रहे</td><td>bias वाला unsigned type</td></tr>
+      <tr><td><strong>Granularity</strong></td><td>कितनी संख्याएँ एक scale साझा करती हैं: tensor, channel, या 128 का group</td><td>Chunk size. छोटे chunks, ज़्यादा headers</td></tr>
+      <tr><td><strong>Outlier</strong></td><td>एक बहुत बड़ा मान जो बाकी सबके लिए scale को मोटा कर देता है</td><td>Page करते table में एक 4&nbsp;GB row</td></tr>
+      <tr><td><strong>PTQ / QAT</strong></td><td>तैयार model को quantise करना, बनाम यह जानते हुए train करना कि वह quantise होगा</td><td>Post-processing बनाम target के लिए ही बनाना</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह संख्या जो सब कुछ तय करती है</h2>
+
+  <p>
+    किसी भी चतुराई से पहले: parameters &times; प्रति parameter bytes. फ़ैसला यही है।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code> model        fp16        int8        int4
+    7B      13.0 GB       6.5 GB       3.3 GB
+   13B      24.2 GB      12.1 GB       6.1 GB
+   70B     130.4 GB      65.2 GB      32.6 GB
+
+fits on the card? weights only, nothing left for activations:
+
+ model    fp16 24/80    int8 24/80    int4 24/80
+    7B      yes  yes      yes  yes      yes  yes
+   13B       <span class="hl">NO</span>  yes      yes  yes      yes  yes
+   70B       <span class="hl">NO</span>   <span class="hl">NO</span>       NO  yes       NO  <span class="ok">yes</span></code></pre>
+
+  <p>
+    Weights budget का सिर्फ़ आधा हिस्सा हैं। KV cache दूसरा budget है, और वह
+    parameters के साथ नहीं, context के साथ बढ़ता है &mdash; उसका हिसाब
+    <a href="../kv-cache/">KV cache पेज</a> पर है। उसे 4096 tokens, एक sequence,
+    fp16, Llama-2 shapes के साथ जोड़िए:
+  </p>
+
+<pre><code>    7B fp16: weights   13.0 GB + KV  2.00 GB =   15.0 GB   24GB card: fits
+    7B int4: weights    3.3 GB + KV  2.00 GB =    5.3 GB   24GB card: fits
+   13B fp16: weights   24.2 GB + KV  3.12 GB =   27.3 GB   24GB card: <span class="hl">no</span>
+   13B int4: weights    6.1 GB + KV  3.12 GB =    9.2 GB   24GB card: <span class="ok">fits</span>
+   70B fp16: weights  130.4 GB + KV  1.25 GB =  131.6 GB   24GB card: no
+   70B int4: weights   32.6 GB + KV  1.25 GB =   33.8 GB   24GB card: no</code></pre>
+
+  <div class="note">
+    <strong>तीनों में सबसे छोटा KV cache 70B का है।</strong> यह टाइपो नहीं है —
+    वह 80 के बजाय 8 KV heads के साथ grouped-query attention इस्तेमाल करता है,
+    इसलिए उसका cache 13B से भी छोटा है। Model size और cache size अलग-अलग budget
+    हैं, अलग-अलग architecture फ़ैसलों से तय होते हैं।
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">q = clamp(round(x / s), &minus;2<sup>b&minus;1</sup>+1, 2<sup>b&minus;1</sup>&minus;1)&nbsp;&nbsp;&nbsp;x&#770; = q &middot; s&nbsp;&nbsp;&nbsp;where s = max|x| / (2<sup>b&minus;1</sup>&minus;1)</div>
+
+  <p>इसे pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>max|x|</code></td><td>scalar (या per column, या per group)</td><td><strong>यही एकमात्र चुनाव है जो आप करते हैं।</strong> इस पेज पर सब कुछ इसी एक पंक्ति पर बहस है</td></tr>
+      <tr><td><code>x / s</code></td><td>(n, d)</td><td>integer units में rescale. अब संख्याओं का मतलब है "कितने slots"</td></tr>
+      <tr><td><code>round</code></td><td>(n, d)</td><td><strong>lossy step.</strong> सबसे बुरी हालत में हर weight पर आधे slot की त्रुटि</td></tr>
+      <tr><td><code>clamp</code></td><td>(n, d)</td><td>सीमा के बाहर सब saturate हो जाता है। int8 में सस्ता, पर outlier clip किया तो क्रूर</td></tr>
+      <tr><td><code>q &middot; s</code></td><td>(n, d)</td><td>matmul से ठीक पहले, kernel के अंदर, वापस float में। यही <em>weight-only</em> quantisation है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Symmetric यह मानकर चलता है कि data शून्य के दोनों ओर फैला है। अगर नहीं &mdash;
+    मान लीजिए ReLU का output &mdash; तो grid का ऋणात्मक आधा हिस्सा बर्बाद जाता है,
+    और एक integer <code>zero_point</code> grid को खिसकाकर इसे ठीक करता है:
+  </p>
+
+<pre><code>now shift the data to [0.17, 2.60] -- nothing is negative:
+  symmetric  relative error: <span class="hl">0.003939</span>  (half the grid unused)
+  asymmetric relative error: <span class="ok">0.001680</span>  zero_point=-18
+  symmetric  int8 codes: 8 .. 127 (of -127..127, <span class="hl">47%</span> of the grid used)
+  asymmetric int8 codes: 0 .. 255 (of 0..255, <span class="ok">100%</span> used)</code></pre>
+
+  <h2>Scale कहाँ रहता है, पूरा खेल यही है</h2>
+
+  <p>
+    पूरे tensor के लिए एक scale का मतलब है कि सबसे तेज़ आवाज़ वाला channel हर
+    शांत channel का resolution तय करेगा। इस पेज पर यही सबसे काम की बात है, और
+    यही वजह है कि naive quantisation नाकाम होती है।
+  </p>
+
+  <p>
+    यह रहा एक 64&times;8 matrix जिसमें एक column को 50&times; तेज़ और एक को
+    50&times; धीमा बनाया गया है, दोनों तरीक़ों से int8 पर quantise किया गया:
+  </p>
+
+<pre><code>channel absmax: [135.558  31.      2.466   1.988   2.553   2.176   2.138   0.057]
+
+per-tensor  one scale  = 1.067387
+per-channel scales     = [1.067 0.244 0.019 0.016 0.02  0.017 0.017 0.   ]
+
+per-channel error, column by column:
+  col 0: per-tensor  0.007493   per-channel 0.007493
+  col 2: per-tensor  0.290450   per-channel 0.005758
+  col 7: per-tensor  <span class="hl">1.000000</span>   per-channel <span class="ok">0.007100</span>
+
+distinct int8 codes in the quietest column (col 7):
+  per-tensor : <span class="hl">1</span> of 255
+  per-channel: <span class="ok">53</span> of 255</code></pre>
+
+  <p>
+    Column 7 की relative error <strong>1.0</strong> है। उसका हर मान शून्य पर round
+    हो गया। वह column ख़त्म। उसे बचाने की क़ीमत थी प्रति column एक float &mdash;
+    पूरे matrix के लिए आठ floats.
+  </p>
+
+  <p>
+    Group-wise scales वही विचार है, बस और बारीक़ स्तर पर: हर column को <em>g</em>
+    weights के groups में काटिए और हर group को एक scale दीजिए। यह रहे int4 पर
+    4096 weights, जिनमें से आठ बाक़ी सबसे 30&times; बड़े हैं:
+  </p>
+
+<pre><code>   group   rel error   scales   bits/weight
+   whole    <span class="hl">0.662549</span>        1         4.004
+     128    0.257297       32         4.125
+      64    0.187432       64         4.250
+      32    <span class="ok">0.146733</span>      128         4.500
+
+same sweep with NO outliers, so you can see what the outliers cost:
+   whole    0.152834
+     128    0.116649</code></pre>
+
+  <div class="note">
+    <strong>अब आप जानते हैं कि हर config file में <code>group_size: 128</code>
+    क्यों लिखा होता है।</strong> यह प्रति weight सिर्फ़ 0.125 अतिरिक्त bits में
+    ज़्यादातर accuracy वापस दिला देता है &mdash; हर 128 weights पर एक fp16 scale।
+    32 पर जाने से overhead चार गुना हो जाता है और मिलता है थोड़ा-सा ही। फिर
+    QLoRA का <em>double quantisation</em> उन scales को भी quantise करता है, जिससे
+    paper के अनुसार प्रति parameter लगभग 0.37 bits बचते हैं।
+  </div>
+
+  <h2>LLM.int8(): outliers व्यवस्थित हैं</h2>
+
+  <p>
+    Dettmers et al. ने कुछ ऐसा पाया जो स्पष्ट नहीं है: लगभग 6.7B parameters के
+    बाद transformers में <strong>outlier features</strong> पैदा हो जाते हैं
+    &mdash; कुछ ही hidden dimensions, जिनके activations बाक़ी सबसे कहीं बड़े होते
+    हैं, और वे layers और inputs दोनों के आर-पार उन्हीं dimensions में दिखते हैं।
+    वे noise नहीं हैं। उन्हें शून्य कर दीजिए और model का प्रदर्शन ढह जाता है।
+  </p>
+
+  <p>
+    वे per-tensor int8 के लिए जानलेवा भी हैं, क्योंकि scale max से तय होता है। एक
+    बहुत बड़ा मान पूरा grid खाली जगह पर ख़र्च कर देता है। यह रहे 32 tokens
+    &times; 16 dimensions, जिनमें dims 3 और 11 में outliers डाले गए हैं:
+  </p>
+
+<pre><code>clean activations, absmax 3.056
+  per-tensor int8 relative error: 0.006828
+
+with outliers in dims 3 and 11, absmax 105.047
+  per-tensor scale went 0.024066 -&gt; 0.827141  (34.4x coarser)
+  per-tensor int8 relative error: 0.017330
+  error on the NON-outlier dims only: <span class="hl">0.243144</span>
+  distinct int8 codes used by dim 0: <span class="hl">5</span> of 255
+
+mixed precision: keep columns [3, 11] in 16-bit,
+  that is 2/16 = 12.5% of the dimensions
+  relative error, whole tensor : <span class="ok">0.000466</span>
+  relative error, non-outlier  : <span class="ok">0.006992</span></code></pre>
+
+  <p>
+    पूरे tensor की त्रुटि 1.7% दिखती है, जो झेली जा सकती है। वह औसत झूठ है: उस पर
+    दोनों outliers हावी हैं, जो बहुत बड़े हैं और ठीक-ठाक quantise हो जाते हैं। जो
+    dimensions बाक़ी सबके लिए मायने रखते हैं वे <strong>24% त्रुटि</strong> पर हैं,
+    और dimension 0 अपने 255 codes में से पाँच इस्तेमाल कर रहा है। नुक़सान को metric
+    छिपा रहा है।
+  </p>
+
+  <p>
+    LLM.int8() का हल चतुर नहीं है, और यही बात है। Outlier columns को बाहर निकालिए,
+    उन्हें fp16 में कीजिए, बाक़ी 99.9% को int8 में कीजिए, दोनों नतीजे जोड़ दीजिए।
+    एक mixed-precision matmul. Paper का दावा है कि यह weight memory आधी करते हुए
+    भी पूरी 16-bit गुणवत्ता बनाए रखता है &mdash; 175B पैमाने पर टिकने वाला पहला
+    int8 तरीक़ा।
+  </p>
+
+  <div class="note">
+    <strong>यहीं weight quantisation और activation quantisation के रास्ते अलग
+    होते हैं।</strong> Weights सुशील हैं: सीमित, लगभग normal, पहले से ज्ञात।
+    Activations input पर निर्भर करते हैं और outliers वहीं रहते हैं। इसीलिए GPTQ,
+    AWQ और NF4 सब <em>weight-only</em> हैं &mdash; वे checkpoint छोटा करते हैं
+    और matmul से पहले dequantise कर लेते हैं। LLM.int8() मुश्किल वाला काम कर रहा है।
+  </div>
+
+  <h2>GPTQ: एक क्रम में quantise कीजिए, और चलते-चलते भरपाई कीजिए</h2>
+
+  <p>
+    ऊपर का सब कुछ हर weight को अलग-अलग, एक ही बार में quantise करता है और त्रुटि
+    स्वीकार कर लेता है। GPTQ एक बेहतर सवाल पूछता है: जब मैं इस weight को
+    <em>नीचे</em> round करता हूँ, तो क्या मैं बचे हुए weights को थोड़ा हिलाकर उसकी
+    भरपाई कर सकता हूँ?
+  </p>
+
+  <p>
+    यह column दर column चलता है। एक column quantise कीजिए, त्रुटि नापिए, फिर बचे
+    हुए columns को इस तरह update कीजिए कि वे उसे सोख लें &mdash; कैसे, यह तय करने
+    के लिए अनुमानित second-order जानकारी (एक Hessian, जो एक छोटे calibration set
+    से आँका जाता है) इस्तेमाल होती है। हर rounding फ़ैसला एक क़र्ज़ छोड़ जाता है,
+    और जो weights अभी जमे नहीं हैं वे उसे चुकाते हैं।
+  </p>
+
+  <p>
+    इससे तीन बातें निकलती हैं, और वही interview का माल हैं। यह
+    <strong>one-shot post-training</strong> है: न retraining, न gradients, न
+    labels. इसे <strong>calibration data चाहिए</strong>, जो bitsandbytes के int8
+    और NF4 को नहीं चाहिए &mdash; pipeline में GPTQ build के असहज होने की आम वजह
+    यही है। और यह <strong>weight-only, 3 से 4 bit</strong> है: paper की मुख्य बात
+    है 175B तक 3 और 4-bit quantisation, नगण्य accuracy नुक़सान के साथ, और इसीलिए
+    Hub पर हर जगह GPTQ checkpoints मिलते हैं। Hessian update मेरी script में नहीं
+    है &mdash; उसके लिए calibration set और एक Cholesky चाहिए, और वह मूल विचार को
+    दबा देता।
+  </p>
+
+  <h2>AWQ: उन weights को बचाइए जिनकी activations को परवाह है</h2>
+
+  <p>
+    AWQ की खोज: weights का एक छोटा हिस्सा <strong>salient</strong> होता है, और
+    उनमें से लगभग 1% को बचा लेने से ज़्यादातर गुणवत्ता वापस आ जाती है। कम स्पष्ट
+    हिस्सा यह है कि आप उन्हें ढूँढ़ते कैसे हैं। weight magnitude से नहीं &mdash;
+    <strong>activation</strong> magnitude से। जो weights मायने रखते हैं वे वही हैं
+    जो बड़े activations ढोने वाले input channels से गुणा होते हैं। यह LLM.int8()
+    वाली खोज ही है, weight की तरफ़ से देखी हुई।
+  </p>
+
+  <p>
+    और AWQ उन्हें fp16 में नहीं रखता, क्योंकि kernel में mixed precision भद्दा है:
+    ragged layout, धीमे paths. इसके बजाय वह quantise करने से पहले salient channels
+    को ऊपर scale करता है और उससे मेल खाते activations को नीचे &mdash; गणित वही
+    रहता है और ज़रूरी weights grid के बारीक़ हिस्से पर आ बैठते हैं। सब कुछ एकसमान
+    int4 रहता है, इसीलिए AWQ kernels तेज़ हैं।
+  </p>
+
+  <div class="note">
+    <strong>यह फ़र्क़ साफ़ रखिए:</strong> LLM.int8() mixed-precision है और
+    outliers को runtime पर, हर batch में, activations में ढूँढ़ता है। AWQ एकसमान
+    int4 है और activation statistics को एक ही बार, quantisation के समय, इस्तेमाल
+    करता है यह तय करने के लिए कि weights को कैसे scale किया जाए। GPTQ rounding
+    त्रुटि सुधारने के लिए calibration set इस्तेमाल करता है। "मैं किन संख्याओं को
+    बचाऊँ" के तीन जवाब, और किसी में भी backprop नहीं।
+  </div>
+
+  <h2>QLoRA और NF4: levels वहाँ रखिए जहाँ data है</h2>
+
+  <p>
+    अब तक की हर योजना अपने levels बराबर दूरी पर रखती है, और QLoRA का तर्क है कि
+    यह ज़ाहिर तौर पर ग़लत है। Pretrained weights लगभग normal रूप से बँटे होते हैं,
+    शून्य के आसपास ढेर लगाए हुए, इसलिए बराबर दूरी वाले levels अपना ज़्यादातर
+    resolution उन tails पर ख़र्च करते हैं जहाँ लगभग कुछ है ही नहीं।
+    <strong>4-bit NormalFloat</strong> इसके बजाय 16 levels को normal distribution
+    के बराबर-प्रायिकता quantiles पर रखता है। वही 4 bits, पर levels वहाँ भीड़ लगाते
+    हैं जहाँ weights हैं &mdash; यह रहे दोनों सेट, और N(0,1) से 100,000 draws पर
+    त्रुटि:
+  </p>
+
+<pre><code>linear int4 levels (evenly spaced):
+  [-1.    -0.867 -0.733 -0.6   -0.467 -0.333 -0.2   -0.067  0.067 ...]
+normal-quantile levels (NF4-style):
+  [-1.    -0.708 -0.542 -0.417 -0.311 -0.216 -0.127 -0.042  0.042 ...]
+
+weights ~ N(0,1), n=100000, absmax 4.369
+  linear int4 relative error: <span class="hl">0.167915</span>
+  NF4-style   relative error: <span class="ok">0.118978</span>
+  improvement: 29.1%
+
+how much data each of the 16 levels actually gets:
+  linear: emptiest level      1  busiest  22082  levels under 1% of the data: <span class="hl">8/16</span>
+  NF4   : emptiest level     10  busiest  14431  levels under 1% of the data: <span class="ok">4/16</span>
+</code></pre>
+
+  <p>
+    Linear levels में से आधे हर एक 1% से भी कम data रखे हुए हैं। उनमें से एक ने
+    लाख में से एक ही weight पकड़ा। यानी आपका आधा bit budget tails पर ख़र्च हुआ।
+  </p>
+
+  <p class="muted">
+    ईमानदार चेतावनी: paper में असली NF4 table asymmetric ढंग से बना है, ताकि ठीक
+    शून्य भी एक level हो और zero-padding सटीक बना रहे। मेरा वाला वही निर्माण-विचार
+    है, पाँच पंक्तियों में, और ऊपर के त्रुटि आँकड़े मेरे version के हैं, उनके नहीं।
+  </p>
+
+  <h3>QLoRA को LoRA क्यों चाहिए</h3>
+
+  <p>
+    यह वह हिस्सा है जिसने मेरे लिए QLoRA को साफ़ किया। एक बार weights 4-bit grid
+    पर आ गए तो आप <em>उन्हें fine-tune नहीं कर सकते</em>। grid step के आधे से छोटा
+    gradient step सीधे वहीं round होकर लौट आता है जहाँ से चला था:
+  </p>
+
+<pre><code>4-bit grid step (the scale) = 0.189194
+
+after one SGD step at lr=0.001:
+  moved by         : [-0.001 -0.002 -0.     0.001  0.001 -0.002 -0.     0.002]
+  after re-quantise: [0. 0. 0. 0. 0. 0. 0. 0.]
+  weights that actually changed: <span class="hl">0 of 8</span>
+
+same gradient at lr=0.5: 7 of 8 weights changed
+  step sizes taken : [-0.378  0.    -0.189  0.568  0.189 -0.757 -0.189  0.946]
+
+frozen 4-bit base + fp16 LoRA adapter, same lr=0.001:
+  adapter output after : max |delta| = 9.424e-07
+  weights that actually changed: <span class="ok">8 of 8</span>, by steps smaller than
+  the 4-bit grid step of 0.189194</code></pre>
+
+  <p>
+    Update चुपचाप ग़ायब हो जाता है। learning rate तब तक बढ़ाइए जब तक कुछ हिले, और
+    फिर हर step एक पूरा grid step बन जाता है &mdash; वह fine-tuning नहीं, तोड़फोड़
+    है। इसलिए QLoRA 4-bit base को जमा देता है और उसके ऊपर एक छोटा, ज़्यादा
+    precision वाला <a href="../lora/">LoRA</a> adapter train करता है। Gradients जमे
+    हुए quantised weights के <em>बीच से होकर</em> adapter तक बहते हैं; base कभी
+    update नहीं होता। LoRA को मैं दोबारा नहीं समझाऊँगा &mdash;
+    <a href="../lora/">वह पेज</a> यह कर देता है।
+  </p>
+
+  <p>
+    Paper के तीन योगदान: NF4; <strong>double quantisation</strong>, जो block
+    scales को ही quantise करता है; और <strong>paged optimisers</strong>, जो unified
+    memory के सहारे उन gradient-checkpointing उछालों को झेल जाते हैं जो वरना आपको
+    OOM कर देतीं। मुख्य नतीजा: एक 48GB GPU पर 65B model का finetuning, 16-bit
+    finetuning के प्रदर्शन को बिगाड़े बिना।
+  </p>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no training &mdash; quantisation is arithmetic, and you can watch every rounded
+  number. Every function under 12 lines.
+</p>
+<p>
+  <a href="quantization_from_scratch.py" download><strong>Download the full script</strong></a> &mdash; about 70 lines
+  of core plus seven runnable demos. (The asymmetric pair, <code>quantize_asymmetric</code> and its inverse, is in the
+  file; it is the same four lines with a <code>zero_point</code>.) Then:
+</p>
+<pre><code>python3 quantization_from_scratch.py</code></pre>
+
+<pre><code>def quantize_symmetric(x, bits=8):
+    qmax = 2 ** (bits - 1) - 1              # 127 for int8
+    scale = np.abs(x).max() / qmax          # one float per tensor
+    q = np.clip(np.round(x / scale), -qmax, qmax)   # the lossy step
+    return q.astype(np.int32), scale
+
+def dequantize_symmetric(q, scale):
+    return q * scale                        # back to float. Not the original.
+
+def quantize_per_channel(W, bits=8, axis=0):
+    qmax = 2 ** (bits - 1) - 1
+    scale = np.abs(W).max(axis=axis, keepdims=True) / qmax   # one per column
+    q = np.clip(np.round(W / scale), -qmax, qmax)
+    return q.astype(np.int32), scale
+
+def quantize_grouped(x, bits=4, group=128):
+    flat = x.reshape(-1, group)                     # rows of g values
+    qmax = 2 ** (bits - 1) - 1
+    scale = np.abs(flat).max(axis=1, keepdims=True) / qmax
+    q = np.clip(np.round(flat / scale), -qmax, qmax)
+    return (q * scale).reshape(x.shape), scale.size  # recovered, n_scales
+
+def normal_levels(bits=4):
+    n = 2 ** bits
+    ps = [(i + 0.5) / n for i in range(n)]          # equal probability mass
+    lv = np.array([NormalDist().inv_cdf(p) for p in ps])
+    return lv / np.abs(lv).max()                    # squash into [-1, 1]
+
+def quantize_to_levels(x, levels):
+    """Snap each value to the nearest level, after absmax-scaling to [-1, 1]."""
+    scale = np.abs(x).max()
+    idx = np.abs(x[:, None] / scale - levels[None, :]).argmin(axis=1)
+    return levels[idx] * scale
+
+def outlier_columns(X, threshold=6.0):
+    return np.where(np.abs(X).max(axis=0) &gt;= threshold)[0]
+
+def quantize_mixed(X, outlier_cols, bits=8):
+    keep = np.zeros(X.shape[1], dtype=bool)
+    keep[outlier_cols] = True
+    out = X.copy()                                  # outlier cols stay fp16-ish
+    rest = X[:, ~keep]
+    q, s = quantize_symmetric(rest, bits)           # the rest goes to int8
+    out[:, ~keep] = dequantize_symmetric(q, s)
+    return out</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a living &mdash; and quantisation is
+  unusually good for this, because every failure shows up as a number you can print rather than a training curve you
+  wait three hours for.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>demo_2</code>, quantise with <code>quantize_symmetric</code> instead of <code>quantize_per_channel</code></td><td>Column 7 goes to relative error <code>1.000000</code> and uses 1 of 255 int8 codes. The whole channel rounds to zero.</td></tr>
+    <tr><td>In <code>demo_1</code>, run the shifted data <code>y = x + 1.0</code> through <code>quantize_symmetric</code> only</td><td>Error <code>0.003939</code> vs <code>0.001680</code>, and only 47% of the int8 grid is used. Half the range is spent on negatives that never occur.</td></tr>
+    <tr><td>In <code>demo_6</code>, use only <code>group=n</code> (one scale for everything) at 4 bits</td><td>Relative error <code>0.662549</code> against <code>0.257297</code> at <code>group=128</code>. Eight big weights ruin four thousand small ones.</td></tr>
+    <tr><td>In <code>demo_3</code>, change <code>outlier_columns(X, threshold=6.0)</code> to <code>threshold=1000.0</code></td><td>No columns are kept in 16-bit, and non-outlier error jumps from <code>0.006992</code> back to <code>0.243144</code>. That one line <em>is</em> LLM.int8().</td></tr>
+    <tr><td>In <code>demo_5</code>, pass <code>linear_levels(4)</code> where <code>normal_levels(4)</code> is used</td><td>Error <code>0.118978</code> &rarr; <code>0.167915</code>, and the levels holding under 1% of the data go from 4/16 to 8/16. Half your levels sit where there's no data.</td></tr>
+    <tr><td>In <code>demo_7</code>, try to train the 4-bit weights directly: keep <code>lr=1e-3</code> and re-quantise after the step</td><td><code>0 of 8</code> weights change. Not "trains badly" &mdash; the update is silently discarded. This is exactly why QLoRA trains a <a href="../lora/">LoRA</a> adapter instead.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers, and not all of them. LLM.int8() first, the section on emergent outlier features
+  &mdash; that is the finding everything else reacts to. Then QLoRA's method section, for NF4 and double quantisation.
+  GPTQ and AWQ: method sections only. Skip the perplexity tables in all four unless you are choosing between checkpoints
+  today, in which case read them and trust nobody's summary of them, mine included &mdash; there are no perplexity
+  numbers on this page on purpose.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is almost none here. Division, rounding, clamping, and one idea about where to put 16 tick marks on a number
+  line. If you can write <code>round(x / scale)</code> you have implemented the core of every paper on this page. No
+  torch, no autograd, no GPU.
+</p>
+<p>
+  Two places real maths does appear, and you can leave both to the library. GPTQ's compensation step uses second-order
+  information &mdash; a Hessian, an approximation of how sensitive the loss is to each weight &mdash; and the
+  implementation involves a Cholesky decomposition for numerical stability. NF4's levels come from the inverse normal
+  CDF. I called <code>NormalDist().inv_cdf</code> from the standard library and moved on.
+</p>
+<p>
+  Worth your time instead: the arithmetic in the memory section, and the vocabulary &mdash; weight-only vs activation
+  quantisation, post-training vs quantisation-aware training, per-tensor vs per-channel vs per-group, symmetric vs
+  asymmetric. Those distinctions are what the questions are actually about, and none of them need a proof.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the operation, and the four arguments about it, in code you can break. What it skipped
+  is the part that decides your production choice &mdash; measured quality, and kernel speed.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2208.07339">
+      <span class="paper-title">LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale</span>
+      <span class="paper-meta">Dettmers, Lewis, Belkada, Zettlemoyer, 2022. The anchor paper.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the emergent-outlier-features analysis. It is the empirical result the whole field
+      is built on, and the part my injected outliers only imitate: they show the arithmetic
+      consequence, not the evidence that real transformers do this. The companion papers:
+      <a href="https://arxiv.org/abs/2210.17323">GPTQ</a>,
+      <a href="https://arxiv.org/abs/2306.00978">AWQ</a>,
+      <a href="https://arxiv.org/abs/2305.14314">QLoRA</a>.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/hf-bitsandbytes-integration">
+      <span class="paper-title">A gentle introduction to 8-bit matrix multiplication</span>
+      <span class="paper-meta">Belkada &amp; Dettmers, Hugging Face. Diagrams, by an author of the paper.</span>
+    </a>
+    <p class="paper-pitch">
+      The mixed-precision decomposition as pictures, plus what I skipped: what the integration
+      does to your code, and the speed cost of the outlier path. Connects the maths to
+      <code>load_in_8bit=True</code>.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/4bit-transformers-bitsandbytes">
+      <span class="paper-title">Making LLMs even more accessible with 4-bit quantization and QLoRA</span>
+      <span class="paper-meta">Dettmers et al., Hugging Face. Practical, with code.</span>
+    </a>
+    <p class="paper-pitch">
+      NF4, double quantisation and the compute-dtype argument, by the people who wrote the
+      kernels, with the actual <code>BitsAndBytesConfig</code> flags. The page to have open when
+      you're choosing settings rather than understanding them.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2023-01-10-inference-optimization/">
+      <span class="paper-title">Large Transformer Model Inference Optimization</span>
+      <span class="paper-meta">Lilian Weng. Survey, with the maths kept.</span>
+    </a>
+    <p class="paper-pitch">
+      Puts quantisation among the other levers &mdash; pruning, sparsity, distillation,
+      attention kernels. Read it to decide whether quantisation is the right thing to reach for
+      at all, which this page simply assumed.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> the bitsandbytes 8-bit post first, because it makes the outlier finding
+  visual; then the LLM.int8() paper itself; then the 4-bit post and QLoRA together, once the <a href="../lora/">LoRA
+  page</a> is fresh; GPTQ and AWQ last, when you're actually choosing a checkpoint.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      &mdash; I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>
