@@ -1,0 +1,1435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Constrained decoding: making the model return valid JSON — for programmers</title>
+<meta name="description" content="Grammar-constrained decoding explained as code. A parser says which tokens could continue a valid document; every other logit goes to −∞ before sampling. Runnable NumPy with no language model in it, seven demos that prove it by breaking it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Constrained decoding: making the model return valid JSON</h1>
+    <p class="paper-meta">Willard &amp; Louf, 2023 · Geng et al., 2023</p>
+    <p class="lede">
+      Stop asking the model nicely. Make the invalid output unrepresentable.
+    </p>
+    <p>
+      <a href="structured_output_from_scratch.py" download>Download structured_output_from_scratch.py</a>
+      — everything below runs from it. NumPy and plain Python. There is no
+      language model anywhere in it: a model contributes exactly one thing to
+      this idea — a vector of logits over the vocabulary — so I generate that
+      with <code>numpy</code> and spend the file on the part that does the work.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+
+  <p>
+    I'm an AI Engineer. I've shipped models, done the MLOps, and for two years
+    my answer to "the JSON came back malformed" was a better prompt and a retry
+    loop. It worked. That is the worst thing that can be said about it. It
+    worked in dev, it worked in staging, it worked for the demo, and then it
+    failed in production at a rate nobody could put a number on, and the retry
+    loop hid it until the invoice arrived.
+  </p>
+
+  <p>
+    Nobody told me there was a version of this problem with an actual
+    guarantee, and that the guarantee is one line long.
+  </p>
+
+  <h2>It's the causal mask, pointed somewhere else</h2>
+
+  <p>
+    You already know the retry shape. You've written it for flaky HTTP:
+  </p>
+
+<pre><code>for attempt in range(5):
+    text = model(prompt)
+    try:
+        return json.loads(text)      # hope
+    except ValueError:
+        continue                     # hope again, with feeling
+raise                                 # and now what?</code></pre>
+
+  <p>
+    That is <em>validation</em>. It runs after the fact, it can fail, and its
+    cost is a random variable. Now the other version. At every step the model
+    hands you one vector of logits over the whole vocabulary. A parser knows
+    which of those tokens could possibly continue a valid document. So:
+  </p>
+
+<pre><code>state = parser.start
+while not parser.done(state):
+    logits = model(prefix)                  # unchanged. the model is innocent
+    logits[not_allowed(state)] = -np.inf    # &lt;-- the entire paper
+    tok = sample(logits)
+    state = parser.step(state, tok)</code></pre>
+
+  <p>
+    That loop is the sampling loop from the <a href="../gpt/">GPT page</a> with
+    one line inserted into it. If you read the
+    <a href="../attention/">attention page</a> you have seen
+    that middle line before. It is the causal mask — set the forbidden entries
+    to <code>−∞</code> before the softmax so they come out at exactly 0. The
+    only difference is what it runs over. The causal mask runs over
+    <em>positions</em> and is driven by time. This one runs over the
+    <em>vocabulary</em> and is driven by a parser.
+  </p>
+
+  <p>
+    Validation after the fact is a test. Constrained decoding is a type.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Grammar</strong></td><td>The set of strings you will accept</td><td>The schema, before anything is written</td></tr>
+      <tr><td><strong>Parser state</strong></td><td>Where in the document you are</td><td>The cursor in a state machine</td></tr>
+      <tr><td><strong>Allowed set</strong></td><td>Token ids that keep the document valid</td><td>The whitelist for this one step</td></tr>
+      <tr><td><strong>Logit mask</strong></td><td><code>−∞</code> on everything else</td><td>A read-lock on the rest of the vocabulary</td></tr>
+      <tr><td><strong>Index</strong></td><td>state → allowed set, precomputed</td><td>A dict you build at boot instead of a scan per request</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why the retry loop is worse than it looks</h2>
+
+  <p>
+    Say one attempt returns parseable JSON with probability <em>p</em>. Attempts
+    until success is a geometric distribution: mean 1/<em>p</em>, and the
+    quantiles are a <code>log</code> away. My script prices it.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>A request costs 400 tokens. You retry until the JSON parses.
+p = probability one attempt returns valid JSON.
+
+     p  E[attempts]  p95 attempts   p99.9  tokens/1k reqs  worst case
+  0.70         1.43             3       6         571,428   unbounded
+  0.90         1.11             2       3         444,444   unbounded
+  0.95         1.05             1       3         421,052   <span class="hl">unbounded</span>
+  0.99         1.01             1       2         404,040   <span class="hl">unbounded</span>
+
+simulated 20,000 requests at p=0.95: mean attempts 1.053, max 4</code></pre>
+
+  <p>
+    Look at the last column, not the second. 95% costs you about 5% extra
+    tokens, which is fine, and it has <strong>no worst case</strong> — there is
+    no <em>n</em> at which you can tell your on-call "this will have
+    succeeded". At p=0.99 you still can't. You have bought yourself a tail you
+    haven't measured yet, and a latency budget you can't write down.
+  </p>
+
+  <div class="note">
+    <strong>The interview question is the last column.</strong> Anyone can say
+    "retry with a validator". The answer they're listening for is that a
+    retry loop turns a correctness problem into an unbounded cost-and-latency
+    problem, and constrained decoding turns it into 1.00 attempts.
+  </div>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">p̃(t | s) = softmax( ℓ<sub>t</sub> + m<sub>s</sub>(t) )  where  m<sub>s</sub>(t) = 0 if t ∈ A(s), −∞ otherwise</div>
+
+  <p>
+    ℓ is the logit vector the model gave you. <em>s</em> is the parser state.
+    A(<em>s</em>) is the set of tokens allowed from that state. That's it —
+    everything else in both papers is how you compute A(<em>s</em>) fast enough
+    to run per token. Read it as pipeline stages:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>ℓ</code></td><td>(V,)</td><td>One logit per vocabulary entry. The model's whole contribution</td></tr>
+      <tr><td><code>A(s)</code></td><td>a set</td><td><strong>The paper.</strong> Which token ids keep the document parseable</td></tr>
+      <tr><td><code>+ m<sub>s</sub></code></td><td>(V,)</td><td>0 on the allowed ones, <code>−∞</code> on the rest. Before the softmax</td></tr>
+      <tr><td><code>softmax</code></td><td>(V,)</td><td>Renormalises over what's left. Still sums to 1</td></tr>
+      <tr><td><code>sample</code></td><td>one id</td><td>Ordinary sampling. Temperature, top-p, all unchanged</td></tr>
+      <tr><td><code>parser.step</code></td><td>new s</td><td>Advance the state machine by the token you actually emitted</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>One step, before and after</h2>
+
+  <p>
+    Here is a single concrete step from my toy 45-token vocabulary, at the very
+    start of the document, where the only legal thing is an opening brace. The
+    model wanted a newline. It does not get a newline.
+  </p>
+
+<pre><code>parser state 0: the document is empty, only '{' can start it
+allowed tokens: ['{', '{"']
+
+     token    logit   p before    p after
+      '\n'    2.718     0.2016     0.0000  &lt;- forbidden
+     '","'    2.680     0.1942     0.0000  &lt;- forbidden
+      '0}'    2.122     0.1111     0.0000  &lt;- forbidden
+    'null'    1.769     0.0780     0.0000  &lt;- forbidden
+       'g'    1.391     0.0535     0.0000  &lt;- forbidden
+    'name'    0.980     0.0355     0.0000  &lt;- forbidden
+     'age'    0.714     0.0272     0.0000  &lt;- forbidden
+       '}'    0.597     0.0242     0.0000  &lt;- forbidden
+       '{'    0.002     0.0133     0.8793  &lt;- the only survivors
+      '{"'   -1.983     0.0018     0.1207  &lt;- the only survivors
+
+total probability on invalid tokens before masking: 0.9848
+total probability on invalid tokens after  masking: <span class="ok">0.0000</span>
+probabilities still sum to 1: <span class="ok">1.000000</span>
+
+same mask written with 0.0 instead of -inf: <span class="hl">0.9742</span> of the
+probability mass is STILL on invalid tokens.</code></pre>
+
+  <p>
+    Two things worth staring at. The 98.5% of probability mass that the model
+    put on tokens which cannot appear here — that is the fraction of the retry
+    loop's failures you are pre-emptively deleting. And the last line: write the
+    mask as <code>0.0</code> instead of <code>−∞</code> and 97% of the mass is
+    still on garbage. <code>0</code> is not "off". <code>0</code> is a
+    perfectly ordinary logit. Exactly the bug the attention page's mask table
+    warns about, in a different file.
+  </p>
+
+  <h2>A real state machine, and what "by construction" means</h2>
+
+  <p>
+    My grammar is one fixed schema, no whitespace:
+    <code>{"name":"&lt;letters&gt;","age":&lt;digits&gt;}</code>. That language is
+    <strong>regular</strong>, so a finite-state machine is enough — 20 states,
+    15 of which are just single steps inside the fixed literals. Then the loop
+    runs, and at each step the mask is whatever that state allows.
+  </p>
+
+<pre><code>20 states in all, 15 of them single
+steps inside a fixed literal. The five that mean something:
+
+  state 0 start            1 chars '{'                  -&gt;  2/45 tokens
+  state 1 in name string  28 chars ' "abcdefghij...'    -&gt; 18/45 tokens
+  state 2 need a digit     9 chars '123456789'          -&gt; 13/45 tokens
+  state 3 in age          11 chars '0123456789}'        -&gt; 16/45 tokens
+  state 4 done             0 chars ''                   -&gt;  0/45 tokens
+
+one generation, traced:
+  state 0 -&gt; allowed  2/45 -&gt; emitted '{'
+  state 5 -&gt; allowed  1/45 -&gt; emitted '"'
+  state 6 -&gt; allowed  2/45 -&gt; emitted 'name'
+  state 10 -&gt; allowed  3/45 -&gt; emitted '":"'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'ada'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'nam'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'ada'
+  state 1 -&gt; allowed 18/45 -&gt; emitted '","'
+  state 15 -&gt; allowed  2/45 -&gt; emitted 'age'
+  state 18 -&gt; allowed  2/45 -&gt; emitted '":'
+  state 2 -&gt; allowed 13/45 -&gt; emitted '36}'
+
+  emitted: {"name":"adanamada","age":36}
+  final state 4, accepting: True
+  json.loads says: {'name': 'adanamada', 'age': 36}
+
+500 constrained generations: <span class="ok">500 parsed, 0 failed, 0 retries</span>
+lengths 19-173 chars, all schema-conformant, 0 cut off by the step cap</code></pre>
+
+  <p>
+    500 for 500 is not a good hit rate. It is not a hit rate at all. The parser
+    cannot leave the set of valid prefixes, because the tokens that would take
+    it out of that set were never sampleable. The logits are random noise from
+    <code>rng.normal</code> — a genuinely terrible model — and the output still
+    parses every time. That's the claim: the guarantee comes from the mask, not
+    from the model having been persuaded.
+  </p>
+
+  <div class="note">
+    <strong>Be precise about "JSON" in an interview.</strong> A <em>fixed
+    schema</em> like mine is a regular language, and a finite-state machine
+    handles it. JSON in general is <strong>not</strong> regular — arbitrary
+    nesting needs a stack, which means a context-free grammar and a pushdown
+    automaton. The state-machine story covers the schemas most applications
+    actually want; it does not cover "any JSON".
+  </div>
+
+  <h2>The hard part: grammars speak characters, models emit tokens</h2>
+
+  <p>
+    This is where most explanations stop, and it's the part that actually costs
+    you. Your grammar is defined over characters. The model emits
+    <em>tokens</em>, and a token is a multi-character string that some
+    compression algorithm picked years ago without consulting your schema — see
+    the <a href="../tokenization/">tokenisation page</a>. So a single token can
+    straddle a grammar boundary.
+  </p>
+
+  <p>
+    Sitting inside the name string, 28 characters are legal here. Watch what
+    that does and does not tell you about tokens:
+  </p>
+
+<pre><code>     token  first char ok?  whole token ok?  why
+      '"}'            True            False  walks off the DFA
+     '","'            True             True  ends in state 15
+'lovelace'            True             True  ends in state 1
+     'ace'            True             True  ends in state 1
+       '}'           False            False  walks off the DFA
+     'age'            True             True  ends in state 1
+     '":"'            True            False  walks off the DFA
+
+The same token flips legality with the state. Token '0}':
+  from state 0 (start          ): None
+  from state 1 (in name string ): None
+  from state 2 (need a digit   ): <span class="hl">None</span>
+  from state 3 (in age         ): <span class="ok">4</span>
+  from state 4 (done           ): None</code></pre>
+
+  <p>
+    <code>'"}'</code> is the one to hold on to. Its first character is legal —
+    the quote closes the name string. The <code>}</code> welded to it is not,
+    because the schema still owes us an age field. A character-level check on
+    the first character says yes; the token as a unit is a no; and you cannot
+    emit half a token. That is why you run the <em>whole</em> token through the
+    automaton and keep only tokens that survive end to end.
+  </p>
+
+  <p>
+    <code>'0}'</code> shows the other direction: the same token is illegal in
+    "need a digit" (JSON forbids a leading zero) and legal one state later.
+    Legality is a property of the pair, not of the token. So the answer is a
+    table:
+  </p>
+
+<pre><code>So the answer is an index -- parser state -&gt; allowed token ids:
+  state 0 (start          )  2 tokens  ['{', '{"']
+  state 1 (in name string ) 18 tokens  [' ', '"', '","', 'a', 'ace', 'ada', '...']
+  state 2 (need a digit   ) 13 tokens  ['1', '180', '2', '3', '36', '36}', '...']
+  state 3 (in age         ) 16 tokens  ['0', '0}', '1', '180', '2', '3', '...']
+  state 4 (done           )  0 tokens  []
+  ... and the other 15 literal states, 1 or 2 tokens each</code></pre>
+
+  <p>
+    That table is Willard and Louf's contribution. Not the masking — people
+    were masking already, and Geng et al. had wired a grammar to a decoder the
+    same year. The Outlines claim is about <em>when</em> you compute the allowed
+    set: once per (grammar, tokeniser) pair, at load time, instead of once per
+    generated token.
+  </p>
+
+  <h2>What the index costs, and what it saves</h2>
+
+  <p>
+    I count DFA character-steps rather than milliseconds, so the script prints
+    the same numbers on your laptop as on mine. It's also the more honest unit:
+    it's the work, not my machine's mood.
+  </p>
+
+<pre><code>vocabulary 45 tokens, grammar 20 states
+
+  parser state   naive scan   index lookup
+         start        46 steps         1 lookup
+in name string        82 steps         1 lookup
+  need a digit        51 steps         1 lookup
+        in age        52 steps         1 lookup
+          done        45 steps         1 lookup
+
+index built once, at load time: 986 character-steps, 68 entries
+
+and the scan grows with the vocabulary while the lookup does not:
+  vocab    45: naive      82 steps per generated token, index <span class="ok">1</span>
+  vocab   180: naive     487 steps per generated token, index <span class="ok">1</span>
+  vocab   720: naive    2107 steps per generated token, index <span class="ok">1</span>
+  vocab  2880: naive    <span class="hl">8587</span> steps per generated token, index <span class="ok">1</span></code></pre>
+
+  <p>
+    The whole index cost 986 character-steps to build — under a dozen naive
+    scans — and after that every step is a dict lookup. Multiply the left column
+    by a real vocabulary (50k–200k entries), a real grammar, and every token of
+    every request, and you have the difference between a technique and a
+    product. That is the word "Efficient" in the title, and all it claims.
+  </p>
+
+  <h2>What this does not buy you</h2>
+
+  <p>
+    Six outputs from the constrained decoder. All six parse. All six match the
+    schema. Zero of them are true.
+  </p>
+
+<pre><code>ground truth: {'name': 'ada lovelace', 'age': 36}
+
+                            output  parses  schema  correct
+           {"name":"age","age":36}     yes     yes       <span class="hl">NO</span>
+             {"name":"","age":479}     yes     yes       <span class="hl">NO</span>
+              {"name":"","age":30}     yes     yes       <span class="hl">NO</span>
+               {"name":"","age":8}     yes     yes       <span class="hl">NO</span>
+     {"name":"","age":93594505170}     yes     yes       <span class="hl">NO</span>
+         {"name":"null","age":390}     yes     yes       <span class="hl">NO</span>
+
+6 distinct outputs, all valid JSON, all matching the
+schema. The number that were right about Ada Lovelace: 0</code></pre>
+
+  <p>
+    Schema validity is a property of the output's <em>syntax</em>. It says
+    nothing about the world. My "model" here is random noise, which makes the
+    point loudly, but the same thing is true of a good model: constraining moves
+    the failures from "unparseable" to "parseable and wrong", and parseable and
+    wrong is the one that gets into your database. Whether the age is 36 is an
+    eval question — see the <a href="../evals/">evals page</a>.
+  </p>
+
+  <p>
+    One honest cost, while we're here. Masking renormalises over a subset, so
+    the constrained distribution is <em>not</em> the model's distribution
+    conditioned on validity — it's a greedy, per-step approximation of it, and
+    people have measured quality shifts from it in both directions. Don't sell
+    constrained decoding as free. Sell it as a guarantee you're buying with a
+    known, small distortion.
+  </p>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. Models ship செய்திருக்கிறேன், MLOps
+    செய்திருக்கிறேன். இரண்டு வருடங்களாக "JSON malformed-ஆக வந்துவிட்டது"
+    என்பதற்கு என் பதில் ஒரு நல்ல prompt-ம் ஒரு retry loop-ம் மட்டும்தான்.
+    அது வேலை செய்தது. அதைப் பற்றி சொல்லக்கூடிய மிக மோசமான விஷயமே அதுதான்.
+    Dev-ல் வேலை செய்தது, staging-ல் வேலை செய்தது, demo-வுக்கு வேலை செய்தது,
+    பிறகு production-ல் யாராலும் எண்ணிக்கையாகச் சொல்ல முடியாத ஒரு விகிதத்தில்
+    தோற்றது — invoice வரும் வரை அந்த retry loop அதை மறைத்து வைத்திருந்தது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (constrained decoding,
+    grammar, finite-state machine, mask, logits, token, vocabulary, parser
+    state, JSON schema, regular, context-free, retry…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <p>
+    இந்தப் பிரச்சனைக்கு உண்மையான ஒரு <em>guarantee</em> கொடுக்கும் ஒரு வடிவம்
+    இருக்கிறது என்றும், அந்த guarantee ஒரே ஒரு வரி நீளம்தான் என்றும் யாரும்
+    எனக்குச் சொல்லவில்லை.
+  </p>
+
+  <h2>இது causal mask-தான், வேறு திசையில் திருப்பப்பட்டது</h2>
+
+  <p>
+    Retry-யின் வடிவம் உங்களுக்குத் தெரியும். Flaky HTTP-க்கு இதை
+    எழுதியிருக்கிறீர்கள்:
+  </p>
+
+<pre><code>for attempt in range(5):
+    text = model(prompt)
+    try:
+        return json.loads(text)      # நம்பிக்கை
+    except ValueError:
+        continue                     # மீண்டும் நம்பிக்கை, உணர்ச்சியுடன்
+raise                                 # இப்போது என்ன செய்வது?</code></pre>
+
+  <p>
+    அது <em>validation</em>. நடந்து முடிந்த பிறகு ஓடுகிறது, தோற்கலாம், அதன்
+    செலவு ஒரு random variable. இப்போது இன்னொரு வடிவம். ஒவ்வொரு step-லும்
+    model உங்களுக்கு முழு vocabulary மீதான ஒரு logits vector-ஐத் தருகிறது. ஒரு
+    parser-க்கு, அந்த tokens-ல் எவை ஒரு valid document-ஐத் தொடர முடியும் என்று
+    தெரியும். அப்படியானால்:
+  </p>
+
+<pre><code>state = parser.start
+while not parser.done(state):
+    logits = model(prefix)                  # மாற்றமில்லை. model குற்றமற்றது
+    logits[not_allowed(state)] = -np.inf    # &lt;-- paper முழுவதும் இதுதான்
+    tok = sample(logits)
+    state = parser.step(state, tok)</code></pre>
+
+  <p>
+    அந்த loop, <a href="../gpt/">GPT page</a>-ல் உள்ள sampling loop-தான் — ஒரே
+    ஒரு வரி உள்ளே சேர்க்கப்பட்டிருக்கிறது. நீங்கள்
+    <a href="../attention/">attention page</a>-ஐப் படித்திருந்தால், அந்த நடுவரி
+    உங்களுக்கு ஏற்கனவே பரிச்சயம். அது causal mask — தடைசெய்யப்பட்ட entries-ஐ
+    softmax-க்கு முன் <code>−∞</code> ஆக வைத்தால், அவை வெளியே சரியாக 0-ஆக
+    வருகின்றன. வித்தியாசம் என்னவென்றால், அது எதன் மீது ஓடுகிறது என்பதுதான்.
+    Causal mask <em>positions</em> மீது ஓடுகிறது, காலம் அதை இயக்குகிறது. இது
+    <em>vocabulary</em> மீது ஓடுகிறது, ஒரு parser அதை இயக்குகிறது.
+  </p>
+
+  <p class="thanglish">
+    Ithu causal mask dhaan, aana positions-ku pathila vocabulary mela.
+    Forbidden tokens-ku −∞, softmax-ku munnadi. Oru line, adhu dhaan paper.
+  </p>
+
+  <p>
+    பின்னால் செய்யும் validation ஒரு test. Constrained decoding ஒரு type.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Grammar</strong></td><td>நீங்கள் ஏற்கும் strings-ன் தொகுப்பு</td><td>எதுவும் எழுதப்படுவதற்கு முன்பே இருக்கும் schema</td></tr>
+      <tr><td><strong>Parser state</strong></td><td>Document-ல் நீங்கள் எங்கே இருக்கிறீர்கள்</td><td>ஒரு state machine-ன் cursor</td></tr>
+      <tr><td><strong>Allowed set</strong></td><td>Document-ஐ valid-ஆக வைத்திருக்கும் token ids</td><td>இந்த ஒரு step-க்கான whitelist</td></tr>
+      <tr><td><strong>Logit mask</strong></td><td>மற்ற எல்லாவற்றின் மீதும் <code>−∞</code></td><td>மீதி vocabulary மீது ஒரு read-lock</td></tr>
+      <tr><td><strong>Index</strong></td><td>state → allowed set, முன்கூட்டியே கணக்கிடப்பட்டது</td><td>ஒவ்வொரு request-க்கும் scan செய்வதற்குப் பதிலாக boot-ல் கட்டும் dict</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Retry loop தெரிவதைவிட ஏன் மோசம்</h2>
+
+  <p>
+    ஒரு attempt parse ஆகக்கூடிய JSON-ஐத் தரும் நிகழ்தகவு <em>p</em> என்று
+    வையுங்கள். வெற்றி வரும் வரையிலான attempts ஒரு geometric distribution:
+    சராசரி 1/<em>p</em>, quantiles ஒரு <code>log</code> தூரத்தில். என்
+    script அதற்கு விலை போடுகிறது.
+  </p>
+
+  <p><strong>என்னை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>A request costs 400 tokens. You retry until the JSON parses.
+p = probability one attempt returns valid JSON.
+
+     p  E[attempts]  p95 attempts   p99.9  tokens/1k reqs  worst case
+  0.70         1.43             3       6         571,428   unbounded
+  0.90         1.11             2       3         444,444   unbounded
+  0.95         1.05             1       3         421,052   <span class="hl">unbounded</span>
+  0.99         1.01             1       2         404,040   <span class="hl">unbounded</span>
+
+simulated 20,000 requests at p=0.95: mean attempts 1.053, max 4</code></pre>
+
+  <p>
+    இரண்டாவது column-ஐ அல்ல, கடைசி column-ஐப் பாருங்கள். 95% உங்களுக்கு
+    சுமார் 5% கூடுதல் tokens செலவு — அது பரவாயில்லை — ஆனால் அதற்கு
+    <strong>worst case இல்லை</strong>: "இதற்குள் நிச்சயம் வெற்றி பெற்றிருக்கும்"
+    என்று உங்கள் on-call-க்குச் சொல்லக்கூடிய ஒரு <em>n</em> கிடையாது.
+    p=0.99-லும் சொல்ல முடியாது. நீங்கள் இன்னும் அளக்காத ஒரு tail-ஐயும், எழுதிக்
+    காட்ட முடியாத ஒரு latency budget-ஐயும் வாங்கியிருக்கிறீர்கள்.
+  </p>
+
+  <div class="note">
+    <strong>Interview கேள்வி கடைசி column-தான்.</strong> "Validator-உடன்
+    retry செய்யுங்கள்" என்று யார் வேண்டுமானாலும் சொல்லலாம். அவர்கள்
+    எதிர்பார்க்கும் பதில்: retry loop ஒரு correctness பிரச்சனையை unbounded
+    cost-and-latency பிரச்சனையாக மாற்றுகிறது, constrained decoding அதை 1.00
+    attempts-ஆக மாற்றுகிறது.
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">p̃(t | s) = softmax( ℓ<sub>t</sub> + m<sub>s</sub>(t) )  where  m<sub>s</sub>(t) = 0 if t ∈ A(s), −∞ otherwise</div>
+
+  <p>
+    ℓ என்பது model தந்த logit vector. <em>s</em> என்பது parser state.
+    A(<em>s</em>) என்பது அந்த state-லிருந்து அனுமதிக்கப்பட்ட tokens-ன் தொகுப்பு.
+    அவ்வளவுதான் — இரண்டு papers-லும் மீதி எல்லாமே, A(<em>s</em>)-ஐ ஒவ்வொரு
+    token-க்கும் ஓடும் அளவுக்கு வேகமாக எப்படிக் கணக்கிடுவது என்பதுதான். இதை
+    pipeline stages-ஆகப் படியுங்கள்:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>ℓ</code></td><td>(V,)</td><td>Vocabulary-ல் ஒவ்வொரு entry-க்கும் ஒரு logit. Model-ன் முழுப் பங்களிப்பு</td></tr>
+      <tr><td><code>A(s)</code></td><td>ஒரு set</td><td><strong>Paper இதுதான்.</strong> எந்த token ids document-ஐ parse ஆகும்படி வைக்கின்றன</td></tr>
+      <tr><td><code>+ m<sub>s</sub></code></td><td>(V,)</td><td>அனுமதிக்கப்பட்டவற்றின் மீது 0, மீதியின் மீது <code>−∞</code>. Softmax-க்கு முன்</td></tr>
+      <tr><td><code>softmax</code></td><td>(V,)</td><td>மீதி இருப்பவற்றின் மீது மறு-normalise. இன்னும் கூட்டுத்தொகை 1</td></tr>
+      <tr><td><code>sample</code></td><td>ஒரு id</td><td>சாதாரண sampling. Temperature, top-p எல்லாம் மாற்றமில்லை</td></tr>
+      <tr><td><code>parser.step</code></td><td>புதிய s</td><td>நீங்கள் உண்மையில் emit செய்த token-ஆல் state machine-ஐ முன்னகர்த்து</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>ஒரு step, முன்பும் பின்பும்</h2>
+
+  <p>
+    என் toy 45-token vocabulary-லிருந்து ஒரு உறுதியான step, document-ன் ஆரம்பத்தில்,
+    அங்கு சட்டப்படி வரக்கூடியது ஒரு opening brace மட்டுமே. Model ஒரு newline
+    விரும்பியது. அதற்கு newline கிடைக்கவில்லை.
+  </p>
+
+<pre><code>parser state 0: the document is empty, only '{' can start it
+allowed tokens: ['{', '{"']
+
+     token    logit   p before    p after
+      '\n'    2.718     0.2016     0.0000  &lt;- forbidden
+     '","'    2.680     0.1942     0.0000  &lt;- forbidden
+      '0}'    2.122     0.1111     0.0000  &lt;- forbidden
+    'null'    1.769     0.0780     0.0000  &lt;- forbidden
+       'g'    1.391     0.0535     0.0000  &lt;- forbidden
+    'name'    0.980     0.0355     0.0000  &lt;- forbidden
+     'age'    0.714     0.0272     0.0000  &lt;- forbidden
+       '}'    0.597     0.0242     0.0000  &lt;- forbidden
+       '{'    0.002     0.0133     0.8793  &lt;- the only survivors
+      '{"'   -1.983     0.0018     0.1207  &lt;- the only survivors
+
+total probability on invalid tokens before masking: 0.9848
+total probability on invalid tokens after  masking: <span class="ok">0.0000</span>
+probabilities still sum to 1: <span class="ok">1.000000</span>
+
+same mask written with 0.0 instead of -inf: <span class="hl">0.9742</span> of the
+probability mass is STILL on invalid tokens.</code></pre>
+
+  <p>
+    உற்றுப் பார்க்க வேண்டிய இரண்டு விஷயங்கள். இங்கே வரவே முடியாத tokens மீது
+    model வைத்திருந்த 98.5% probability mass — அதுதான் retry loop-ன்
+    தோல்விகளில் நீங்கள் முன்கூட்டியே அழித்துவிடும் பங்கு. பிறகு கடைசி வரி:
+    mask-ஐ <code>−∞</code>-க்குப் பதிலாக <code>0.0</code> என்று எழுதினால் 97%
+    mass இன்னும் குப்பையின் மீதே இருக்கிறது. <code>0</code> என்பது "off"
+    அல்ல. <code>0</code> ஒரு முற்றிலும் சாதாரண logit. Attention page-ன் mask
+    table எச்சரிக்கும் அதே bug-தான், வேறொரு file-ல்.
+  </p>
+
+  <p class="thanglish">
+    Mask-ku 0.0 podadheenga — 0 oru normal logit dhaan, softmax adhukku
+    probability koduthudum. −∞ dhaan off. Attention page-la sonna same bug.
+  </p>
+
+  <h2>ஒரு உண்மையான state machine, "by construction" என்றால் என்ன</h2>
+
+  <p>
+    என் grammar ஒரே ஒரு நிலையான schema, whitespace இல்லை:
+    <code>{"name":"&lt;letters&gt;","age":&lt;digits&gt;}</code>. அந்த மொழி
+    <strong>regular</strong>, அதனால் ஒரு finite-state machine போதும் — 20
+    states, அவற்றில் 15 வெறும் நிலையான literals-க்குள் ஒற்றை steps. பிறகு loop
+    ஓடுகிறது, ஒவ்வொரு step-லும் mask என்பது அந்த state அனுமதிப்பதுதான்.
+  </p>
+
+<pre><code>20 states in all, 15 of them single
+steps inside a fixed literal. The five that mean something:
+
+  state 0 start            1 chars '{'                  -&gt;  2/45 tokens
+  state 1 in name string  28 chars ' "abcdefghij...'    -&gt; 18/45 tokens
+  state 2 need a digit     9 chars '123456789'          -&gt; 13/45 tokens
+  state 3 in age          11 chars '0123456789}'        -&gt; 16/45 tokens
+  state 4 done             0 chars ''                   -&gt;  0/45 tokens
+
+one generation, traced:
+  state 0 -&gt; allowed  2/45 -&gt; emitted '{'
+  state 5 -&gt; allowed  1/45 -&gt; emitted '"'
+  state 6 -&gt; allowed  2/45 -&gt; emitted 'name'
+  state 10 -&gt; allowed  3/45 -&gt; emitted '":"'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'ada'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'nam'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'ada'
+  state 1 -&gt; allowed 18/45 -&gt; emitted '","'
+  state 15 -&gt; allowed  2/45 -&gt; emitted 'age'
+  state 18 -&gt; allowed  2/45 -&gt; emitted '":'
+  state 2 -&gt; allowed 13/45 -&gt; emitted '36}'
+
+  emitted: {"name":"adanamada","age":36}
+  final state 4, accepting: True
+  json.loads says: {'name': 'adanamada', 'age': 36}
+
+500 constrained generations: <span class="ok">500 parsed, 0 failed, 0 retries</span>
+lengths 19-173 chars, all schema-conformant, 0 cut off by the step cap</code></pre>
+
+  <p>
+    500-க்கு 500 என்பது ஒரு நல்ல hit rate அல்ல. அது hit rate-ஏ அல்ல. Parser
+    valid prefixes-ன் தொகுப்பிலிருந்து வெளியேற முடியாது, ஏனெனில் அதை வெளியே
+    கொண்டுசெல்லும் tokens ஒருபோதும் sample செய்யக்கூடியவையாக இருக்கவில்லை.
+    Logits என்பவை <code>rng.normal</code>-லிருந்து வரும் random noise — உண்மையிலேயே
+    மோசமான ஒரு model — இருந்தும் output ஒவ்வொரு முறையும் parse ஆகிறது.
+    கூற்று இதுதான்: guarantee வருவது mask-லிருந்து, model சம்மதிக்க
+    வைக்கப்பட்டதிலிருந்து அல்ல.
+  </p>
+
+  <div class="note">
+    <strong>Interview-ல் "JSON" பற்றி துல்லியமாகப் பேசுங்கள்.</strong> என்னுடையது
+    போன்ற ஒரு <em>நிலையான schema</em> ஒரு regular மொழி, ஒரு finite-state
+    machine அதைக் கையாளும். ஆனால் பொதுவான JSON <strong>regular அல்ல</strong> —
+    வரம்பற்ற nesting-க்கு ஒரு stack தேவை, அதாவது ஒரு context-free grammar-ம்
+    ஒரு pushdown automaton-ம். State-machine கதை பெரும்பாலான applications
+    உண்மையில் விரும்பும் schemas-ஐ உள்ளடக்கும்; "எந்த JSON-ம்" என்பதை அல்ல.
+  </div>
+
+  <h2>கடினமான பகுதி: grammars characters பேசுகின்றன, models tokens தருகின்றன</h2>
+
+  <p>
+    பெரும்பாலான விளக்கங்கள் இங்கே நின்றுவிடுகின்றன, ஆனால் உங்களுக்கு உண்மையில்
+    செலவாகும் பகுதி இதுதான். உங்கள் grammar characters மீது வரையறுக்கப்பட்டது.
+    Model <em>tokens</em>-ஐ emit செய்கிறது, ஒரு token என்பது உங்கள் schema-ஐக்
+    கேட்காமல் வருடங்களுக்கு முன்பு ஒரு compression algorithm தேர்ந்தெடுத்த
+    பல-character string — <a href="../tokenization/">tokenisation page</a>-ஐப்
+    பாருங்கள். அதனால் ஒரே token ஒரு grammar எல்லையைத் தாண்டி நிற்கலாம்.
+  </p>
+
+  <p>
+    Name string-க்குள் இருக்கும்போது, இங்கே 28 characters சட்டப்படி அனுமதிக்கப்படுகின்றன.
+    அது tokens பற்றி என்ன சொல்கிறது, என்ன சொல்லவில்லை என்று பாருங்கள்:
+  </p>
+
+<pre><code>     token  first char ok?  whole token ok?  why
+      '"}'            True            False  walks off the DFA
+     '","'            True             True  ends in state 15
+'lovelace'            True             True  ends in state 1
+     'ace'            True             True  ends in state 1
+       '}'           False            False  walks off the DFA
+     'age'            True             True  ends in state 1
+     '":"'            True            False  walks off the DFA
+
+The same token flips legality with the state. Token '0}':
+  from state 0 (start          ): None
+  from state 1 (in name string ): None
+  from state 2 (need a digit   ): <span class="hl">None</span>
+  from state 3 (in age         ): <span class="ok">4</span>
+  from state 4 (done           ): None</code></pre>
+
+  <p>
+    <code>'"}'</code>-ஐத்தான் மனதில் வைத்துக்கொள்ள வேண்டும். அதன் முதல் character
+    சட்டப்படி சரி — அந்த quote name string-ஐ மூடுகிறது. அதனுடன் ஒட்டியிருக்கும்
+    <code>}</code> சரியல்ல, ஏனெனில் schema இன்னும் ஒரு age field-ஐக் கடன்பட்டிருக்கிறது.
+    முதல் character மீதான character-level சோதனை ஆம் என்கிறது; token ஒரு
+    முழு அலகாகப் பார்த்தால் இல்லை; ஒரு token-ல் பாதியை emit செய்ய முடியாது.
+    அதனால்தான் <em>முழு</em> token-ஐயும் automaton வழியாக ஓட்டி, முழுவதும்
+    தப்பிப்பிழைக்கும் tokens-ஐ மட்டும் வைத்துக்கொள்ள வேண்டும்.
+  </p>
+
+  <p>
+    <code>'0}'</code> மறுதிசையைக் காட்டுகிறது: அதே token "need a digit"-ல்
+    சட்டவிரோதம் (JSON முன்னால் ஒரு zero வருவதைத் தடுக்கிறது), ஒரு state
+    கழித்து சட்டப்படி சரி. சட்டப்படி சரியா என்பது அந்த ஜோடியின் பண்பு, token-ன்
+    பண்பு அல்ல. அதனால் விடை ஒரு table:
+  </p>
+
+<pre><code>So the answer is an index -- parser state -&gt; allowed token ids:
+  state 0 (start          )  2 tokens  ['{', '{"']
+  state 1 (in name string ) 18 tokens  [' ', '"', '","', 'a', 'ace', 'ada', '...']
+  state 2 (need a digit   ) 13 tokens  ['1', '180', '2', '3', '36', '36}', '...']
+  state 3 (in age         ) 16 tokens  ['0', '0}', '1', '180', '2', '3', '...']
+  state 4 (done           )  0 tokens  []
+  ... and the other 15 literal states, 1 or 2 tokens each</code></pre>
+
+  <p class="thanglish">
+    Grammar characters-la pesudhu, model tokens-a kudukkudhu. Full token-a
+    automaton-la ottunga; first character mattum paathaa '"}' nuzhainjidum.
+  </p>
+
+  <p>
+    அந்த table-தான் Willard-ம் Louf-ம் தந்த பங்களிப்பு. Masking அல்ல — மக்கள்
+    ஏற்கனவே mask செய்துகொண்டிருந்தார்கள், அதே வருடத்தில் Geng et al. ஒரு
+    grammar-ஐ ஒரு decoder-உடன் இணைத்திருந்தார்கள். Outlines-ன் கூற்று
+    allowed set-ஐ <em>எப்போது</em> கணக்கிடுகிறீர்கள் என்பது பற்றியது:
+    ஒவ்வொரு உருவாக்கப்பட்ட token-க்கும் ஒரு முறை அல்ல, ஒவ்வொரு (grammar,
+    tokeniser) ஜோடிக்கும் ஒரு முறை, load time-ல்.
+  </p>
+
+  <h2>Index என்ன செலவாகிறது, என்ன மிச்சப்படுத்துகிறது</h2>
+
+  <p>
+    நான் milliseconds-க்குப் பதிலாக DFA character-steps-ஐ எண்ணுகிறேன், அதனால்
+    script உங்கள் laptop-லும் என்னுடையதிலும் ஒரே எண்களை அச்சிடும். அதுவே
+    நேர்மையான அலகும் கூட: அது வேலை, என் machine-ன் மனநிலை அல்ல.
+  </p>
+
+<pre><code>vocabulary 45 tokens, grammar 20 states
+
+  parser state   naive scan   index lookup
+         start        46 steps         1 lookup
+in name string        82 steps         1 lookup
+  need a digit        51 steps         1 lookup
+        in age        52 steps         1 lookup
+          done        45 steps         1 lookup
+
+index built once, at load time: 986 character-steps, 68 entries
+
+and the scan grows with the vocabulary while the lookup does not:
+  vocab    45: naive      82 steps per generated token, index <span class="ok">1</span>
+  vocab   180: naive     487 steps per generated token, index <span class="ok">1</span>
+  vocab   720: naive    2107 steps per generated token, index <span class="ok">1</span>
+  vocab  2880: naive    <span class="hl">8587</span> steps per generated token, index <span class="ok">1</span></code></pre>
+
+  <p>
+    முழு index-ஐக் கட்ட 986 character-steps ஆனது — ஒரு டஜன் naive scans-க்கும்
+    குறைவு — அதற்குப் பிறகு ஒவ்வொரு step-ம் ஒரு dict lookup. இடது column-ஐ ஒரு
+    உண்மையான vocabulary-ஆல் (50k–200k entries), ஒரு உண்மையான grammar-ஆல்,
+    ஒவ்வொரு request-ன் ஒவ்வொரு token-ஆல் பெருக்குங்கள் — ஒரு technique-க்கும்
+    ஒரு product-க்கும் உள்ள வித்தியாசம் அதுதான். தலைப்பில் உள்ள "Efficient"
+    என்ற வார்த்தையின் அர்த்தம் அதுவே, அது இவ்வளவுதான் கூறுகிறது.
+  </p>
+
+  <h2>இது உங்களுக்கு வாங்கித் தராதது என்ன</h2>
+
+  <p>
+    Constrained decoder-லிருந்து ஆறு outputs. ஆறும் parse ஆகின்றன. ஆறும்
+    schema-வுடன் பொருந்துகின்றன. அவற்றில் பூஜ்ஜியம் உண்மை.
+  </p>
+
+<pre><code>ground truth: {'name': 'ada lovelace', 'age': 36}
+
+                            output  parses  schema  correct
+           {"name":"age","age":36}     yes     yes       <span class="hl">NO</span>
+             {"name":"","age":479}     yes     yes       <span class="hl">NO</span>
+              {"name":"","age":30}     yes     yes       <span class="hl">NO</span>
+               {"name":"","age":8}     yes     yes       <span class="hl">NO</span>
+     {"name":"","age":93594505170}     yes     yes       <span class="hl">NO</span>
+         {"name":"null","age":390}     yes     yes       <span class="hl">NO</span>
+
+6 distinct outputs, all valid JSON, all matching the
+schema. The number that were right about Ada Lovelace: 0</code></pre>
+
+  <p>
+    Schema validity என்பது output-ன் <em>syntax</em>-ன் பண்பு. உலகத்தைப் பற்றி
+    அது எதுவும் சொல்வதில்லை. இங்கே என் "model" random noise, அது இந்தக்
+    கருத்தைச் சத்தமாகச் சொல்கிறது — ஆனால் ஒரு நல்ல model-க்கும் இதே உண்மை:
+    constraining தோல்விகளை "parse ஆகாதவை"-லிருந்து "parse ஆகும், ஆனால் தவறு"
+    என்பதற்கு நகர்த்துகிறது — உங்கள் database-க்குள் நுழைவது இரண்டாவதுதான்.
+    Age 36-ஆ என்பது ஒரு eval கேள்வி — <a href="../evals/">evals page</a>-ஐப்
+    பாருங்கள்.
+  </p>
+
+  <p>
+    இங்கேயே ஒரு நேர்மையான செலவும் சொல்லிவிடுகிறேன். Masking ஒரு subset மீது
+    மறு-normalise செய்கிறது, அதனால் constrained distribution என்பது validity-ஐ
+    வைத்து condition செய்யப்பட்ட model-ன் distribution <em>அல்ல</em> — அது
+    ஒரு greedy, per-step approximation, அதனால் வரும் quality shifts-ஐ மக்கள்
+    இரு திசைகளிலும் அளந்திருக்கிறார்கள். Constrained decoding-ஐ இலவசம் என்று
+    விற்காதீர்கள். தெரிந்த, சிறிய ஒரு distortion கொடுத்து வாங்கும் ஒரு
+    guarantee என்று விற்குங்கள்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने models ship किए हैं, MLOps किया है, और दो
+    साल तक "JSON malformed आया" का मेरा जवाब एक बेहतर prompt और एक retry
+    loop ही था। वह चलता था। इसके बारे में कही जा सकने वाली सबसे बुरी बात यही
+    है। dev में चला, staging में चला, demo में चला, और फिर production में
+    ऐसी दर पर fail हुआ जिसे कोई संख्या में नहीं बता सकता था — और retry loop
+    उसे तब तक छिपाए रखता रहा जब तक invoice नहीं आ गया।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (constrained decoding,
+    grammar, finite-state machine, mask, logits, token, vocabulary, parser
+    state, JSON schema, regular, context-free, retry…) मैंने वैसे ही रखे हैं।
+    क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    किसी ने मुझे नहीं बताया कि इस समस्या का एक ऐसा रूप भी है जिसमें असली
+    guarantee मिलती है, और वह guarantee एक लाइन लंबी है।
+  </p>
+
+  <h2>यह causal mask ही है, बस दूसरी दिशा में</h2>
+
+  <p>
+    retry का आकार आप जानते हैं। आपने इसे flaky HTTP के लिए लिखा है:
+  </p>
+
+<pre><code>for attempt in range(5):
+    text = model(prompt)
+    try:
+        return json.loads(text)      # उम्मीद
+    except ValueError:
+        continue                     # फिर उम्मीद, पूरे मन से
+raise                                 # और अब क्या?</code></pre>
+
+  <p>
+    यह <em>validation</em> है। यह बाद में चलता है, fail हो सकता है, और इसकी
+    लागत एक random variable है। अब दूसरा रूप। हर step पर model आपको पूरे
+    vocabulary पर एक logits vector देता है। एक parser जानता है कि उनमें से
+    कौन-से tokens एक valid document को आगे बढ़ा सकते हैं। तो:
+  </p>
+
+<pre><code>state = parser.start
+while not parser.done(state):
+    logits = model(prefix)                  # वही का वही. model निर्दोष है
+    logits[not_allowed(state)] = -np.inf    # &lt;-- पूरा paper यही है
+    tok = sample(logits)
+    state = parser.step(state, tok)</code></pre>
+
+  <p>
+    वह loop <a href="../gpt/">GPT page</a> वाला sampling loop ही है, बस उसमें
+    एक लाइन डाल दी गई है। अगर आपने
+    <a href="../attention/">attention page</a> पढ़ा है तो वह बीच वाली लाइन आप
+    पहले देख चुके हैं। यह causal mask है — softmax से पहले मना किए गए entries
+    को <code>−∞</code> कर दो ताकि वे बाहर ठीक 0 आएँ। फ़र्क़ सिर्फ़ इतना है कि
+    वह किस चीज़ पर चलता है। causal mask <em>positions</em> पर चलता है और उसे
+    समय चलाता है। यह वाला <em>vocabulary</em> पर चलता है और उसे एक parser
+    चलाता है।
+  </p>
+
+  <p>
+    बाद में की गई validation एक test है। Constrained decoding एक type है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Grammar</strong></td><td>वे strings जिन्हें आप स्वीकार करेंगे</td><td>schema, कुछ लिखे जाने से पहले ही</td></tr>
+      <tr><td><strong>Parser state</strong></td><td>आप document में कहाँ हैं</td><td>state machine का cursor</td></tr>
+      <tr><td><strong>Allowed set</strong></td><td>वे token ids जो document को valid रखते हैं</td><td>इस एक step का whitelist</td></tr>
+      <tr><td><strong>Logit mask</strong></td><td>बाक़ी सब पर <code>−∞</code></td><td>बची हुई vocabulary पर एक read-lock</td></tr>
+      <tr><td><strong>Index</strong></td><td>state → allowed set, पहले से गणना किया हुआ</td><td>हर request पर scan के बजाय boot पर बना dict</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>retry loop दिखने से ज़्यादा बुरा क्यों है</h2>
+
+  <p>
+    मान लीजिए एक attempt में parse होने लायक़ JSON मिलने की probability
+    <em>p</em> है। सफलता तक के attempts एक geometric distribution हैं: mean
+    1/<em>p</em>, और quantiles एक <code>log</code> दूर। मेरी script इसकी
+    क़ीमत लगाती है।
+  </p>
+
+  <p><strong>मेरी बात मत मानिए। यह रहा असली output:</strong></p>
+
+<pre><code>A request costs 400 tokens. You retry until the JSON parses.
+p = probability one attempt returns valid JSON.
+
+     p  E[attempts]  p95 attempts   p99.9  tokens/1k reqs  worst case
+  0.70         1.43             3       6         571,428   unbounded
+  0.90         1.11             2       3         444,444   unbounded
+  0.95         1.05             1       3         421,052   <span class="hl">unbounded</span>
+  0.99         1.01             1       2         404,040   <span class="hl">unbounded</span>
+
+simulated 20,000 requests at p=0.95: mean attempts 1.053, max 4</code></pre>
+
+  <p>
+    दूसरे column को नहीं, आख़िरी column को देखिए। 95% पर क़रीब 5% ज़्यादा
+    tokens लगते हैं, जो ठीक है, लेकिन उसका <strong>कोई worst case नहीं</strong> —
+    कोई ऐसा <em>n</em> नहीं है जिस पर आप अपने on-call से कह सकें "इतने में तो
+    सफल हो ही जाएगा"। p=0.99 पर भी नहीं कह सकते। आपने अपने लिए एक ऐसी tail
+    ख़रीद ली है जिसे आपने अभी नापा नहीं, और एक latency budget जिसे आप लिख
+    नहीं सकते।
+  </p>
+
+  <div class="note">
+    <strong>Interview का सवाल आख़िरी column है।</strong> "validator के साथ
+    retry करो" कोई भी कह सकता है। वे जो जवाब सुनना चाहते हैं वह यह है कि
+    retry loop एक correctness समस्या को unbounded cost-and-latency समस्या में
+    बदल देता है, और constrained decoding उसे 1.00 attempts में बदल देता है।
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">p̃(t | s) = softmax( ℓ<sub>t</sub> + m<sub>s</sub>(t) )  where  m<sub>s</sub>(t) = 0 if t ∈ A(s), −∞ otherwise</div>
+
+  <p>
+    ℓ वह logit vector है जो model ने दिया। <em>s</em> parser state है।
+    A(<em>s</em>) उस state से allowed tokens का set है। बस इतना ही — दोनों
+    papers में बाक़ी सब यही है कि A(<em>s</em>) को इतनी तेज़ी से कैसे निकाला
+    जाए कि वह हर token पर चल सके। इसे pipeline stages की तरह पढ़िए:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>ℓ</code></td><td>(V,)</td><td>vocabulary की हर entry पर एक logit. model का पूरा योगदान</td></tr>
+      <tr><td><code>A(s)</code></td><td>एक set</td><td><strong>यही paper है।</strong> कौन-से token ids document को parse होने लायक़ रखते हैं</td></tr>
+      <tr><td><code>+ m<sub>s</sub></code></td><td>(V,)</td><td>allowed पर 0, बाक़ी पर <code>−∞</code>. softmax से पहले</td></tr>
+      <tr><td><code>softmax</code></td><td>(V,)</td><td>जो बचा है उस पर फिर से normalise. जोड़ अब भी 1</td></tr>
+      <tr><td><code>sample</code></td><td>एक id</td><td>सामान्य sampling. temperature, top-p सब वैसे के वैसे</td></tr>
+      <tr><td><code>parser.step</code></td><td>नया s</td><td>जो token आपने सचमुच emit किया, उससे state machine आगे बढ़ाओ</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>एक step, पहले और बाद में</h2>
+
+  <p>
+    यह मेरी toy 45-token vocabulary से एक ठोस step है, document की बिलकुल
+    शुरुआत में, जहाँ केवल एक opening brace ही वैध है। model को newline चाहिए
+    था। उसे newline नहीं मिलता।
+  </p>
+
+<pre><code>parser state 0: the document is empty, only '{' can start it
+allowed tokens: ['{', '{"']
+
+     token    logit   p before    p after
+      '\n'    2.718     0.2016     0.0000  &lt;- forbidden
+     '","'    2.680     0.1942     0.0000  &lt;- forbidden
+      '0}'    2.122     0.1111     0.0000  &lt;- forbidden
+    'null'    1.769     0.0780     0.0000  &lt;- forbidden
+       'g'    1.391     0.0535     0.0000  &lt;- forbidden
+    'name'    0.980     0.0355     0.0000  &lt;- forbidden
+     'age'    0.714     0.0272     0.0000  &lt;- forbidden
+       '}'    0.597     0.0242     0.0000  &lt;- forbidden
+       '{'    0.002     0.0133     0.8793  &lt;- the only survivors
+      '{"'   -1.983     0.0018     0.1207  &lt;- the only survivors
+
+total probability on invalid tokens before masking: 0.9848
+total probability on invalid tokens after  masking: <span class="ok">0.0000</span>
+probabilities still sum to 1: <span class="ok">1.000000</span>
+
+same mask written with 0.0 instead of -inf: <span class="hl">0.9742</span> of the
+probability mass is STILL on invalid tokens.</code></pre>
+
+  <p>
+    दो चीज़ें ग़ौर से देखने लायक़ हैं। 98.5% probability mass जो model ने उन
+    tokens पर रखा जो यहाँ आ ही नहीं सकते — retry loop की जिन failures को आप
+    पहले ही मिटा दे रहे हैं, वह उतना ही हिस्सा है। और आख़िरी लाइन: mask को
+    <code>−∞</code> के बजाय <code>0.0</code> लिखिए और 97% mass अब भी कूड़े पर
+    है। <code>0</code> का मतलब "off" नहीं है। <code>0</code> एक बिलकुल
+    सामान्य logit है। ठीक वही bug जिससे attention page की mask table आगाह
+    करती है, बस दूसरी file में।
+  </p>
+
+  <h2>एक असली state machine, और "by construction" का मतलब</h2>
+
+  <p>
+    मेरा grammar एक तय schema है, whitespace नहीं:
+    <code>{"name":"&lt;letters&gt;","age":&lt;digits&gt;}</code>. वह भाषा
+    <strong>regular</strong> है, इसलिए एक finite-state machine काफ़ी है — कुल
+    20 states, जिनमें से 15 तय literals के भीतर बस एक-एक क़दम हैं। फिर loop
+    चलता है, और हर step पर mask वही है जो वह state allow करता है।
+  </p>
+
+<pre><code>20 states in all, 15 of them single
+steps inside a fixed literal. The five that mean something:
+
+  state 0 start            1 chars '{'                  -&gt;  2/45 tokens
+  state 1 in name string  28 chars ' "abcdefghij...'    -&gt; 18/45 tokens
+  state 2 need a digit     9 chars '123456789'          -&gt; 13/45 tokens
+  state 3 in age          11 chars '0123456789}'        -&gt; 16/45 tokens
+  state 4 done             0 chars ''                   -&gt;  0/45 tokens
+
+one generation, traced:
+  state 0 -&gt; allowed  2/45 -&gt; emitted '{'
+  state 5 -&gt; allowed  1/45 -&gt; emitted '"'
+  state 6 -&gt; allowed  2/45 -&gt; emitted 'name'
+  state 10 -&gt; allowed  3/45 -&gt; emitted '":"'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'ada'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'nam'
+  state 1 -&gt; allowed 18/45 -&gt; emitted 'ada'
+  state 1 -&gt; allowed 18/45 -&gt; emitted '","'
+  state 15 -&gt; allowed  2/45 -&gt; emitted 'age'
+  state 18 -&gt; allowed  2/45 -&gt; emitted '":'
+  state 2 -&gt; allowed 13/45 -&gt; emitted '36}'
+
+  emitted: {"name":"adanamada","age":36}
+  final state 4, accepting: True
+  json.loads says: {'name': 'adanamada', 'age': 36}
+
+500 constrained generations: <span class="ok">500 parsed, 0 failed, 0 retries</span>
+lengths 19-173 chars, all schema-conformant, 0 cut off by the step cap</code></pre>
+
+  <p>
+    500 में 500 कोई अच्छा hit rate नहीं है। यह hit rate है ही नहीं। parser
+    valid prefixes के set से बाहर जा ही नहीं सकता, क्योंकि जो tokens उसे बाहर
+    ले जाते, वे कभी sample किए जा ही नहीं सकते थे। logits
+    <code>rng.normal</code> से आया random noise हैं — सचमुच एक भयानक model —
+    और फिर भी output हर बार parse होता है। दावा यही है: guarantee mask से आती
+    है, model को मना लेने से नहीं।
+  </p>
+
+  <div class="note">
+    <strong>Interview में "JSON" को लेकर सटीक रहिए।</strong> मेरे जैसा एक
+    <em>तय schema</em> एक regular भाषा है, और एक finite-state machine उसे
+    सँभाल लेता है। सामान्य JSON <strong>regular नहीं</strong> है — मनमाने
+    nesting के लिए एक stack चाहिए, यानी एक context-free grammar और एक
+    pushdown automaton। state-machine वाली कहानी उन schemas को cover करती है
+    जो ज़्यादातर applications सचमुच चाहते हैं; "कोई भी JSON" को नहीं।
+  </div>
+
+  <h2>मुश्किल हिस्सा: grammar characters बोलता है, model tokens देता है</h2>
+
+  <p>
+    ज़्यादातर explanations यहीं रुक जाती हैं, और असल क़ीमत यही हिस्सा वसूलता
+    है। आपका grammar characters पर परिभाषित है। model <em>tokens</em> emit
+    करता है, और एक token कई characters की वह string है जिसे किसी compression
+    algorithm ने सालों पहले आपके schema से पूछे बिना चुना था — देखिए
+    <a href="../tokenization/">tokenisation page</a>. तो एक ही token grammar
+    की सीमा के आर-पार बैठ सकता है।
+  </p>
+
+  <p>
+    name string के भीतर होने पर यहाँ 28 characters वैध हैं। देखिए यह tokens
+    के बारे में क्या बताता है और क्या नहीं:
+  </p>
+
+<pre><code>     token  first char ok?  whole token ok?  why
+      '"}'            True            False  walks off the DFA
+     '","'            True             True  ends in state 15
+'lovelace'            True             True  ends in state 1
+     'ace'            True             True  ends in state 1
+       '}'           False            False  walks off the DFA
+     'age'            True             True  ends in state 1
+     '":"'            True            False  walks off the DFA
+
+The same token flips legality with the state. Token '0}':
+  from state 0 (start          ): None
+  from state 1 (in name string ): None
+  from state 2 (need a digit   ): <span class="hl">None</span>
+  from state 3 (in age         ): <span class="ok">4</span>
+  from state 4 (done           ): None</code></pre>
+
+  <p>
+    <code>'"}'</code> को पकड़े रखिए। इसका पहला character वैध है — वह quote
+    name string को बंद करता है। उससे जुड़ा <code>}</code> वैध नहीं, क्योंकि
+    schema अभी हम पर एक age field उधार है। पहले character पर किया गया
+    character-level check हाँ कहता है; पूरा token एक इकाई के तौर पर ना है; और
+    आप आधा token emit नहीं कर सकते। इसीलिए <em>पूरे</em> token को automaton
+    से गुज़ारा जाता है और सिर्फ़ वही tokens रखे जाते हैं जो शुरू से आख़िर तक
+    बच जाएँ।
+  </p>
+
+  <p>
+    <code>'0}'</code> दूसरी दिशा दिखाता है: वही token "need a digit" में
+    अवैध है (JSON शुरू में zero मना करता है) और एक state बाद वैध। वैधता उस
+    जोड़ी का गुण है, token का नहीं। तो जवाब एक table है:
+  </p>
+
+<pre><code>So the answer is an index -- parser state -&gt; allowed token ids:
+  state 0 (start          )  2 tokens  ['{', '{"']
+  state 1 (in name string ) 18 tokens  [' ', '"', '","', 'a', 'ace', 'ada', '...']
+  state 2 (need a digit   ) 13 tokens  ['1', '180', '2', '3', '36', '36}', '...']
+  state 3 (in age         ) 16 tokens  ['0', '0}', '1', '180', '2', '3', '...']
+  state 4 (done           )  0 tokens  []
+  ... and the other 15 literal states, 1 or 2 tokens each</code></pre>
+
+  <p>
+    वह table ही Willard और Louf का योगदान है। masking नहीं — लोग पहले से
+    mask कर रहे थे, और उसी साल Geng et al. एक grammar को decoder से जोड़ चुके
+    थे। Outlines का दावा इस बारे में है कि allowed set आप <em>कब</em> निकालते
+    हैं: हर generate हुए token पर एक बार नहीं, बल्कि हर (grammar, tokeniser)
+    जोड़ी पर एक बार, load time पर।
+  </p>
+
+  <h2>index की क़ीमत, और उसकी बचत</h2>
+
+  <p>
+    मैं milliseconds के बजाय DFA character-steps गिनता हूँ, ताकि script आपके
+    laptop पर वही संख्याएँ छापे जो मेरे पर। यह ज़्यादा ईमानदार इकाई भी है:
+    यह काम है, मेरी machine का मूड नहीं।
+  </p>
+
+<pre><code>vocabulary 45 tokens, grammar 20 states
+
+  parser state   naive scan   index lookup
+         start        46 steps         1 lookup
+in name string        82 steps         1 lookup
+  need a digit        51 steps         1 lookup
+        in age        52 steps         1 lookup
+          done        45 steps         1 lookup
+
+index built once, at load time: 986 character-steps, 68 entries
+
+and the scan grows with the vocabulary while the lookup does not:
+  vocab    45: naive      82 steps per generated token, index <span class="ok">1</span>
+  vocab   180: naive     487 steps per generated token, index <span class="ok">1</span>
+  vocab   720: naive    2107 steps per generated token, index <span class="ok">1</span>
+  vocab  2880: naive    <span class="hl">8587</span> steps per generated token, index <span class="ok">1</span></code></pre>
+
+  <p>
+    पूरा index बनाने में 986 character-steps लगे — एक दर्जन naive scans से भी
+    कम — और उसके बाद हर step एक dict lookup है। बाएँ column को एक असली
+    vocabulary (50k–200k entries), एक असली grammar, और हर request के हर token
+    से गुणा कीजिए, और आपको एक technique और एक product का फ़र्क़ मिल जाएगा।
+    title में "Efficient" शब्द का यही मतलब है, और इससे ज़्यादा वह कुछ दावा
+    नहीं करता।
+  </p>
+
+  <h2>यह आपको क्या नहीं देता</h2>
+
+  <p>
+    constrained decoder से छह outputs। छहों parse होते हैं। छहों schema से
+    मेल खाते हैं। इनमें से शून्य सही हैं।
+  </p>
+
+<pre><code>ground truth: {'name': 'ada lovelace', 'age': 36}
+
+                            output  parses  schema  correct
+           {"name":"age","age":36}     yes     yes       <span class="hl">NO</span>
+             {"name":"","age":479}     yes     yes       <span class="hl">NO</span>
+              {"name":"","age":30}     yes     yes       <span class="hl">NO</span>
+               {"name":"","age":8}     yes     yes       <span class="hl">NO</span>
+     {"name":"","age":93594505170}     yes     yes       <span class="hl">NO</span>
+         {"name":"null","age":390}     yes     yes       <span class="hl">NO</span>
+
+6 distinct outputs, all valid JSON, all matching the
+schema. The number that were right about Ada Lovelace: 0</code></pre>
+
+  <p>
+    Schema validity output के <em>syntax</em> का गुण है। दुनिया के बारे में
+    वह कुछ नहीं कहती। यहाँ मेरा "model" random noise है, जो बात को ज़ोर से
+    कहता है, पर अच्छे model के लिए भी यही सच है: constraining failures को
+    "parse नहीं होता" से हटाकर "parse होता है और ग़लत है" पर ले आता है, और
+    आपके database में वही दूसरा वाला घुसता है। age 36 है या नहीं, यह एक eval
+    सवाल है — देखिए <a href="../evals/">evals page</a>.
+  </p>
+
+  <p>
+    एक ईमानदार क़ीमत यहीं बता दूँ। masking एक subset पर फिर से normalise
+    करता है, इसलिए constrained distribution model की वह distribution
+    <em>नहीं</em> है जो validity पर condition की गई हो — वह उसका एक greedy,
+    per-step approximation है, और लोगों ने उससे होने वाले quality shifts
+    दोनों दिशाओं में नापे हैं। constrained decoding को मुफ़्त मत बेचिए। उसे
+    एक ऐसी guarantee की तरह बेचिए जो एक ज्ञात, छोटी distortion देकर ख़रीदी
+    जाती है।
+  </p>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Plain Python and NumPy. No torch, no model, no training — the automaton, the
+  mask and the index, so you can watch the allowed set shrink. Every function
+  under 20 lines.
+</p>
+<p>
+  <a href="structured_output_from_scratch.py" download><strong>Download the full script</strong></a>
+  — nine short functions plus seven runnable demos. Then:
+</p>
+<pre><code>python3 structured_output_from_scratch.py</code></pre>
+
+<pre><code>def step_char(state, ch):
+    """One character. None means 'this character cannot continue the doc'."""
+    return DELTA.get(state, {}).get(ch)
+
+
+def step_token(state, token):
+    """Feed a whole token through, character by character.
+
+    Returns the state after the token, or None if ANY character inside it
+    fell off the automaton. A token is allowed or it is not; there is no
+    partial credit, because you cannot emit half a token."""
+    for ch in token:
+        state = step_char(state, ch)
+        if state is None:
+            return None
+    return state
+
+
+def allowed_tokens(state):
+    """Naive version: walk every token in the vocabulary through the DFA.
+
+    Cost is O(vocab x token length) PER GENERATED TOKEN. This is the thing
+    the Outlines paper removes."""
+    out = {}
+    for i, tok in enumerate(VOCAB):
+        nxt = step_token(state, tok)
+        if nxt is not None:
+            out[i] = nxt
+    return out
+
+
+def apply_mask(logits, allowed):
+    """Set every disallowed logit to -inf. Not 0 -- 0 is a perfectly ordinary
+    logit that softmax will happily hand probability to."""
+    masked = np.full_like(logits, -np.inf)
+    idx = np.fromiter(allowed, dtype=int, count=len(allowed))
+    masked[idx] = logits[idx]
+    return masked
+
+
+def build_index():
+    """state -&gt; {token id: state after that token}. Built once, reused forever."""
+    return {s: allowed_tokens(s) for s in DELTA}
+</code></pre>
+
+<p>
+  <code>build_json_dfa</code> (which chains one state per character of each
+  fixed literal), <code>generate</code> (the loop from the top of this page,
+  plus tracing), <code>softmax</code>, <code>sample</code> and the vocabulary
+  list are all in the script.
+</p>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode,
+  and every row here is a bug someone has shipped.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Pass <code>mask_with_zero=True</code> to <code>generate</code> — the mask writes <code>0.0</code> instead of <code>-np.inf</code></td><td>Demo 7 prints <code>invalid outputs: 200/200</code> against <code>0/200</code> for <code>−∞</code>. At step one, 0.9742 of the probability mass is still on tokens that cannot legally appear.</td></tr>
+    <tr><td>In <code>allowed_tokens</code>, replace <code>step_token</code> with <code>step_char(state, tok[0])</code> — check the grammar one character at a time</td><td>Token <code>'"}'</code> passes the check from inside the name string and closes the document early: <code>{"name":"ada"}</code>. Valid JSON, wrong schema, no age field. Demo 7(b) prints the disagreement.</td></tr>
+    <tr><td>Sample from the raw logits and reject illegal tokens afterwards, instead of masking first</td><td>Demo 7(c): mean 23.6 samples, max 142, to get one legal <em>first</em> token. Masking gets it in 1, every time, from the same distribution.</td></tr>
+    <tr><td>Delete the retry cap: <code>while True:</code> around the parse in demo 1's simulation</td><td>At p=0.90 over 100,000 requests the longest run takes 6 attempts — 2,400 tokens and a timeout for one user. The mean stays a comfortable 1.109 the whole time.</td></tr>
+    <tr><td>Trust the values: assert only <code>json.loads(text)</code> succeeds in demo 6</td><td>Every assertion passes. <code>{"name":"","age":479}</code> is well-formed, schema-conformant and completely wrong about Ada Lovelace. 0 of 6 correct.</td></tr>
+    <tr><td>Drop <code>max_steps</code> to 12 in <code>generate</code></td><td>Demo 3's truncated count goes from 0 to 472 of 500. A length cap can slice a valid prefix in half — the grammar guarantees the prefix stays valid, not that you gave it room to finish.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read Willard &amp; Louf — the problem statement and the
+  indexing section, which is where the finite-state-machine construction and the
+  claim about per-token cost live. Skip the vocabulary-preprocessing details
+  until you need to implement one. Geng et al. is a shorter read and worth it
+  for the framing: a grammar as a decoding-time constraint rather than something
+  you fine-tune into the weights.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is almost none here, and that surprised me. The retry section is one
+  distribution — the geometric — and everything I printed from it is 1/p and a
+  <code>log</code> to turn "how many attempts covers 95% of requests" into a
+  number. You could derive that column in a spreadsheet.
+</p>
+<p>
+  The mechanism is a comparison and an assignment: is this token in a set, and
+  if not, write <code>−∞</code>. The only "maths" is knowing why <code>−∞</code>
+  and not <code>0</code>, and that's just knowing what <code>exp(−∞) = 0</code>
+  does inside a softmax. Same fact as the causal mask.
+</p>
+<p>
+  The genuinely useful theory is computer science, not maths, and it is the
+  first-year kind: regular languages and finite-state machines, context-free
+  grammars and pushdown automata, and the fact that a fixed schema lives in the
+  first box while nested JSON lives in the second. If you can say which of those
+  two your schema needs, you understand this paper. What you actually need on
+  the job is different again: knowing your tokeniser, knowing your library
+  (Outlines, guidance, llama.cpp's grammars, the structured-output modes the
+  APIs now ship), and an eval set — because the failure mode you've just
+  bought is confidently well-formed nonsense.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you the mask and the index. These give you the compiler, the
+  competing designs, and the production ergonomics.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2307.09702">
+      <span class="paper-title">Efficient Guided Generation for Large Language Models</span>
+      <span class="paper-meta">Willard &amp; Louf, 2023. The Outlines paper. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read it for the construction I hand-wrote: regex and schema compiled to a
+      finite-state machine, and the indexing argument that makes the allowed-set
+      lookup cheap enough to run per token. Short, and much easier once you have
+      the state table above in your head.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2305.13971">
+      <span class="paper-title">Grammar-Constrained Decoding for Structured NLP Tasks without Finetuning</span>
+      <span class="paper-meta">Geng, Josifoski, Peyrard &amp; West, 2023. Earlier, and about the results.</span>
+    </a>
+    <p class="paper-pitch">
+      The half I skipped entirely: what constraining does to task accuracy on
+      real benchmarks with real models, versus fine-tuning for the same output
+      shape. Note the arXiv title says "without Finetuning" — the paper is often
+      cited under an earlier wording.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://dottxt-ai.github.io/outlines/latest/">
+      <span class="paper-title">Outlines documentation</span>
+      <span class="paper-meta">dottxt. The library the paper became. Code, not maths.</span>
+    </a>
+    <p class="paper-pitch">
+      What this looks like when someone else has done the work: a Pydantic model
+      or a regex in, guaranteed-shaped output out. Read the JSON-schema and
+      regex pages to see which parts of a schema actually compile to a machine.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://blog.dottxt.co/coalescence.html">
+      <span class="paper-title">Coalescence: making LLM inference 5× faster</span>
+      <span class="paper-meta">Louf. A blog post, with the diagrams the paper doesn't have.</span>
+    </a>
+    <p class="paper-pitch">
+      The follow-up idea I left out: when a state's allowed set has exactly one
+      member you can skip the model call altogether, which is why constrained
+      decoding can be <em>faster</em> than unconstrained. It also shows the
+      distribution shift that trick causes, honestly.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Outlines docs first — run it on your
+  own schema and see the guarantee before you read about it — then the Willard
+  &amp; Louf paper for the machine, then Geng et al. for whether it helps
+  accuracy, then coalescence when you start caring about latency.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

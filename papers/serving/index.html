@@ -1,0 +1,1780 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How a serving engine actually works — for programmers</title>
+<meta name="description" content="PagedAttention and vLLM explained as an operating system: continuous batching is preemptive scheduling, the KV cache is virtual memory. Runnable NumPy that simulates the scheduler and the block allocator.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>How a serving engine actually works</h1>
+    <p class="paper-meta">Kwon et al., 2023 — PagedAttention and vLLM</p>
+    <p class="lede">
+      The KV-cache page stopped at the arithmetic. Everything above that line
+      is an operating system, and this is the part you actually operate.
+    </p>
+    <p>
+      <a href="serving_from_scratch.py" download>Download serving_from_scratch.py</a>
+      — everything below runs from it. NumPy only, and no GPU: it simulates the
+      queue and the allocator with counters.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+  <p>
+    I wrote <a href="../kv-cache/">the KV-cache page</a> and it name-drops
+    "continuous batching" and "PagedAttention" seven times without building
+    either. That bothered me. Those two phrases are the difference between a
+    demo that serves one person and a service that serves a thousand, and I
+    was repeating them the way you repeat a library name you have never read
+    the source of.
+  </p>
+
+  <p>
+    So here they are, both built. And the surprise, once you build them, is
+    that neither one is about machine learning. Attention never changes. Not
+    one line of the model changes. What changes is <em>who gets a slot</em> and
+    <em>where the bytes live</em> — scheduling and memory management, the two
+    problems an operating system was invented to solve.
+  </p>
+
+  <h2>A serving engine is an operating system</h2>
+
+  <p>
+    You already know both halves of this paper. Here is the first one — the
+    batch loop everyone writes on day one:
+  </p>
+
+<pre><code>for batch in chunks(requests, 8):
+    outputs = model.generate(batch)   # returns when the LAST one is done
+    send(outputs)</code></pre>
+
+  <p>
+    That is <strong>run-to-completion scheduling</strong>. A 1970s batch
+    mainframe. If seven replies finish in 8 tokens and the eighth runs to 128,
+    seven slots sit there holding memory and doing nothing for 120 iterations.
+    The fix is the same fix the OS people found: schedule between every
+    iteration, not between every batch.
+  </p>
+
+<pre><code>while queue or running:
+    while len(running) &lt; slots and queue:
+        running.append(queue.pop(0))   # a free slot is refilled NOW
+    step(running)                      # every live sequence emits one token
+    running = [r for r in running if not r.done()]</code></pre>
+
+  <p>
+    That is <strong>continuous batching</strong>, and it comes from
+    <strong>Orca</strong> (Yu et al., "Orca: A Distributed Serving System for
+    Transformer-Based Generative Models", OSDI 2022), where it is called
+    <em>iteration-level scheduling</em>. Same idea, better name.
+  </p>
+
+  <p>
+    Now the second half. Here is how you would allocate the KV cache, and it is
+    also the first thing anyone writes:
+  </p>
+
+<pre><code>cache = torch.empty(batch, MAX_MODEL_LEN, ...)   # reserve the worst case</code></pre>
+
+  <p>
+    That is a fixed-size contiguous allocation per process. You don't know how
+    long the reply will be, so you reserve the maximum, and you reserve it
+    <em>contiguously</em> because attention wants to index it as one array.
+    Both of those choices cost you. PagedAttention's move is to notice that the
+    operating system solved this in 1962 and stop reinventing it badly: fixed-
+    size blocks, a per-sequence block table, allocate on demand.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Serving term</th><th>Means</th><th>The OS thing it is</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Continuous batching</strong></td><td>Re-decide the batch between every decode step</td><td>Preemptive scheduling, not run-to-completion</td></tr>
+      <tr><td><strong>KV block</strong></td><td>A fixed number of tokens' keys and values</td><td>A page</td></tr>
+      <tr><td><strong>Block table</strong></td><td>Logical block → physical block, per sequence</td><td>A page table</td></tr>
+      <tr><td><strong>Prefix sharing</strong></td><td>Two sequences pointing at one prompt's blocks</td><td><code>fork()</code> with copy-on-write</td></tr>
+      <tr><td><strong>Preemption</strong></td><td>Evicting a sequence's blocks to admit another</td><td>Swapping a process out</td></tr>
+      <tr><td><strong>Prefix cache</strong></td><td>Reusing a previous request's prompt blocks</td><td>A page cache, keyed by content</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <p>
+    Not an attention formula. The paper's actual contribution is an address
+    translation, and it is the same one your MMU does:
+  </p>
+
+  <div class="formula">physical_addr(seq, i) = block_table[seq][ ⌊i / B⌋ ] × B + (i mod B)</div>
+
+  <p>Read it as stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Typical</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>i</code></td><td>0…seq_len</td><td>The logical position of a token in <em>this</em> sequence</td></tr>
+      <tr><td><code>B</code></td><td>16</td><td>Block size in tokens. The one tuning knob on this whole page</td></tr>
+      <tr><td><code>⌊i / B⌋</code></td><td>0…n_blocks</td><td><strong>Logical block number.</strong> Which page of my cache</td></tr>
+      <tr><td><code>block_table[seq]</code></td><td>a list of ints</td><td><strong>The page table.</strong> One per sequence. This is the whole idea</td></tr>
+      <tr><td><code>i mod B</code></td><td>0…B−1</td><td>Offset inside the block</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    One indirection. That is the paper. Everything else — the sharing, the
+    near-zero waste, the concurrency — falls out of the fact that logical
+    positions no longer have to be physically adjacent.
+  </p>
+
+  <h2>Static batching: the GPU you paid for, idle</h2>
+
+  <p>
+    The script simulates 64 requests arriving over time with realistically
+    uneven output lengths, and counts <em>slot-steps</em>: a slot held for one
+    iteration. A slot-step that produced a token is work. One that didn't is
+    money.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>static batching, 8 slots, 64 requests
+  iterations to drain the queue :    709
+  slot-steps held               :   5632
+  slot-steps that did work      :   2088
+  occupancy                     :  37.1%
+  idle fraction                 :  <span class="hl">62.9%</span>
+  throughput (tokens/iteration) :   2.94
+
+continuous batching, 8 slots, 64 requests
+  iterations to drain the queue :    305
+  slot-steps held               :   2440
+  slot-steps that did work      :   2088
+  occupancy                     :  <span class="ok">85.6%</span>
+  idle fraction                 :  14.4%
+  throughput (tokens/iteration) :   <span class="ok">6.85 ✓</span>
+
+speedup in iterations: 2.32x  (same tokens generated)</code></pre>
+
+  <p>
+    Identical tokens out of identical weights. Sixty-three per cent of the
+    machine was being paid for and not used. You can see exactly where it goes
+    if you print one batch at a time:
+  </p>
+
+<pre><code>occupancy over time, static batching (first 3 batches):
+  batch 0: output lengths [8, 8, 8, 16, 16, 16, 64, 128]
+           runs for 128 steps, slots busy <span class="hl">25.8%</span>
+  batch 1: output lengths [8, 8, 8, 8, 16, 32, 128, 128]
+           runs for 128 steps, slots busy 32.8%
+  batch 2: output lengths [8, 16, 16, 64, 64, 64, 64, 64]
+           runs for  64 steps, slots busy <span class="ok">70.3%</span></code></pre>
+
+  <div class="note">
+    <strong>Batch 2 is the control.</strong> Its output lengths are nearly
+    uniform, and its occupancy is 70% instead of 26%. Static batching isn't
+    slow because batching is bad — it's slow because <em>reply lengths vary and
+    you can't know them in advance</em>. If every reply were 64 tokens, none of
+    this page would exist.
+  </div>
+
+  <h2>Reserving memory you will never write</h2>
+
+  <p>
+    Now the allocator. Same workload, requests arriving and finishing over
+    time, and a 40 GiB slice of an 80 GB card for KV cache. At Llama-2-7B shape
+    that is 512 KiB per token, so 81,920 tokens total — the arithmetic is
+    straight out of <a href="../kv-cache/">the KV-cache page</a>.
+  </p>
+
+  <p>
+    Three allocators, one budget: reserve <code>max_model_len</code> for
+    everyone, reserve each caller's own <code>max_new_tokens</code>, or page it.
+  </p>
+
+<pre><code>contiguous, reserve max_model_len (2048) for everyone:
+  peak concurrent requests :     <span class="hl">40</span>
+  admitted / rejected      :     90 / <span class="hl">310</span>
+  at the first rejection   : wanted 2048 tokens, 0 free, biggest hole 0
+
+contiguous, reserve each caller's own max_new_tokens:
+  peak concurrent requests :    159
+  admitted / rejected      :    305 / 95
+  at the first rejection   : wanted 1160 tokens, 2,927 free, biggest hole 959
+  external fragmentation   : <span class="hl">1,968</span> free tokens that exist but not in one piece
+
+paged, block size 16, allocated on demand:
+  peak concurrent requests :    <span class="ok">230</span>
+  admitted / rejected      :    400 / <span class="ok">0</span>
+  tokens held / written    : 77,696 / 74,744
+  internal waste           : 2,952 (<span class="ok">3.8%</span>, and never more than 15 per sequence)
+  external fragmentation   : 0 -- every free block fits every sequence
+
+peak concurrency, same 40 GiB:
+  40 (reserve max_model_len) -> 159 (reserve max_new_tokens) -> 230 (paged)
+  = <span class="ok">5.8x</span> more concurrent users, and nobody was turned away</code></pre>
+
+  <p>
+    Read the middle block twice, because it is the one people miss. There were
+    2,927 free tokens and the request wanted 1,160 — and it was rejected
+    anyway, because the biggest single hole was 959. That's <strong>external
+    fragmentation</strong>: you have the memory, just not in one piece. Paging
+    doesn't reduce it, it <em>abolishes</em> it. Every free block is
+    interchangeable, so a free block is always usable by anyone.
+  </p>
+
+  <p>
+    Internal waste is the other half. Reserving 2,048 tokens for a reply that
+    runs to 40 wastes 98% of the reservation. With 16-token blocks you can
+    overshoot by at most 15 tokens, once, in the last block. That is what the
+    paper means by near-zero waste: it isn't clever, it's just bounded.
+  </p>
+
+  <p>And block size is the one knob, so break it in both directions:</p>
+
+<pre><code>block size sweep, same workload and same memory:
+  block | peak | rejected | internal waste | table entries at peak
+      1 |  230 |        0 |              0 |        <span class="hl">42978</span>
+      4 |  230 |        0 |            588 |        10829
+     16 |  230 |        0 |          2,952 |         <span class="ok">2792 ✓</span>
+     64 |  230 |        0 |         12,360 |          783
+    256 |  230 |        0 |         47,624 |          275
+   1024 |   <span class="hl">80</span> |      <span class="hl">226</span> |        <span class="hl">146,270</span> |           80</code></pre>
+
+  <p>
+    At block size 1 there is zero waste and the block table has 43,000 entries
+    to manage — you have rebuilt malloc's metadata problem. At 1,024 the waste
+    (146,270 tokens) is nearly twice the data actually written, concurrency
+    collapses to 80, and 226 requests get turned away. vLLM ships 16.
+  </p>
+
+  <h2>The block table, printed small enough to read</h2>
+
+  <p>
+    Here is a 10-token sequence with a deliberately silly block size of 4, on
+    an allocator whose free list has been shuffled by earlier traffic:
+  </p>
+
+<pre><code>sequence of 10 tokens, block size 4
+  logical block -&gt; physical block
+    0 -&gt; 5
+    1 -&gt; 2
+    2 -&gt; 9
+  physical blocks: [5, 2, 9]  &lt;- NOT contiguous, and that is fine
+  tokens 10, blocks 3, internal waste 2 tokens (last block only)
+
+decode 3 more tokens, one at a time:
+  n_tokens= 11 table=[5, 2, 9]  wrote into the current block
+  n_tokens= 12 table=[5, 2, 9]  wrote into the current block
+  n_tokens= 13 table=[5, 2, 9, <span class="ok">0</span>]  appended a new physical block</code></pre>
+
+  <p>
+    Blocks 5, 2 and 9. Nowhere near each other. Attention reads the sequence
+    <em>through</em> the table, so it never notices — this is precisely why the
+    paper needed a custom attention kernel, and precisely why nothing about
+    the attention <em>maths</em> changed. And growth costs one block append, not
+    a realloc-and-copy of the whole cache.
+  </p>
+
+  <h2>Copy-on-write, because you have used <code>fork()</code></h2>
+
+  <p>
+    Ask for four samples from one prompt and the naive engine keeps four copies
+    of the prompt's cache. But those four sequences are identical until the
+    first token diverges. So: share the blocks, refcount them, and copy only
+    the block someone actually writes into.
+  </p>
+
+<pre><code>prompt 90 tokens = 6 blocks: [0, 1, 2, 3, 4, 5]
+blocks used after prompt: 6
+
+forked 4 samples from it (parallel sampling):
+  blocks used: <span class="ok">6</span>  (unchanged -- all four share)
+  refcounts  : [5, 5, 5, 5, 5, 5]
+  naive copy would need 30 blocks; we hold 6
+  saved: 24 blocks = 192.0 MiB
+
+now each sample generates its first token (they diverge):
+  sample-0: table=[0, 1, 2, 3, 4, <span class="hl">6</span>]  copy-on-write triggered: True
+  sample-1: table=[0, 1, 2, 3, 4, <span class="hl">7</span>]  copy-on-write triggered: True
+  sample-2: table=[0, 1, 2, 3, 4, <span class="hl">8</span>]  copy-on-write triggered: True
+  sample-3: table=[0, 1, 2, 3, 4, <span class="hl">9</span>]  copy-on-write triggered: True
+  blocks used now     : 10  (one private block each, the rest still shared)</code></pre>
+
+  <p>
+    Five shared blocks, one private each. Blocks 0–4 are still refcount 5 and
+    still one copy. 192 MiB saved on a 90-token prompt, which sounds absurd
+    until you remember that half a megabyte per token is the number from the
+    KV-cache page.
+  </p>
+
+  <p>
+    Then the bug that this design invites. Sample-0 finishes. Do you free its
+    blocks?
+  </p>
+
+<pre><code>the reference-counting guard:
+  released sample-0. block 0 refcount now <span class="ok">4</span>
+  block 0 back on the free list? <span class="ok">False</span>  &lt;- still referenced, so no
+  released everyone. block 0 on the free list? <span class="ok">True</span></code></pre>
+
+  <div class="note">
+    <strong>This is a double free, and it fails silently.</strong> Delete the
+    <code>if self.refcount[b] == 0</code> guard and sample-0 finishing hands a
+    live prompt block back to the pool. The next request allocates it, writes
+    its own keys into it, and sample-1 keeps decoding — against someone else's
+    prompt. No crash. No error. Just wrong tokens. Refcounting isn't
+    bookkeeping here, it's the correctness argument.
+  </div>
+
+  <h2>Prefix caching: prefill you already did</h2>
+
+  <p>
+    Same trick, across requests instead of within one. A 300-token system
+    prompt shared by everyone is 300 tokens of prefill that only ever needs
+    doing once. Hash a block's prefix, and if it's resident, point at it.
+  </p>
+
+<pre><code>fraction of requests using the shared system prompt: 100%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :   2,888
+  prefill work saved        :  <span class="ok">83.0%</span>
+  block cache hit rate      :  84.0%
+
+fraction of requests using the shared system prompt: 50%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :  11,528
+  prefill work saved        :  32.2%
+  block cache hit rate      :  32.6%
+
+fraction of requests using the shared system prompt: 0%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :  17,000
+  prefill work saved        :   <span class="hl">0.0%</span>
+  block cache hit rate      :   <span class="hl">0.0%</span></code></pre>
+
+  <p>
+    The saving is exactly the shared prefix and not one token more, which is
+    the honest way to think about it: prefix caching is a workload property you
+    can engineer, not a speedup you turn on. Put the volatile part of your
+    prompt (the timestamp, the user id) at the <em>front</em> and your hit rate
+    is the 0% row.
+  </p>
+
+  <p>
+    My script hashes whole prefixes in a dict, so it only matches from token 0.
+    <strong>RadixAttention</strong>, in
+    <a href="https://arxiv.org/abs/2312.07104">SGLang</a> (Zheng et al.), keeps
+    those prefixes in a radix tree instead. Two requests that share the first
+    300 tokens and diverge after still share every block up to the divergence,
+    the tree finds the longest match automatically, and eviction is LRU on the
+    leaves. A trie of prompts. You have written one.
+  </p>
+
+  <h2>Prefill and decode are two different jobs</h2>
+
+  <p>
+    The last piece is scheduling again, and it starts with the arithmetic
+    intensity argument from <a href="../kv-cache/">the KV-cache page</a>: MACs
+    per byte of memory traffic, and whether a card can keep its arithmetic
+    units fed. The script also applies a roofline — a pass takes as long as the
+    slower of its arithmetic and its memory traffic — using an A100's two spec
+    numbers. Nothing here is measured on a GPU; it is a count and a division.
+  </p>
+
+<pre><code>arithmetic intensity (MACs per byte moved), Llama-2-7B shape:
+  prefill, 2048-token prompt :    <span class="ok">783.8</span> MACs/byte
+  decode, one token per seq, batch 32:     <span class="hl">7.49</span> MACs/byte
+  a card needs roughly 100-300 to keep its arithmetic units busy
+
+roofline time (A100-shaped: 156 TMAC/s, 2.0 TB/s):
+  prefill 2048 tokens :   11407.4 GMAC,   14.6 GB -&gt;   73.12 ms  (compute-bound)
+  decode step, batch 32:     165.4 GMAC,   22.1 GB -&gt;   11.03 ms  (memory-bound)</code></pre>
+
+  <p>
+    Two different machines. Now put them on one GPU and let a 2,048-token
+    prompt arrive while 32 people are mid-reply:
+  </p>
+
+<pre><code>shared GPU  : 32 sequences decoding, 40 steps
+  median inter-token gap    :    11.03 ms
+  p95 inter-token gap       :    11.03 ms
+  worst inter-token gap     :    <span class="hl">84.16 ms</span>
+
+disaggregated: 32 sequences decoding, 40 steps
+  median inter-token gap    :    11.03 ms
+  p95 inter-token gap       :    11.03 ms
+  worst inter-token gap     :    <span class="ok">11.03 ms ✓</span>
+
+the stall: one token took 84.2 ms instead of 11.0 -- 7.6x
+all 32 decoding users saw it, and none of them sent that prompt.</code></pre>
+
+  <p>
+    That is head-of-line blocking, and note where it shows up: the median is
+    untouched, the tail is 7.6× worse, and the victims are 32 people who did
+    nothing. Your p50 dashboard will look fine.
+  </p>
+
+  <p>The standard mitigation is to slice the prefill:</p>
+
+<pre><code>chunked prefill: same prefill, sliced, one chunk per iteration
+  chunk  2048 ->  1 iterations, worst gap   84.16 ms
+  chunk   512 ->  4 iterations, worst gap   29.32 ms
+  chunk   256 ->  8 iterations, worst gap   20.18 ms
+  chunk   128 -> 16 iterations, <span class="hl">worst gap   18.31 ms</span></code></pre>
+
+  <p>
+    Watch the last two rows: halving the chunk from 256 to 128 barely helps.
+    Below a certain size each chunk is dragging all 13 GB of weights across the
+    bus anyway, so you have hit the memory floor and are only adding passes.
+    Chunking caps the stall; it can't remove it, and it spends decode
+    iterations on prefill work.
+  </p>
+
+  <div class="note">
+    <strong>Disaggregation is the other answer.</strong>
+    <a href="https://arxiv.org/abs/2401.09670">DistServe</a> (Zhong et al.)
+    puts prefill and decode on <em>separate</em> GPUs and ships the KV cache
+    between them. A prefill then cannot delay a decode at all, and each pool
+    can be sized and parallelised for its own bottleneck — FLOPs on one side,
+    bandwidth on the other. The cost is a cache transfer per request, which is
+    why this is a later idea and not the first one.
+  </div>
+
+  <h2>When there are no free blocks left</h2>
+
+  <p>
+    One more failure the block design lets you see clearly. Admit a request
+    when the pool is empty and nothing can move:
+  </p>
+
+<pre><code>4 sequences x 2 blocks = 8/8 blocks used
+free blocks: []
+
+every sequence now wants one more token:
+  seq-0 append -&gt; <span class="hl">OutOfBlocks: no free physical blocks</span>
+  no free block, no policy: the scheduler cannot advance ANY
+  sequence, and none of them can finish without advancing.
+  &lt;- this is the deadlock
+
+with preemption (vLLM's swap-or-recompute, all-or-nothing):
+  preempt seq-3, evict its 2 blocks, push it back on the queue
+  free blocks now: [6, 7]
+  seq-0 append -&gt; <span class="ok">ok</span>, table=[0, 1, <span class="ok">6</span>], n_tokens=33</code></pre>
+
+  <p>
+    Every sequence needs one more block, every block is taken, and no sequence
+    can finish without growing. Classic. The resolution is the OS one: pick a
+    victim, take everything it has, put it back on the queue. Note
+    <em>everything</em> — preemption is all-or-nothing per sequence, because a
+    half-evicted sequence can't run at all. The evicted sequence loses its
+    cache, not its tokens: it gets re-prefilled later, or its blocks get
+    swapped back from host memory.
+  </p>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் <a href="../kv-cache/">KV-cache பக்கத்தை</a> எழுதினேன். அதில்
+    "continuous batching", "PagedAttention" என்ற இரண்டு சொற்களை ஏழு முறை
+    சொல்லியிருக்கிறேன் — ஆனால் இரண்டையும் கட்டிக் காட்டவில்லை. அது என்னை
+    உறுத்தியது. ஒருவருக்குச் சேவை செய்யும் demo-வுக்கும், ஆயிரம் பேருக்குச்
+    சேவை செய்யும் service-க்கும் இடையேயான வித்தியாசம் அந்த இரண்டு சொற்கள்தான்.
+    நான் அவற்றை, source படிக்காத ஒரு library-ன் பெயரைச் சொல்வது போலச்
+    சொல்லிக்கொண்டிருந்தேன்.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (continuous batching,
+    PagedAttention, block table, fragmentation, prefill, decode, preemption,
+    throughput…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும், vLLM-ன்
+    config flags-லும், மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான்
+    பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>
+    இதோ, இரண்டையும் கட்டியிருக்கிறேன். கட்டிய பிறகு வரும் ஆச்சரியம் இதுதான்:
+    இரண்டுக்கும் machine learning-உடன் சம்பந்தமே இல்லை. Attention மாறவே
+    இல்லை. Model-ன் ஒரு வரி கூட மாறவில்லை. மாறுவது <em>யாருக்கு slot
+    கிடைக்கிறது</em> என்பதும், <em>bytes எங்கே இருக்கின்றன</em> என்பதும்
+    மட்டுமே — scheduling மற்றும் memory management. இந்த இரண்டு பிரச்சனைகளைத்
+    தீர்க்கத்தான் operating system என்பதே கண்டுபிடிக்கப்பட்டது.
+  </p>
+
+  <h2>Serving engine என்பது ஒரு operating system</h2>
+
+  <p>
+    இந்தக் கட்டுரையின் இரண்டு பாதிகளும் உங்களுக்கு ஏற்கனவே தெரியும். இதோ
+    முதல் பாதி — முதல் நாளே எல்லோரும் எழுதும் batch loop:
+  </p>
+
+<pre><code>for batch in chunks(requests, 8):
+    outputs = model.generate(batch)   # கடைசி ஒன்று முடிந்தால்தான் return
+    send(outputs)</code></pre>
+
+  <p>
+    இது <strong>run-to-completion scheduling</strong>. 1970-களின் batch
+    mainframe. ஏழு பதில்கள் 8 tokens-ல் முடிந்து, எட்டாவது 128 வரை ஓடினால்,
+    அந்த ஏழு slots 120 iterations-க்கு memory-ஐப் பிடித்துக்கொண்டு ஒன்றுமே
+    செய்யாமல் உட்கார்ந்திருக்கும். சரிசெய்யும் வழி, OS-காரர்கள் கண்டுபிடித்த
+    அதே வழிதான்: ஒவ்வொரு batch-க்கும் இடையில் அல்ல, ஒவ்வொரு iteration-க்கும்
+    இடையில் schedule செய்.
+  </p>
+
+<pre><code>while queue or running:
+    while len(running) &lt; slots and queue:
+        running.append(queue.pop(0))   # காலி slot உடனே நிரப்பப்படும்
+    step(running)                      # ஒவ்வொரு sequence-ம் ஒரு token
+    running = [r for r in running if not r.done()]</code></pre>
+
+  <p>
+    இதுதான் <strong>continuous batching</strong>. இது <strong>Orca</strong>-வில்
+    இருந்து வருகிறது (Yu et al., "Orca: A Distributed Serving System for
+    Transformer-Based Generative Models", OSDI 2022). அங்கே இதற்கு
+    <em>iteration-level scheduling</em> என்று பெயர். ஒரே கருத்து, சிறந்த பெயர்.
+  </p>
+
+  <p class="thanglish">
+    Static batching = run-to-completion. Kadaisi sequence mudiyara varaikkum
+    ellaa slots-um kaathirukkum. Continuous batching = ovvoru iteration-kkum
+    idayila schedule pannu, kaali slot-a udane nirappu.
+  </p>
+
+  <p>
+    இப்போது இரண்டாம் பாதி. KV cache-ஐ நீங்கள் எப்படி allocate செய்வீர்கள்
+    என்பது இதோ — இதுவும் எல்லோரும் முதலில் எழுதுவதுதான்:
+  </p>
+
+<pre><code>cache = torch.empty(batch, MAX_MODEL_LEN, ...)   # மோசமான நிலைக்கே ஒதுக்கு</code></pre>
+
+  <p>
+    இது ஒவ்வொரு process-க்கும் ஒரு நிலையான அளவு, தொடர்ச்சியான (contiguous)
+    allocation. பதில் எவ்வளவு நீளமாக இருக்கும் என்று உங்களுக்குத் தெரியாது,
+    அதனால் அதிகபட்சத்தை ஒதுக்குகிறீர்கள். Attention அதை ஒரே array-ஆக index
+    செய்ய விரும்புவதால் <em>தொடர்ச்சியாக</em> ஒதுக்குகிறீர்கள். இந்த இரண்டு
+    முடிவுகளும் விலை கேட்கும். PagedAttention-ன் நகர்வு எளிது: இதை operating
+    system 1962-லேயே தீர்த்துவிட்டது, மோசமாக மறுகண்டுபிடிப்பு செய்வதை
+    நிறுத்துங்கள் — நிலையான அளவு blocks, ஒவ்வொரு sequence-க்கும் ஒரு block
+    table, தேவைப்படும்போது மட்டும் allocate.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Serving சொல்</th><th>அர்த்தம்</th><th>இது எந்த OS விஷயம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Continuous batching</strong></td><td>ஒவ்வொரு decode step-க்கும் இடையில் batch-ஐ மறுமுடிவு செய்</td><td>Preemptive scheduling, run-to-completion அல்ல</td></tr>
+      <tr><td><strong>KV block</strong></td><td>நிலையான எண்ணிக்கையிலான tokens-ன் keys மற்றும் values</td><td>ஒரு page</td></tr>
+      <tr><td><strong>Block table</strong></td><td>Logical block → physical block, ஒவ்வொரு sequence-க்கும்</td><td>ஒரு page table</td></tr>
+      <tr><td><strong>Prefix sharing</strong></td><td>இரண்டு sequences ஒரே prompt-ன் blocks-ஐச் சுட்டுவது</td><td>Copy-on-write-உடன் <code>fork()</code></td></tr>
+      <tr><td><strong>Preemption</strong></td><td>இன்னொன்றை உள்ளே விட ஒரு sequence-ன் blocks-ஐ வெளியேற்றுவது</td><td>ஒரு process-ஐ swap out செய்வது</td></tr>
+      <tr><td><strong>Prefix cache</strong></td><td>முந்தைய request-ன் prompt blocks-ஐ மீண்டும் பயன்படுத்துவது</td><td>உள்ளடக்கத்தை வைத்து key செய்யப்பட்ட page cache</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <p>
+    இது attention சூத்திரம் அல்ல. இந்தக் கட்டுரையின் உண்மையான பங்களிப்பு ஒரு
+    address translation — உங்கள் MMU செய்வதே இதுதான்:
+  </p>
+
+  <div class="formula">physical_addr(seq, i) = block_table[seq][ ⌊i / B⌋ ] × B + (i mod B)</div>
+
+  <p>இதைப் படிகளாகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>வழக்கமான மதிப்பு</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>i</code></td><td>0…seq_len</td><td><em>இந்த</em> sequence-ல் ஒரு token-ன் logical இடம்</td></tr>
+      <tr><td><code>B</code></td><td>16</td><td>Tokens-ல் block size. இந்தப் பக்கம் முழுவதிலும் உள்ள ஒரே tuning knob</td></tr>
+      <tr><td><code>⌊i / B⌋</code></td><td>0…n_blocks</td><td><strong>Logical block number.</strong> என் cache-ன் எந்தப் page</td></tr>
+      <tr><td><code>block_table[seq]</code></td><td>ints-ன் ஒரு list</td><td><strong>அதுதான் page table.</strong> ஒரு sequence-க்கு ஒன்று. இதுதான் முழு கருத்து</td></tr>
+      <tr><td><code>i mod B</code></td><td>0…B−1</td><td>Block-க்கு உள்ளே offset</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    ஒரே ஒரு indirection. அதுதான் இந்தக் கட்டுரை. மீதி எல்லாம் — sharing,
+    கிட்டத்தட்ட பூஜ்ஜிய வீண், concurrency — logical இடங்கள் இனி physical-ஆக
+    அருகருகே இருக்க வேண்டியதில்லை என்ற ஒற்றை உண்மையிலிருந்து விழுகின்றன.
+  </p>
+
+  <h2>Static batching: நீங்கள் பணம் கொடுத்த GPU, சும்மா</h2>
+
+  <p>
+    Script, 64 requests நேரத்துக்கு நேரம் வருவதைச் சிமுலேட் செய்கிறது —
+    நிஜத்தில் இருப்பது போல ஏற்றத்தாழ்வான output நீளங்களுடன். பிறகு
+    <em>slot-steps</em> எண்ணுகிறது: ஒரு iteration-க்குப் பிடித்து வைத்த ஒரு
+    slot. Token உற்பத்தி செய்த slot-step என்பது வேலை. செய்யாதது பணம்.
+  </p>
+
+  <p><strong>என் பேச்சை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>static batching, 8 slots, 64 requests
+  iterations to drain the queue :    709
+  slot-steps held               :   5632
+  slot-steps that did work      :   2088
+  occupancy                     :  37.1%
+  idle fraction                 :  <span class="hl">62.9%</span>
+  throughput (tokens/iteration) :   2.94
+
+continuous batching, 8 slots, 64 requests
+  iterations to drain the queue :    305
+  slot-steps held               :   2440
+  slot-steps that did work      :   2088
+  occupancy                     :  <span class="ok">85.6%</span>
+  idle fraction                 :  14.4%
+  throughput (tokens/iteration) :   <span class="ok">6.85 ✓</span>
+
+speedup in iterations: 2.32x  (same tokens generated)</code></pre>
+
+  <p>
+    ஒரே weights, வெளியே வருவதும் ஒரே tokens. இயந்திரத்தில் அறுபத்து மூன்று
+    சதவீதத்துக்குப் பணம் கட்டி, பயன்படுத்தாமல் விட்டிருக்கிறோம். ஒரு
+    நேரத்தில் ஒரு batch-ஐ print செய்தால் அது எங்கே போகிறது என்று சரியாகத்
+    தெரியும்:
+  </p>
+
+<pre><code>occupancy over time, static batching (first 3 batches):
+  batch 0: output lengths [8, 8, 8, 16, 16, 16, 64, 128]
+           runs for 128 steps, slots busy <span class="hl">25.8%</span>
+  batch 1: output lengths [8, 8, 8, 8, 16, 32, 128, 128]
+           runs for 128 steps, slots busy 32.8%
+  batch 2: output lengths [8, 16, 16, 64, 64, 64, 64, 64]
+           runs for  64 steps, slots busy <span class="ok">70.3%</span></code></pre>
+
+  <div class="note">
+    <strong>Batch 2-தான் control.</strong> அதன் output நீளங்கள் கிட்டத்தட்ட
+    சமமானவை, அதனால் அதன் occupancy 26% அல்ல, 70%. Batching மோசம் என்பதால்
+    static batching மெதுவாக இல்லை — <em>பதில்களின் நீளம் மாறுபடுகிறது,
+    முன்கூட்டியே அதை அறிய முடியாது</em> என்பதால்தான் மெதுவாக இருக்கிறது.
+    ஒவ்வொரு பதிலும் 64 tokens என்றால் இந்தப் பக்கமே இருந்திருக்காது.
+  </div>
+
+  <p class="thanglish">
+    Reply length variance dhaan villain. Batch 2 madhiri lengths equal-a
+    irundha occupancy 70%. Illaati 26%. GPU-la 63% waste — same tokens, same
+    weights, vera onnum illa.
+  </p>
+
+  <h2>எழுதவே மாட்டீர்கள், ஆனாலும் ஒதுக்கும் memory</h2>
+
+  <p>
+    இப்போது allocator. அதே workload, requests வந்து முடிந்து போகின்றன, 80 GB
+    card-ல் KV cache-க்கு 40 GiB துண்டு. Llama-2-7B அளவில் ஒரு token-க்கு
+    512 KiB, அதாவது மொத்தம் 81,920 tokens — இந்தக் கணக்கு நேராக
+    <a href="../kv-cache/">KV-cache பக்கத்திலிருந்து</a> வருகிறது.
+  </p>
+
+  <p>
+    மூன்று allocators, ஒரே budget: எல்லோருக்கும் <code>max_model_len</code>
+    ஒதுக்கு, அல்லது ஒவ்வொருவரின் சொந்த <code>max_new_tokens</code> ஒதுக்கு,
+    அல்லது page செய்.
+  </p>
+
+<pre><code>contiguous, reserve max_model_len (2048) for everyone:
+  peak concurrent requests :     <span class="hl">40</span>
+  admitted / rejected      :     90 / <span class="hl">310</span>
+  at the first rejection   : wanted 2048 tokens, 0 free, biggest hole 0
+
+contiguous, reserve each caller's own max_new_tokens:
+  peak concurrent requests :    159
+  admitted / rejected      :    305 / 95
+  at the first rejection   : wanted 1160 tokens, 2,927 free, biggest hole 959
+  external fragmentation   : <span class="hl">1,968</span> free tokens that exist but not in one piece
+
+paged, block size 16, allocated on demand:
+  peak concurrent requests :    <span class="ok">230</span>
+  admitted / rejected      :    400 / <span class="ok">0</span>
+  tokens held / written    : 77,696 / 74,744
+  internal waste           : 2,952 (<span class="ok">3.8%</span>, and never more than 15 per sequence)
+  external fragmentation   : 0 -- every free block fits every sequence
+
+peak concurrency, same 40 GiB:
+  40 (reserve max_model_len) -> 159 (reserve max_new_tokens) -> 230 (paged)
+  = <span class="ok">5.8x</span> more concurrent users, and nobody was turned away</code></pre>
+
+  <p>
+    நடுவில் உள்ள block-ஐ இரண்டு முறை படியுங்கள் — இதைத்தான் பெரும்பாலானோர்
+    தவறவிடுகிறார்கள். 2,927 tokens காலியாக இருந்தன, request கேட்டது 1,160
+    — இருந்தும் அது நிராகரிக்கப்பட்டது, ஏனெனில் மிகப்பெரிய ஒற்றைத் துளை 959
+    மட்டுமே. அதுதான் <strong>external fragmentation</strong>: memory
+    உங்களிடம் இருக்கிறது, ஆனால் ஒரே துண்டாக இல்லை. Paging அதைக் குறைக்கவில்லை,
+    அதை <em>அழிக்கிறது</em>. ஒவ்வொரு காலி block-ம் ஒன்றுக்கொன்று மாற்றக்கூடியது,
+    அதனால் ஒரு காலி block எப்போதும் எவருக்கும் பயன்படும்.
+  </p>
+
+  <p>
+    Internal waste என்பது மற்றொரு பாதி. 40 tokens வரை மட்டும் ஓடும் ஒரு
+    பதிலுக்கு 2,048 tokens ஒதுக்கினால், ஒதுக்கீட்டில் 98% வீண். 16-token
+    blocks-உடன் நீங்கள் அதிகபட்சம் 15 tokens மட்டுமே, ஒரே ஒரு முறை, கடைசி
+    block-ல் மீறுவீர்கள். கட்டுரை "near-zero waste" என்பதன் அர்த்தம் அதுதான்:
+    இது புத்திசாலித்தனம் அல்ல, வெறுமனே எல்லை வகுக்கப்பட்டது.
+  </p>
+
+  <p>Block size ஒன்றுதான் knob, அதனால் அதை இரு திசைகளிலும் உடையுங்கள்:</p>
+
+<pre><code>block size sweep, same workload and same memory:
+  block | peak | rejected | internal waste | table entries at peak
+      1 |  230 |        0 |              0 |        <span class="hl">42978</span>
+      4 |  230 |        0 |            588 |        10829
+     16 |  230 |        0 |          2,952 |         <span class="ok">2792 ✓</span>
+     64 |  230 |        0 |         12,360 |          783
+    256 |  230 |        0 |         47,624 |          275
+   1024 |   <span class="hl">80</span> |      <span class="hl">226</span> |        <span class="hl">146,270</span> |           80</code></pre>
+
+  <p>
+    Block size 1-ல் வீணே இல்லை, ஆனால் block table-ல் நிர்வகிக்க 43,000
+    entries — நீங்கள் malloc-ன் metadata பிரச்சனையை மீண்டும் கட்டிவிட்டீர்கள்.
+    1,024-ல் வீண் (146,270 tokens) உண்மையில் எழுதப்பட்ட data-வைப் போல
+    கிட்டத்தட்ட இரு மடங்கு, concurrency 80-ஆகச் சரிகிறது, 226 requests
+    திருப்பி அனுப்பப்படுகின்றன. vLLM ship செய்வது 16.
+  </p>
+
+  <h2>Block table, படிக்கும் அளவுக்குச் சிறியதாக print செய்யப்பட்டது</h2>
+
+  <p>
+    இதோ 10-token sequence, வேண்டுமென்றே முட்டாள்தனமான block size 4-உடன் —
+    முந்தைய traffic-ஆல் free list கலைக்கப்பட்ட ஒரு allocator-ல்:
+  </p>
+
+<pre><code>sequence of 10 tokens, block size 4
+  logical block -&gt; physical block
+    0 -&gt; 5
+    1 -&gt; 2
+    2 -&gt; 9
+  physical blocks: [5, 2, 9]  &lt;- NOT contiguous, and that is fine
+  tokens 10, blocks 3, internal waste 2 tokens (last block only)
+
+decode 3 more tokens, one at a time:
+  n_tokens= 11 table=[5, 2, 9]  wrote into the current block
+  n_tokens= 12 table=[5, 2, 9]  wrote into the current block
+  n_tokens= 13 table=[5, 2, 9, <span class="ok">0</span>]  appended a new physical block</code></pre>
+
+  <p>
+    Blocks 5, 2, 9. ஒன்றுக்கொன்று அருகில் இல்லவே இல்லை. Attention அந்த
+    sequence-ஐ table-ன் <em>வழியாகப்</em> படிக்கிறது, அதனால் அது இதைக்
+    கவனிக்கவே இல்லை — கட்டுரைக்கு ஏன் ஒரு custom attention kernel தேவைப்பட்டது
+    என்பதற்கும், attention-ன் <em>கணிதத்தில்</em> ஏன் ஒன்றுமே மாறவில்லை
+    என்பதற்கும் இதுதான் காரணம். வளர்ச்சிக்கு ஒரு block append மட்டுமே செலவு,
+    முழு cache-ஐயும் realloc செய்து copy செய்வதல்ல.
+  </p>
+
+  <h2>Copy-on-write, ஏனெனில் நீங்கள் <code>fork()</code> பயன்படுத்தியிருக்கிறீர்கள்</h2>
+
+  <p>
+    ஒரே prompt-லிருந்து நான்கு samples கேளுங்கள் — அப்பாவி engine, prompt-ன்
+    cache-ஐ நான்கு முறை நகல் எடுத்து வைத்திருக்கும். ஆனால் முதல் token
+    பிரியும் வரை அந்த நான்கு sequences-ம் ஒரே மாதிரிதான். எனவே: blocks-ஐப்
+    பகிர்ந்து கொள், அவற்றை refcount செய், யாராவது உண்மையில் எழுதும்
+    block-ஐ மட்டும் copy செய்.
+  </p>
+
+<pre><code>prompt 90 tokens = 6 blocks: [0, 1, 2, 3, 4, 5]
+blocks used after prompt: 6
+
+forked 4 samples from it (parallel sampling):
+  blocks used: <span class="ok">6</span>  (unchanged -- all four share)
+  refcounts  : [5, 5, 5, 5, 5, 5]
+  naive copy would need 30 blocks; we hold 6
+  saved: 24 blocks = 192.0 MiB
+
+now each sample generates its first token (they diverge):
+  sample-0: table=[0, 1, 2, 3, 4, <span class="hl">6</span>]  copy-on-write triggered: True
+  sample-1: table=[0, 1, 2, 3, 4, <span class="hl">7</span>]  copy-on-write triggered: True
+  sample-2: table=[0, 1, 2, 3, 4, <span class="hl">8</span>]  copy-on-write triggered: True
+  sample-3: table=[0, 1, 2, 3, 4, <span class="hl">9</span>]  copy-on-write triggered: True
+  blocks used now     : 10  (one private block each, the rest still shared)</code></pre>
+
+  <p>
+    ஐந்து பகிரப்பட்ட blocks, ஒவ்வொருவருக்கும் ஒரு தனிப்பட்ட block. Blocks
+    0–4 இன்னும் refcount 5, இன்னும் ஒரே ஒரு நகல். 90-token prompt-ல் 192 MiB
+    சேமிப்பு — ஒரு token-க்கு அரை megabyte என்ற எண் KV-cache பக்கத்திலிருந்து
+    வருகிறது என்பதை நினைவுபடுத்திக்கொள்ளும் வரை இது அபத்தமாகத் தோன்றும்.
+  </p>
+
+  <p>
+    பிறகு, இந்த design வரவழைக்கும் bug. Sample-0 முடிகிறது. அதன் blocks-ஐ
+    free செய்வீர்களா?
+  </p>
+
+<pre><code>the reference-counting guard:
+  released sample-0. block 0 refcount now <span class="ok">4</span>
+  block 0 back on the free list? <span class="ok">False</span>  &lt;- still referenced, so no
+  released everyone. block 0 on the free list? <span class="ok">True</span></code></pre>
+
+  <div class="note">
+    <strong>இது ஒரு double free, அது சத்தமே இல்லாமல் தோற்கிறது.</strong>
+    <code>if self.refcount[b] == 0</code> guard-ஐ நீக்குங்கள் — sample-0
+    முடியும்போது உயிருள்ள ஒரு prompt block-ஐ pool-க்குத் திருப்பித் தந்துவிடும்.
+    அடுத்த request அதை allocate செய்து, தன் keys-ஐ அதில் எழுதுகிறது, sample-1
+    தொடர்ந்து decode செய்கிறது — இன்னொருவரின் prompt-க்கு எதிராக. Crash இல்லை.
+    Error இல்லை. வெறும் தவறான tokens. இங்கே refcounting என்பது கணக்கு வழக்கு
+    அல்ல, அதுதான் correctness argument.
+  </div>
+
+  <p class="thanglish">
+    Refcount guard-a edunga, sample-0 mudiyum podhu live prompt block pool-ku
+    poidum. Adutha request adhula ezhuthum, sample-1 vera oruthanoda prompt-a
+    padikkum. Crash illa, error illa — thappana tokens mattum.
+  </p>
+
+  <h2>Prefix caching: ஏற்கனவே செய்த prefill</h2>
+
+  <p>
+    அதே தந்திரம், ஒரே request-க்குள் அல்ல, requests-க்கு இடையில். எல்லோரும்
+    பகிர்ந்துகொள்ளும் 300-token system prompt என்பது ஒரே ஒரு முறை மட்டும்
+    செய்ய வேண்டிய 300 tokens prefill. ஒரு block-ன் prefix-ஐ hash செய்,
+    அது இருந்தால் அதைச் சுட்டு.
+  </p>
+
+<pre><code>fraction of requests using the shared system prompt: 100%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :   2,888
+  prefill work saved        :  <span class="ok">83.0%</span>
+  block cache hit rate      :  84.0%
+
+fraction of requests using the shared system prompt: 50%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :  11,528
+  prefill work saved        :  32.2%
+  block cache hit rate      :  32.6%
+
+fraction of requests using the shared system prompt: 0%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :  17,000
+  prefill work saved        :   <span class="hl">0.0%</span>
+  block cache hit rate      :   <span class="hl">0.0%</span></code></pre>
+
+  <p>
+    சேமிப்பு என்பது சரியாகப் பகிரப்பட்ட prefix அளவுதான், ஒரு token கூட
+    அதிகம் இல்லை. இதைப் பற்றி நேர்மையாக யோசிக்கும் வழி இதுதான்: prefix
+    caching என்பது நீங்கள் on செய்யும் speedup அல்ல, நீங்கள் engineer செய்யக்
+    கூடிய ஒரு workload பண்பு. உங்கள் prompt-ன் மாறும் பகுதியை (timestamp,
+    user id) <em>முன்னால்</em> வையுங்கள் — உங்கள் hit rate அந்த 0% வரிதான்.
+  </p>
+
+  <p>
+    என் script முழு prefixes-ஐயும் ஒரு dict-ல் hash செய்கிறது, அதனால் அது
+    token 0-லிருந்து மட்டுமே match ஆகும். <strong>RadixAttention</strong>,
+    <a href="https://arxiv.org/abs/2312.07104">SGLang</a>-ல் (Zheng et al.),
+    அந்த prefixes-ஐ ஒரு radix tree-ல் வைக்கிறது. முதல் 300 tokens-ஐப்
+    பகிர்ந்து பிறகு பிரியும் இரண்டு requests, பிரியும் இடம் வரை ஒவ்வொரு
+    block-ஐயும் பகிர்கின்றன. Tree தானாகவே மிக நீளமான match-ஐக் கண்டுபிடிக்கிறது,
+    eviction என்பது leaves-ல் LRU. Prompts-ன் ஒரு trie. நீங்கள் ஒன்று
+    எழுதியிருக்கிறீர்கள்.
+  </p>
+
+  <h2>Prefill-ம் decode-ம் இரண்டு வெவ்வேறு வேலைகள்</h2>
+
+  <p>
+    கடைசிப் பகுதி மீண்டும் scheduling-தான். இது
+    <a href="../kv-cache/">KV-cache பக்கத்தின்</a> arithmetic intensity
+    வாதத்திலிருந்து தொடங்குகிறது: memory traffic-ன் ஒவ்வொரு byte-க்கும்
+    எத்தனை MACs, மற்றும் ஒரு card தன் arithmetic units-க்கு உணவு
+    கொடுத்துக்கொண்டே இருக்க முடியுமா என்பது. Script ஒரு roofline-ஐயும்
+    பயன்படுத்துகிறது — ஒரு pass, அதன் arithmetic-ஐயும் memory traffic-ஐயும்
+    ஒப்பிட்டு எது மெதுவோ அவ்வளவு நேரம் எடுக்கும் — A100-ன் இரண்டு spec
+    எண்களை வைத்து. இங்கே எதுவும் GPU-வில் அளக்கப்படவில்லை; இது ஒரு எண்ணிக்கையும்
+    ஒரு வகுத்தலும் மட்டுமே.
+  </p>
+
+<pre><code>arithmetic intensity (MACs per byte moved), Llama-2-7B shape:
+  prefill, 2048-token prompt :    <span class="ok">783.8</span> MACs/byte
+  decode, one token per seq, batch 32:     <span class="hl">7.49</span> MACs/byte
+  a card needs roughly 100-300 to keep its arithmetic units busy
+
+roofline time (A100-shaped: 156 TMAC/s, 2.0 TB/s):
+  prefill 2048 tokens :   11407.4 GMAC,   14.6 GB -&gt;   73.12 ms  (compute-bound)
+  decode step, batch 32:     165.4 GMAC,   22.1 GB -&gt;   11.03 ms  (memory-bound)</code></pre>
+
+  <p>
+    இரண்டு வெவ்வேறு இயந்திரங்கள். இப்போது இரண்டையும் ஒரே GPU-வில் வையுங்கள்,
+    32 பேர் பதில் நடுவில் இருக்கும்போது ஒரு 2,048-token prompt வரட்டும்:
+  </p>
+
+<pre><code>shared GPU  : 32 sequences decoding, 40 steps
+  median inter-token gap    :    11.03 ms
+  p95 inter-token gap       :    11.03 ms
+  worst inter-token gap     :    <span class="hl">84.16 ms</span>
+
+disaggregated: 32 sequences decoding, 40 steps
+  median inter-token gap    :    11.03 ms
+  p95 inter-token gap       :    11.03 ms
+  worst inter-token gap     :    <span class="ok">11.03 ms ✓</span>
+
+the stall: one token took 84.2 ms instead of 11.0 -- 7.6x
+all 32 decoding users saw it, and none of them sent that prompt.</code></pre>
+
+  <p>
+    அதுதான் head-of-line blocking. அது எங்கே தெரிகிறது என்பதைக் கவனியுங்கள்:
+    median-ஐத் தொடவே இல்லை, tail 7.6× மோசம், பாதிக்கப்பட்டவர்கள் ஒன்றுமே
+    செய்யாத 32 பேர். உங்கள் p50 dashboard நன்றாகவே இருக்கும்.
+  </p>
+
+  <p>வழக்கமான தீர்வு prefill-ஐத் துண்டுகளாக வெட்டுவது:</p>
+
+<pre><code>chunked prefill: same prefill, sliced, one chunk per iteration
+  chunk  2048 ->  1 iterations, worst gap   84.16 ms
+  chunk   512 ->  4 iterations, worst gap   29.32 ms
+  chunk   256 ->  8 iterations, worst gap   20.18 ms
+  chunk   128 -> 16 iterations, <span class="hl">worst gap   18.31 ms</span></code></pre>
+
+  <p>
+    கடைசி இரண்டு வரிகளைப் பாருங்கள்: chunk-ஐ 256-லிருந்து 128-ஆகப் பாதியாக்கினால்
+    கிட்டத்தட்ட எந்த உதவியும் இல்லை. ஒரு குறிப்பிட்ட அளவுக்குக் கீழே, ஒவ்வொரு
+    chunk-ம் 13 GB weights முழுவதையும் bus வழியாக இழுத்துக்கொண்டுதான் வருகிறது.
+    அதாவது நீங்கள் memory தளத்தைத் தொட்டுவிட்டீர்கள், இனி passes-ஐ மட்டுமே
+    கூட்டுகிறீர்கள். Chunking, stall-க்கு ஒரு உச்சவரம்பு வைக்கிறது; அதை
+    நீக்க முடியாது, மேலும் prefill வேலைக்காக decode iterations-ஐச் செலவிடுகிறது.
+  </p>
+
+  <div class="note">
+    <strong>Disaggregation என்பது மற்றொரு பதில்.</strong>
+    <a href="https://arxiv.org/abs/2401.09670">DistServe</a> (Zhong et al.)
+    prefill-ஐயும் decode-ஐயும் <em>தனித்தனி</em> GPUs-ல் வைத்து, KV cache-ஐ
+    அவற்றுக்கு இடையே அனுப்புகிறது. அப்போது ஒரு prefill, ஒரு decode-ஐ
+    கொஞ்சம் கூடத் தாமதப்படுத்த முடியாது. ஒவ்வொரு pool-ஐயும் அதன் சொந்த
+    bottleneck-க்கு ஏற்ப அளவிடலாம், parallelise செய்யலாம் — ஒரு பக்கம்
+    FLOPs, மறுபக்கம் bandwidth. விலை என்னவென்றால் ஒவ்வொரு request-க்கும் ஒரு
+    cache transfer. அதனால்தான் இது பிந்தைய கருத்து, முதல் கருத்து அல்ல.
+  </div>
+
+  <h2>காலி blocks ஒன்றும் மிச்சமில்லாதபோது</h2>
+
+  <p>
+    Block design தெளிவாகக் காட்டும் இன்னொரு தோல்வி. Pool காலியாக இருக்கும்போது
+    ஒரு request-ஐ உள்ளே விடுங்கள் — எதுவும் நகர முடியாது:
+  </p>
+
+<pre><code>4 sequences x 2 blocks = 8/8 blocks used
+free blocks: []
+
+every sequence now wants one more token:
+  seq-0 append -&gt; <span class="hl">OutOfBlocks: no free physical blocks</span>
+  no free block, no policy: the scheduler cannot advance ANY
+  sequence, and none of them can finish without advancing.
+  &lt;- this is the deadlock
+
+with preemption (vLLM's swap-or-recompute, all-or-nothing):
+  preempt seq-3, evict its 2 blocks, push it back on the queue
+  free blocks now: [6, 7]
+  seq-0 append -&gt; <span class="ok">ok</span>, table=[0, 1, <span class="ok">6</span>], n_tokens=33</code></pre>
+
+  <p>
+    ஒவ்வொரு sequence-க்கும் இன்னும் ஒரு block வேண்டும், ஒவ்வொரு block-ம்
+    எடுக்கப்பட்டுவிட்டது, வளராமல் எந்த sequence-ம் முடிய முடியாது. வழக்கமான
+    deadlock. தீர்வு OS-ன் தீர்வுதான்: ஒரு பலியைத் தேர்ந்தெடு, அதனிடம் உள்ள
+    எல்லாவற்றையும் எடுத்துக்கொள், அதை மீண்டும் queue-ல் போடு.
+    <em>எல்லாவற்றையும்</em> என்பதைக் கவனியுங்கள் — preemption என்பது ஒரு
+    sequence-க்கு எல்லாம் அல்லது ஒன்றுமில்லை, ஏனெனில் பாதி வெளியேற்றப்பட்ட
+    sequence ஓடவே முடியாது. வெளியேற்றப்பட்ட sequence இழப்பது அதன் cache-ஐ,
+    அதன் tokens-ஐ அல்ல: பிறகு அது மீண்டும் prefill செய்யப்படும், அல்லது அதன்
+    blocks host memory-லிருந்து swap செய்யப்பட்டு திரும்ப வரும்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने <a href="../kv-cache/">KV-cache वाला पन्ना</a> लिखा और उसमें
+    "continuous batching" और "PagedAttention" सात बार आते हैं — बिना दोनों में
+    से एक भी बनाए। यह बात मुझे खटकती रही। ये दो शब्द ही वह फ़र्क़ हैं जो एक
+    आदमी को जवाब देने वाले demo और हज़ार लोगों को जवाब देने वाली service के
+    बीच है, और मैं उन्हें ऐसे दोहरा रहा था जैसे कोई library का नाम दोहराता है
+    जिसका source उसने कभी पढ़ा ही नहीं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (continuous batching,
+    PagedAttention, block table, fragmentation, prefill, decode, preemption,
+    throughput…) मैंने वैसे ही रखे हैं। क्योंकि code में, vLLM के config
+    flags में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    तो लीजिए, दोनों बने हुए। और बनाने के बाद जो हैरानी होती है वह यह है कि
+    इनमें से किसी का भी machine learning से कोई लेना-देना नहीं। Attention कभी
+    नहीं बदलता। Model की एक भी line नहीं बदलती। बदलता सिर्फ़ यह है कि
+    <em>slot किसे मिलेगा</em> और <em>bytes कहाँ रहेंगे</em> — यानी scheduling
+    और memory management, वही दो समस्याएँ जिन्हें हल करने के लिए operating
+    system का आविष्कार हुआ था।
+  </p>
+
+  <h2>Serving engine एक operating system है</h2>
+
+  <p>
+    इस paper के दोनों हिस्से आप पहले से जानते हैं। यह रहा पहला — वही batch
+    loop जो हर कोई पहले ही दिन लिखता है:
+  </p>
+
+<pre><code>for batch in chunks(requests, 8):
+    outputs = model.generate(batch)   # आख़िरी वाला ख़त्म हो तभी return
+    send(outputs)</code></pre>
+
+  <p>
+    यह <strong>run-to-completion scheduling</strong> है। 1970 का batch
+    mainframe। अगर सात जवाब 8 tokens में ख़त्म हो जाएँ और आठवाँ 128 तक चले, तो
+    सात slots 120 iterations तक memory पकड़े बैठे रहेंगे और कुछ नहीं करेंगे।
+    इसका इलाज वही है जो OS वालों ने ढूँढा था: हर batch के बीच नहीं, हर
+    iteration के बीच schedule करो।
+  </p>
+
+<pre><code>while queue or running:
+    while len(running) &lt; slots and queue:
+        running.append(queue.pop(0))   # ख़ाली slot तुरंत भर जाता है
+    step(running)                      # हर ज़िंदा sequence एक token
+    running = [r for r in running if not r.done()]</code></pre>
+
+  <p>
+    यही <strong>continuous batching</strong> है, और यह <strong>Orca</strong> से
+    आता है (Yu et al., "Orca: A Distributed Serving System for
+    Transformer-Based Generative Models", OSDI 2022), जहाँ इसे
+    <em>iteration-level scheduling</em> कहा गया है। विचार वही, नाम बेहतर।
+  </p>
+
+  <p>
+    अब दूसरा हिस्सा। KV cache आप कैसे allocate करेंगे — यह भी वही है जो हर
+    कोई सबसे पहले लिखता है:
+  </p>
+
+<pre><code>cache = torch.empty(batch, MAX_MODEL_LEN, ...)   # सबसे बुरी हालत रिज़र्व</code></pre>
+
+  <p>
+    यह हर process के लिए एक तय आकार का contiguous allocation है। आपको पता नहीं
+    कि जवाब कितना लंबा होगा, इसलिए आप अधिकतम रिज़र्व करते हैं, और
+    <em>contiguous</em> रिज़र्व करते हैं क्योंकि attention उसे एक ही array की
+    तरह index करना चाहता है। ये दोनों फ़ैसले महँगे पड़ते हैं। PagedAttention
+    की चाल यही है कि operating system ने इसे 1962 में हल कर दिया था, तो उसे
+    ख़राब तरीक़े से दोबारा मत बनाओ: तय आकार के blocks, हर sequence के लिए एक
+    block table, और ज़रूरत पड़ने पर ही allocate।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Serving शब्द</th><th>मतलब</th><th>यह असल में कौन-सी OS चीज़ है</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Continuous batching</strong></td><td>हर decode step के बीच batch दोबारा तय करना</td><td>Preemptive scheduling, run-to-completion नहीं</td></tr>
+      <tr><td><strong>KV block</strong></td><td>तय संख्या में tokens की keys और values</td><td>एक page</td></tr>
+      <tr><td><strong>Block table</strong></td><td>Logical block → physical block, हर sequence के लिए</td><td>एक page table</td></tr>
+      <tr><td><strong>Prefix sharing</strong></td><td>दो sequences का एक ही prompt के blocks की ओर इशारा करना</td><td>Copy-on-write के साथ <code>fork()</code></td></tr>
+      <tr><td><strong>Preemption</strong></td><td>दूसरे को जगह देने के लिए एक sequence के blocks हटाना</td><td>किसी process को swap out करना</td></tr>
+      <tr><td><strong>Prefix cache</strong></td><td>पिछली request के prompt blocks दोबारा इस्तेमाल करना</td><td>Content से key किया गया page cache</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <p>
+    यह attention का सूत्र नहीं है। इस paper का असली योगदान एक address
+    translation है, और वही जो आपका MMU करता है:
+  </p>
+
+  <div class="formula">physical_addr(seq, i) = block_table[seq][ ⌊i / B⌋ ] × B + (i mod B)</div>
+
+  <p>इसे चरणों की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>आम मान</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>i</code></td><td>0…seq_len</td><td><em>इसी</em> sequence में token की logical जगह</td></tr>
+      <tr><td><code>B</code></td><td>16</td><td>Tokens में block size. इस पूरे पन्ने का इकलौता tuning knob</td></tr>
+      <tr><td><code>⌊i / B⌋</code></td><td>0…n_blocks</td><td><strong>Logical block number.</strong> मेरे cache का कौन-सा page</td></tr>
+      <tr><td><code>block_table[seq]</code></td><td>ints की एक list</td><td><strong>यही page table है.</strong> हर sequence के लिए एक। पूरा विचार यही है</td></tr>
+      <tr><td><code>i mod B</code></td><td>0…B−1</td><td>Block के अंदर offset</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    एक indirection। बस यही paper है। बाक़ी सब कुछ — sharing, लगभग शून्य
+    बर्बादी, concurrency — इसी एक बात से निकलता है कि logical जगहों को अब
+    physically साथ-साथ होने की ज़रूरत नहीं रही।
+  </p>
+
+  <h2>Static batching: जिस GPU के पैसे दिए, वह ख़ाली बैठा है</h2>
+
+  <p>
+    Script 64 requests को समय के साथ आते हुए simulate करता है, जिनकी output
+    लंबाइयाँ असल दुनिया की तरह असमान हैं, और <em>slot-steps</em> गिनता है:
+    एक iteration के लिए पकड़ा गया एक slot। जिस slot-step ने token बनाया वह
+    काम है। जिसने नहीं बनाया वह पैसा है।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>static batching, 8 slots, 64 requests
+  iterations to drain the queue :    709
+  slot-steps held               :   5632
+  slot-steps that did work      :   2088
+  occupancy                     :  37.1%
+  idle fraction                 :  <span class="hl">62.9%</span>
+  throughput (tokens/iteration) :   2.94
+
+continuous batching, 8 slots, 64 requests
+  iterations to drain the queue :    305
+  slot-steps held               :   2440
+  slot-steps that did work      :   2088
+  occupancy                     :  <span class="ok">85.6%</span>
+  idle fraction                 :  14.4%
+  throughput (tokens/iteration) :   <span class="ok">6.85 ✓</span>
+
+speedup in iterations: 2.32x  (same tokens generated)</code></pre>
+
+  <p>
+    वही weights, वही tokens बाहर। मशीन का तिरसठ प्रतिशत हिस्सा — पैसा दिया
+    गया और इस्तेमाल नहीं हुआ। एक-एक batch print कीजिए तो साफ़ दिखता है कि यह
+    कहाँ जाता है:
+  </p>
+
+<pre><code>occupancy over time, static batching (first 3 batches):
+  batch 0: output lengths [8, 8, 8, 16, 16, 16, 64, 128]
+           runs for 128 steps, slots busy <span class="hl">25.8%</span>
+  batch 1: output lengths [8, 8, 8, 8, 16, 32, 128, 128]
+           runs for 128 steps, slots busy 32.8%
+  batch 2: output lengths [8, 16, 16, 64, 64, 64, 64, 64]
+           runs for  64 steps, slots busy <span class="ok">70.3%</span></code></pre>
+
+  <div class="note">
+    <strong>Batch 2 ही control है।</strong> उसकी output लंबाइयाँ लगभग बराबर
+    हैं, इसलिए occupancy 26% नहीं, 70% है। Static batching इसलिए धीमा नहीं है
+    कि batching बुरी चीज़ है — वह इसलिए धीमा है कि <em>जवाबों की लंबाई अलग-अलग
+    होती है और आप उसे पहले से जान नहीं सकते</em>। अगर हर जवाब 64 tokens का
+    होता, तो यह पन्ना होता ही नहीं।
+  </div>
+
+  <h2>वह memory जिसे आप कभी लिखेंगे ही नहीं</h2>
+
+  <p>
+    अब allocator। वही workload, requests समय के साथ आती और ख़त्म होती हैं, और
+    80 GB card में से 40 GiB का हिस्सा KV cache के लिए। Llama-2-7B के आकार पर
+    यह प्रति token 512 KiB है, यानी कुल 81,920 tokens — यह गणित सीधे
+    <a href="../kv-cache/">KV-cache वाले पन्ने</a> से आता है।
+  </p>
+
+  <p>
+    तीन allocators, एक ही budget: सबके लिए <code>max_model_len</code> रिज़र्व
+    करो, या हर caller का अपना <code>max_new_tokens</code> रिज़र्व करो, या फिर
+    उसे page करो।
+  </p>
+
+<pre><code>contiguous, reserve max_model_len (2048) for everyone:
+  peak concurrent requests :     <span class="hl">40</span>
+  admitted / rejected      :     90 / <span class="hl">310</span>
+  at the first rejection   : wanted 2048 tokens, 0 free, biggest hole 0
+
+contiguous, reserve each caller's own max_new_tokens:
+  peak concurrent requests :    159
+  admitted / rejected      :    305 / 95
+  at the first rejection   : wanted 1160 tokens, 2,927 free, biggest hole 959
+  external fragmentation   : <span class="hl">1,968</span> free tokens that exist but not in one piece
+
+paged, block size 16, allocated on demand:
+  peak concurrent requests :    <span class="ok">230</span>
+  admitted / rejected      :    400 / <span class="ok">0</span>
+  tokens held / written    : 77,696 / 74,744
+  internal waste           : 2,952 (<span class="ok">3.8%</span>, and never more than 15 per sequence)
+  external fragmentation   : 0 -- every free block fits every sequence
+
+peak concurrency, same 40 GiB:
+  40 (reserve max_model_len) -> 159 (reserve max_new_tokens) -> 230 (paged)
+  = <span class="ok">5.8x</span> more concurrent users, and nobody was turned away</code></pre>
+
+  <p>
+    बीच वाला block दो बार पढ़िए, क्योंकि यही वह जगह है जहाँ लोग चूक जाते हैं।
+    2,927 tokens ख़ाली थे और request को 1,160 चाहिए थे — फिर भी वह reject हुई,
+    क्योंकि सबसे बड़ा अकेला छेद 959 का था। यही <strong>external
+    fragmentation</strong> है: memory आपके पास है, बस एक टुकड़े में नहीं।
+    Paging इसे कम नहीं करती, इसे <em>ख़त्म</em> कर देती है। हर ख़ाली block
+    दूसरे जैसा ही है, इसलिए एक ख़ाली block हमेशा किसी के भी काम आ जाता है।
+  </p>
+
+  <p>
+    Internal waste दूसरा आधा हिस्सा है। जो जवाब 40 tokens में ख़त्म हो जाता
+    है, उसके लिए 2,048 tokens रिज़र्व करने का मतलब है 98% रिज़र्वेशन बर्बाद।
+    16-token blocks के साथ आप ज़्यादा से ज़्यादा 15 tokens, एक ही बार, आख़िरी
+    block में बर्बाद कर सकते हैं। Paper "near-zero waste" से यही कहना चाहता
+    है: यह चतुराई नहीं है, यह बस सीमित है।
+  </p>
+
+  <p>और block size ही इकलौता knob है, तो उसे दोनों दिशाओं में तोड़िए:</p>
+
+<pre><code>block size sweep, same workload and same memory:
+  block | peak | rejected | internal waste | table entries at peak
+      1 |  230 |        0 |              0 |        <span class="hl">42978</span>
+      4 |  230 |        0 |            588 |        10829
+     16 |  230 |        0 |          2,952 |         <span class="ok">2792 ✓</span>
+     64 |  230 |        0 |         12,360 |          783
+    256 |  230 |        0 |         47,624 |          275
+   1024 |   <span class="hl">80</span> |      <span class="hl">226</span> |        <span class="hl">146,270</span> |           80</code></pre>
+
+  <p>
+    Block size 1 पर बर्बादी शून्य है, लेकिन block table में सँभालने के लिए
+    43,000 entries हैं — आपने malloc की metadata समस्या दोबारा बना ली।
+    1,024 पर बर्बादी (146,270 tokens) असल में लिखे गए data से लगभग दोगुनी है,
+    concurrency गिरकर 80 रह जाती है, और 226 requests लौटा दी जाती हैं। vLLM
+    16 भेजता है।
+  </p>
+
+  <h2>Block table, इतना छोटा छापा गया कि पढ़ा जा सके</h2>
+
+  <p>
+    यह रहा 10 tokens का एक sequence, जानबूझकर बेवक़ूफ़ाना block size 4 के साथ,
+    एक ऐसे allocator पर जिसकी free list पहले की traffic से बिखर चुकी है:
+  </p>
+
+<pre><code>sequence of 10 tokens, block size 4
+  logical block -&gt; physical block
+    0 -&gt; 5
+    1 -&gt; 2
+    2 -&gt; 9
+  physical blocks: [5, 2, 9]  &lt;- NOT contiguous, and that is fine
+  tokens 10, blocks 3, internal waste 2 tokens (last block only)
+
+decode 3 more tokens, one at a time:
+  n_tokens= 11 table=[5, 2, 9]  wrote into the current block
+  n_tokens= 12 table=[5, 2, 9]  wrote into the current block
+  n_tokens= 13 table=[5, 2, 9, <span class="ok">0</span>]  appended a new physical block</code></pre>
+
+  <p>
+    Blocks 5, 2 और 9। एक-दूसरे के आसपास भी नहीं। Attention उस sequence को
+    table के <em>ज़रिए</em> पढ़ता है, इसलिए उसे पता ही नहीं चलता — यही वजह है
+    कि paper को एक custom attention kernel चाहिए था, और यही वजह है कि
+    attention के <em>गणित</em> में कुछ नहीं बदला। और बढ़ने की क़ीमत सिर्फ़ एक
+    block append है, पूरे cache का realloc-and-copy नहीं।
+  </p>
+
+  <h2>Copy-on-write, क्योंकि आपने <code>fork()</code> इस्तेमाल किया है</h2>
+
+  <p>
+    एक ही prompt से चार samples माँगिए और भोला engine prompt के cache की चार
+    नक़लें रख लेगा। लेकिन पहला token अलग होने तक वे चारों sequences बिल्कुल
+    एक जैसे हैं। तो: blocks साझा करो, उन्हें refcount करो, और सिर्फ़ उसी block
+    की नक़ल बनाओ जिसमें कोई सच में लिखता है।
+  </p>
+
+<pre><code>prompt 90 tokens = 6 blocks: [0, 1, 2, 3, 4, 5]
+blocks used after prompt: 6
+
+forked 4 samples from it (parallel sampling):
+  blocks used: <span class="ok">6</span>  (unchanged -- all four share)
+  refcounts  : [5, 5, 5, 5, 5, 5]
+  naive copy would need 30 blocks; we hold 6
+  saved: 24 blocks = 192.0 MiB
+
+now each sample generates its first token (they diverge):
+  sample-0: table=[0, 1, 2, 3, 4, <span class="hl">6</span>]  copy-on-write triggered: True
+  sample-1: table=[0, 1, 2, 3, 4, <span class="hl">7</span>]  copy-on-write triggered: True
+  sample-2: table=[0, 1, 2, 3, 4, <span class="hl">8</span>]  copy-on-write triggered: True
+  sample-3: table=[0, 1, 2, 3, 4, <span class="hl">9</span>]  copy-on-write triggered: True
+  blocks used now     : 10  (one private block each, the rest still shared)</code></pre>
+
+  <p>
+    पाँच साझा blocks, हर एक के पास एक निजी। Blocks 0–4 अब भी refcount 5 पर
+    हैं और अब भी एक ही नक़ल हैं। 90 tokens के prompt पर 192 MiB की बचत — यह
+    बेतुका लगता है, जब तक आपको याद न आए कि आधा megabyte प्रति token वाला
+    आँकड़ा KV-cache वाले पन्ने से आता है।
+  </p>
+
+  <p>
+    और अब वह bug जो यह design ख़ुद बुलाता है। Sample-0 ख़त्म हो गया। क्या आप
+    उसके blocks free करेंगे?
+  </p>
+
+<pre><code>the reference-counting guard:
+  released sample-0. block 0 refcount now <span class="ok">4</span>
+  block 0 back on the free list? <span class="ok">False</span>  &lt;- still referenced, so no
+  released everyone. block 0 on the free list? <span class="ok">True</span></code></pre>
+
+  <div class="note">
+    <strong>यह एक double free है, और यह चुपचाप फ़ेल होता है।</strong>
+    <code>if self.refcount[b] == 0</code> guard हटा दीजिए, और sample-0 के
+    ख़त्म होते ही एक ज़िंदा prompt block pool में वापस चला जाएगा। अगली request
+    उसे allocate करेगी, अपनी keys उसमें लिखेगी, और sample-1 decode करता रहेगा
+    — किसी और के prompt के ख़िलाफ़। न crash, न error। बस ग़लत tokens। यहाँ
+    refcounting हिसाब-किताब नहीं है, वही correctness का तर्क है।
+  </div>
+
+  <h2>Prefix caching: वह prefill जो आप पहले ही कर चुके हैं</h2>
+
+  <p>
+    वही तरकीब, एक request के भीतर नहीं बल्कि requests के आर-पार। 300 tokens
+    का एक system prompt जो सब साझा करते हैं, वह 300 tokens का prefill है जो
+    ज़िंदगी में एक ही बार करना पड़ता है। Block के prefix को hash कीजिए, और
+    अगर वह मौजूद है तो उसी की ओर इशारा कर दीजिए।
+  </p>
+
+<pre><code>fraction of requests using the shared system prompt: 100%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :   2,888
+  prefill work saved        :  <span class="ok">83.0%</span>
+  block cache hit rate      :  84.0%
+
+fraction of requests using the shared system prompt: 50%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :  11,528
+  prefill work saved        :  32.2%
+  block cache hit rate      :  32.6%
+
+fraction of requests using the shared system prompt: 0%
+  prompt tokens seen        :  17,000
+  prompt tokens prefilled   :  17,000
+  prefill work saved        :   <span class="hl">0.0%</span>
+  block cache hit rate      :   <span class="hl">0.0%</span></code></pre>
+
+  <p>
+    बचत ठीक उतनी ही है जितना साझा prefix है, एक token भी ज़्यादा नहीं — और
+    इसे ईमानदारी से यूँ सोचना चाहिए: prefix caching कोई speedup नहीं है जिसे
+    आप on करते हैं, यह workload का एक गुण है जिसे आप engineer कर सकते हैं।
+    अपने prompt का बदलता हुआ हिस्सा (timestamp, user id) <em>सबसे आगे</em>
+    रखिए और आपका hit rate वही 0% वाली पंक्ति होगा।
+  </p>
+
+  <p>
+    मेरा script पूरे prefixes को एक dict में hash करता है, इसलिए वह सिर्फ़
+    token 0 से match करता है। <strong>RadixAttention</strong>, जो
+    <a href="https://arxiv.org/abs/2312.07104">SGLang</a> (Zheng et al.) में
+    है, उन prefixes को radix tree में रखता है। जो दो requests पहले 300 tokens
+    साझा करती हैं और उसके बाद अलग हो जाती हैं, वे अलग होने तक हर block साझा
+    करती हैं, tree सबसे लंबा match ख़ुद ढूँढ लेता है, और eviction पत्तों पर
+    LRU है। Prompts का एक trie। आपने एक लिखा हुआ है।
+  </p>
+
+  <h2>Prefill और decode दो अलग काम हैं</h2>
+
+  <p>
+    आख़िरी हिस्सा फिर से scheduling का है, और यह
+    <a href="../kv-cache/">KV-cache वाले पन्ने</a> के arithmetic intensity
+    वाले तर्क से शुरू होता है: memory traffic के हर byte पर कितने MACs, और
+    क्या कोई card अपनी arithmetic units को व्यस्त रख सकता है। Script एक
+    roofline भी लगाता है — एक pass उतना ही समय लेता है जितना उसके arithmetic
+    और उसके memory traffic में से जो धीमा हो — A100 के दो spec आँकड़ों के
+    साथ। यहाँ कुछ भी GPU पर मापा नहीं गया है; यह एक गिनती और एक भाग है।
+  </p>
+
+<pre><code>arithmetic intensity (MACs per byte moved), Llama-2-7B shape:
+  prefill, 2048-token prompt :    <span class="ok">783.8</span> MACs/byte
+  decode, one token per seq, batch 32:     <span class="hl">7.49</span> MACs/byte
+  a card needs roughly 100-300 to keep its arithmetic units busy
+
+roofline time (A100-shaped: 156 TMAC/s, 2.0 TB/s):
+  prefill 2048 tokens :   11407.4 GMAC,   14.6 GB -&gt;   73.12 ms  (compute-bound)
+  decode step, batch 32:     165.4 GMAC,   22.1 GB -&gt;   11.03 ms  (memory-bound)</code></pre>
+
+  <p>
+    दो अलग मशीनें। अब दोनों को एक ही GPU पर रखिए और 32 लोगों के जवाब के बीचों-
+    बीच 2,048 tokens का एक prompt आने दीजिए:
+  </p>
+
+<pre><code>shared GPU  : 32 sequences decoding, 40 steps
+  median inter-token gap    :    11.03 ms
+  p95 inter-token gap       :    11.03 ms
+  worst inter-token gap     :    <span class="hl">84.16 ms</span>
+
+disaggregated: 32 sequences decoding, 40 steps
+  median inter-token gap    :    11.03 ms
+  p95 inter-token gap       :    11.03 ms
+  worst inter-token gap     :    <span class="ok">11.03 ms ✓</span>
+
+the stall: one token took 84.2 ms instead of 11.0 -- 7.6x
+all 32 decoding users saw it, and none of them sent that prompt.</code></pre>
+
+  <p>
+    यही head-of-line blocking है, और देखिए यह कहाँ दिखता है: median जस का तस,
+    tail 7.6× ख़राब, और भुगतने वाले वे 32 लोग जिन्होंने कुछ किया ही नहीं।
+    आपका p50 dashboard बिल्कुल ठीक दिखेगा।
+  </p>
+
+  <p>आम इलाज यह है कि prefill को टुकड़ों में काट दिया जाए:</p>
+
+<pre><code>chunked prefill: same prefill, sliced, one chunk per iteration
+  chunk  2048 ->  1 iterations, worst gap   84.16 ms
+  chunk   512 ->  4 iterations, worst gap   29.32 ms
+  chunk   256 ->  8 iterations, worst gap   20.18 ms
+  chunk   128 -> 16 iterations, <span class="hl">worst gap   18.31 ms</span></code></pre>
+
+  <p>
+    आख़िरी दो पंक्तियाँ देखिए: chunk को 256 से घटाकर 128 करने पर बमुश्किल कोई
+    फ़ायदा होता है। एक हद के नीचे हर chunk वैसे भी पूरे 13 GB weights को bus
+    पर घसीट रहा है, यानी आप memory की ज़मीन छू चुके हैं और अब सिर्फ़ passes
+    बढ़ा रहे हैं। Chunking stall की सीमा बाँधती है; उसे मिटा नहीं सकती, और
+    prefill के काम पर decode के iterations ख़र्च करती है।
+  </p>
+
+  <div class="note">
+    <strong>Disaggregation दूसरा जवाब है।</strong>
+    <a href="https://arxiv.org/abs/2401.09670">DistServe</a> (Zhong et al.)
+    prefill और decode को <em>अलग-अलग</em> GPUs पर रखता है और KV cache को उनके
+    बीच भेजता है। तब कोई prefill किसी decode को ज़रा भी देर नहीं कर सकता, और
+    हर pool को उसकी अपनी bottleneck के हिसाब से आकार और parallelism दिया जा
+    सकता है — एक तरफ़ FLOPs, दूसरी तरफ़ bandwidth। क़ीमत है हर request पर एक
+    cache transfer, और इसीलिए यह बाद का विचार है, पहला नहीं।
+  </div>
+
+  <h2>जब एक भी ख़ाली block नहीं बचता</h2>
+
+  <p>
+    एक और नाकामी जिसे यह block design साफ़ दिखा देता है। Pool ख़ाली हो और तब
+    एक request भीतर लीजिए, फिर कुछ हिल ही नहीं सकता:
+  </p>
+
+<pre><code>4 sequences x 2 blocks = 8/8 blocks used
+free blocks: []
+
+every sequence now wants one more token:
+  seq-0 append -&gt; <span class="hl">OutOfBlocks: no free physical blocks</span>
+  no free block, no policy: the scheduler cannot advance ANY
+  sequence, and none of them can finish without advancing.
+  &lt;- this is the deadlock
+
+with preemption (vLLM's swap-or-recompute, all-or-nothing):
+  preempt seq-3, evict its 2 blocks, push it back on the queue
+  free blocks now: [6, 7]
+  seq-0 append -&gt; <span class="ok">ok</span>, table=[0, 1, <span class="ok">6</span>], n_tokens=33</code></pre>
+
+  <p>
+    हर sequence को एक और block चाहिए, हर block लिया जा चुका है, और बढ़े बिना
+    कोई sequence ख़त्म नहीं हो सकती। क्लासिक। हल वही है जो OS का है: एक शिकार
+    चुनो, उसके पास जो कुछ है सब ले लो, और उसे वापस queue में डाल दो।
+    <em>सब कुछ</em> पर ध्यान दीजिए — preemption हर sequence के लिए "सब या कुछ भी
+    नहीं" है, क्योंकि आधी हटाई गई sequence चल ही नहीं सकती। हटाई गई sequence
+    अपना cache खोती है, अपने tokens नहीं: उसे बाद में दोबारा prefill किया
+    जाता है, या उसके blocks host memory से swap करके वापस लाए जाते हैं।
+  </p>
+
+</section>
+
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no GPU, and nothing timed — this is a simulation with
+  counters, the way <a href="../flash-attention/">the FlashAttention page</a>
+  counts memory traffic instead of benchmarking a kernel. Every function under
+  20 lines.
+</p>
+<p>
+  <a href="serving_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 736 lines plus 7 runnable demos. Then:
+</p>
+<pre><code>python3 serving_from_scratch.py</code></pre>
+
+<p>The scheduler, entire:</p>
+
+<pre><code>def simulate_continuous_batching(reqs, slots):
+    queue = list(reqs)
+    running = []
+    step = 0
+    busy_slot_steps = 0
+    total_slot_steps = 0
+    tokens = 0
+    while queue or running:
+        # admit: refill any free slot from whoever has arrived
+        while len(running) &lt; slots and queue and queue[0].arrival &lt;= step:
+            r = queue.pop(0)
+            r.start = step
+            running.append(r)
+        if not running:                    # idle gap, nobody has arrived yet
+            step = queue[0].arrival
+            continue
+        for r in running:                  # one iteration = one token each
+            r.generated += 1
+            tokens += 1
+            busy_slot_steps += 1
+        total_slot_steps += slots
+        step += 1
+        for r in running:
+            if r.done() and r.finish is None:
+                r.finish = step
+        running = [r for r in running if not r.done()]
+    return dict(steps=step, tokens=tokens, busy=busy_slot_steps,
+                capacity=total_slot_steps, reqs=reqs)</code></pre>
+
+<p>And the allocator — PagedAttention's storage layer, in about forty lines:</p>
+
+<pre><code>class BlockAllocator:
+    def __init__(self, n_blocks, block_tokens=BLOCK_TOKENS):
+        self.block_tokens = block_tokens
+        self.free = list(range(n_blocks))      # a free list, nothing more
+        self.refcount = {}                     # physical block -&gt; refs
+        self.n_blocks = n_blocks
+        self.copies = 0                        # copy-on-write events
+
+    def allocate(self):
+        if not self.free:
+            raise OutOfBlocks("no free physical blocks")
+        b = self.free.pop(0)
+        self.refcount[b] = 1
+        return b
+
+    def share(self, b):
+        """Another sequence now points at this block. Do NOT copy it."""
+        self.refcount[b] += 1
+        return b
+
+    def free_block(self, b):
+        """The reference-counting guard: only the LAST owner really frees."""
+        self.refcount[b] -= 1
+        if self.refcount[b] == 0:
+            self.free.append(b)
+            del self.refcount[b]
+            return True                        # actually returned to the pool
+        return False                           # still shared, keep it alive
+
+    def copy_on_write(self, b):
+        """Writing into a shared block: take a private copy first."""
+        if self.refcount[b] == 1:
+            return b                           # sole owner, write in place
+        new = self.allocate()
+        self.refcount[b] -= 1
+        self.copies += 1
+        return new
+
+
+class Sequence:
+    """A sequence is a block table plus a length. That is the whole object."""
+
+    def append_tokens(self, n):
+        """Grow by n tokens, allocating a new physical block when needed."""
+        for _ in range(n):
+            slot = self.n_tokens % self.alloc.block_tokens
+            if slot == 0:                                  # current block full
+                self.table.append(self.alloc.allocate())
+            else:                                          # writing inside one
+                last = len(self.table) - 1
+                self.table[last] = self.alloc.copy_on_write(self.table[last])
+            self.n_tokens += 1
+
+    def fork(self, name):
+        """Parallel sampling: same prompt, new sequence, shared blocks."""
+        child = Sequence(name, self.alloc)
+        child.table = [self.alloc.share(b) for b in self.table]
+        child.n_tokens = self.n_tokens
+        return child
+
+    def release(self):
+        for b in self.table:
+            self.alloc.free_block(b)
+        self.table = []</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — and every one of these is a bug you have already shipped in
+  some other system, which is the point.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In demo 1, call <code>simulate_static_batching</code> only</td><td>Idle fraction 62.9%, throughput 2.94 tokens/iteration instead of 6.85. Batch 0 runs 128 steps at 25.8% occupancy.</td></tr>
+    <tr><td>Set <code>fixed_reserve=MAX_MODEL_LEN</code> in <code>contiguous_churn</code></td><td>Peak concurrency drops from 230 to 40 on the same 40 GiB, and 310 of 400 requests are rejected.</td></tr>
+    <tr><td>Set <code>BLOCK_TOKENS = 1024</code></td><td>Internal waste goes from 2,952 tokens to 146,270 — twice the data actually written — and concurrency collapses to 80.</td></tr>
+    <tr><td>Set <code>BLOCK_TOKENS = 1</code></td><td>Zero waste, but the block tables hold 42,978 entries at peak instead of 2,792. You have rebuilt malloc's metadata.</td></tr>
+    <tr><td>In <code>free_block</code>, drop the <code>if self.refcount[b] == 0</code> and always <code>self.free.append(b)</code></td><td>Demo 4 prints <code>block 0 on the free list? True</code> while three samples still point at it. Silent corruption, no exception.</td></tr>
+    <tr><td>In demo 7, delete the <code>victim.release()</code> preemption</td><td><code>OutOfBlocks</code> forever: no sequence can grow, so no sequence can finish, so nothing frees. Deadlock.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the PagedAttention paper — the motivation section
+  on memory waste and the method section on the block table and sharing.
+  Those two carry the whole idea. Skip the kernel implementation details
+  unless you write CUDA, and read the evaluation for the shape of the result,
+  not the numbers: the paper reports 2–4× throughput over the systems it
+  compared against in 2023, on their hardware and their workloads, and my
+  simulation is a counter, not a claim about your cluster.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is none here, and that is worth saying out loud. This page has one
+  division and one modulo. If you can do <code>i // 16</code> and
+  <code>i % 16</code>, you have the maths.
+</p>
+<p>
+  The only arithmetic that gets close is the roofline in the last section, and
+  it is two divisions: MACs divided by peak MACs per second, bytes divided by
+  peak bytes per second, take the bigger one. That is a bound, not a
+  prediction. I use it to show the <em>shape</em> — prefill compute-bound,
+  decode memory-bound — because the shape is what decides your architecture,
+  and the shape survives being wrong about the constants.
+</p>
+<p>
+  What this page needs instead is the stuff you already have: free lists,
+  refcounts, fragmentation, head-of-line blocking, scheduling fairness,
+  cache hit rates, deadlock. Those are the concepts under the arXiv numbers,
+  and it is why this is the paper on the whole site an engineer is best
+  equipped to read cold. If you have ever debugged a memory leak, you are
+  qualified.
+</p>
+<p>
+  Interviews go here more often than people expect. "Why does batching help
+  throughput but not latency?" is the KV-cache page. "How do you serve 200
+  concurrent users on one GPU?" is this one, and the answer is not a bigger
+  card — it's continuous batching and paged KV, in that order.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you the two mechanisms and the failure modes, deliberately
+  without a line of CUDA and without a benchmark. These fill in the halves I
+  skipped. And if you haven't yet, read
+  <a href="../kv-cache/">the KV cache</a> first — the memory arithmetic here
+  is assumed, not derived. After that,
+  <a href="../quantization/">quantisation</a> shrinks the same bytes,
+  <a href="../mla/">MLA</a> shrinks the cache architecturally, and
+  <a href="../speculative-decoding/">speculative decoding</a> attacks the
+  same memory-bound decode step from the other end.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2309.06180">
+      <span class="paper-title">Efficient Memory Management for Large Language Model Serving with PagedAttention</span>
+      <span class="paper-meta">Kwon et al., 2023. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the memory-waste motivation and the block-table method, now that
+      you have both in code. The figure breaking a sequence's cache into
+      reserved, internal and external waste is the one worth memorising; it
+      is demo 2 of my script as a picture.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://www.anyscale.com/blog/continuous-batching-llm-inference">
+      <span class="paper-title">How continuous batching enables 23x throughput in LLM inference</span>
+      <span class="paper-meta">Anyscale. Measured, with diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      The half I refused to do: real benchmarks on real hardware, plus the
+      clearest animation anywhere of slots freeing mid-batch. Where I printed
+      a simulated occupancy figure, they show what it did to throughput on an
+      actual A100.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://blog.vllm.ai/2023/06/20/vllm.html">
+      <span class="paper-title">vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention</span>
+      <span class="paper-meta">The vLLM team. The authors' own introduction.</span>
+    </a>
+    <p class="paper-pitch">
+      The paper's ideas as a system you can <code>pip install</code>, written
+      by the people who built it. Good for the vocabulary you will actually
+      hit in configuration — block size, GPU memory utilisation, preemption
+      mode — and for seeing which of my toy knobs are real flags.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lmsys.org/blog/2024-01-17-sglang/">
+      <span class="paper-title">SGLang: Fast Serving Framework with RadixAttention</span>
+      <span class="paper-meta">LMSYS. The prefix-caching half, properly.</span>
+    </a>
+    <p class="paper-pitch">
+      My prefix cache is a dict that only matches from token zero. This is
+      the radix-tree version, with the eviction policy and the cache-aware
+      scheduling that makes hit rates high instead of accidental. Read it if
+      you serve agents, few-shot prompts or anything with a shared preamble.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Anyscale first for the intuition
+  about batching, then the vLLM blog post, then the paper, then SGLang. The
+  paper is the easiest one on this site to read after the blog posts — it is
+  written by systems people, for systems people, and you are one.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

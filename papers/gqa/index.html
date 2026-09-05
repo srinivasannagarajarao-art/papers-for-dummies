@@ -1,0 +1,1280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grouped-Query Attention — for programmers</title>
+<meta name="description" content="GQA explained as code: several query heads sharing one key/value head. Runnable NumPy — the repeat that is the whole implementation, what sharing costs, and the mean-pool conversion from a multi-head checkpoint.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Tamil:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Grouped-Query Attention: one set of keys for several heads</h1>
+    <p class="paper-meta">Ainslie et al., 2023 — and Shazeer, 2019</p>
+    <p class="lede">
+      The whole implementation is one <code>repeat</code>. Getting it in the
+      wrong place produces plausible garbage and no error.
+    </p>
+    <p>
+      <a href="gqa_from_scratch.py" download>Download gqa_from_scratch.py</a>
+      — everything below runs from it. NumPy only, under a second.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
+
+  <p>
+    I read the <a href="../kv-cache/">KV-cache page</a> — I wrote it — and it
+    ends on arithmetic. The cache is what stops you serving the model; shrink
+    <code>kv_heads</code> and the cache shrinks by exactly the same factor. Fine.
+    Then I opened a real implementation to see what "shrink kv_heads" is as
+    code, and it was six lines, four of them a tensor reshape I couldn't read.
+    Nobody told me the change is <em>one repeat in the right place</em>, and
+    that the whole class of bugs here is putting it in the wrong one.
+  </p>
+
+  <h2>A read replica shared by several app servers</h2>
+
+  <p>You've sized this before:</p>
+
+<pre><code>app_server_0 -&gt; replica_0     # one replica each. Perfect isolation,
+app_server_1 -&gt; replica_1     # and you pay for eight replicas.
+...
+app_server_7 -&gt; replica_7</code></pre>
+
+  <p>
+    Replicas are the expensive part, so you consolidate. Eight app servers,
+    two replicas, four servers per replica:
+  </p>
+
+<pre><code>app_server_0..3 -&gt; replica_0   # each server still does its own work,
+app_server_4..7 -&gt; replica_1   # but they read the same snapshot</code></pre>
+
+  <p>
+    That is grouped-query attention, exactly. Query heads are the app servers —
+    every one keeps its own <code>W<sub>q</sub></code>, its own scores, its own
+    output. Key and value heads are the replicas, and they're what you store.
+    Multi-head is one replica per server. Multi-query is one replica for the
+    whole fleet. GQA is the middle setting, and like every capacity decision
+    you've made, the question is how much shared staleness you can tolerate.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query head</strong></td><td>One independent "what am I looking for". Never cached — used once, thrown away</td><td>An app server. Cheap to add</td></tr>
+      <tr><td><strong>KV head</strong></td><td>One set of keys and values, cached for every token so far</td><td>A read replica. The thing you pay for</td></tr>
+      <tr><td><strong>Group</strong></td><td>The <code>n_heads / n_kv_heads</code> query heads sharing one KV head</td><td>The servers pinned to one replica</td></tr>
+      <tr><td><strong>MQA</strong> (Shazeer, 2019)</td><td><code>n_kv_heads = 1</code></td><td>One replica, whole fleet</td></tr>
+      <tr><td><strong>GQA</strong> (Ainslie et al., 2023)</td><td><code>1 &lt; n_kv_heads &lt; n_heads</code></td><td>The middle setting</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why anyone did this</h2>
+  <p>
+    Not for FLOPs. Decoding is memory-bound: each step drags the weights and
+    the whole cache across the memory bus to do a rounding error's worth of
+    arithmetic. The cache is the term that grows with every token and every
+    concurrent user, and <code>kv_heads</code> is the only factor in it that
+    the architecture gets to choose. The
+    <a href="../kv-cache/">KV-cache page</a> has that table — bytes per token,
+    the 4× and 32× reductions, the point where the cache outgrows the
+    checkpoint. I'm not reprinting it. This page is the forward pass and what
+    the sharing costs.
+  </p>
+  <p>
+    Multi-query came first: Shazeer, 2019, "Fast Transformer Decoding: One
+    Write-Head is All You Need", a short paper whose whole argument is decoding
+    speed. GQA arrived in 2023 with two claims — that the useful setting is in
+    between, and that you don't have to pre-train it. You can convert a
+    checkpoint you already have.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">head<sub>i</sub> = Attention(Q<sub>i</sub>, K<sub>⌊i/g⌋</sub>, V<sub>⌊i/g⌋</sub>),&nbsp;&nbsp; g = n<sub>heads</sub> / n<sub>kv</sub></div>
+
+  <p>
+    That's the entire paper as notation. The subscript on K and V is the only
+    thing that changed since 2017, where it read K<sub>i</sub>, V<sub>i</sub>.
+    Read the layer as pipeline stages:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>X @ W_q</code></td><td>(n_heads, n, head_dim)</td><td>All the query heads. Unchanged in every variant</td></tr>
+      <tr><td><code>X @ W_k</code>, <code>X @ W_v</code></td><td>(n_kv, n, head_dim)</td><td><strong>The narrower projections.</strong> This is the change, and this is what gets cached</td></tr>
+      <tr><td><code>repeat_kv_heads</code></td><td>→ (n_heads, n, head_dim)</td><td><strong>The whole implementation.</strong> Expand each KV head g times so the queries have something to meet</td></tr>
+      <tr><td><code>Q @ K<sup>T</sup> / √d</code></td><td>(n_heads, n, n)</td><td>Ordinary scaled dot-product. Full head count, full cost</td></tr>
+      <tr><td><code>softmax @ V</code></td><td>(n_heads, n, head_dim)</td><td>Weighted blend, per head</td></tr>
+      <tr><td><code>merge @ W_o</code></td><td>(n, d_model)</td><td>Concatenate heads, project out. Also unchanged</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <strong>Note where the repeat sits: after the projection, before the
+    matmul, and never on the cache.</strong> You store the narrow K and V and
+    expand them at compute time. Expand first and you've written multi-head
+    attention with extra steps.
+  </div>
+
+  <h2>One function, three variants</h2>
+  <p>
+    The three names are one function with one argument. Pass
+    <code>n_kv_heads = n_heads</code> and it's multi-head. Pass
+    <code>1</code> and it's multi-query. Pass anything in between and it's
+    grouped-query. The script prints the shape at every step so you can see
+    that the only line that differs is the K/V projection width — everything
+    downstream is identical.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>  n_kv_heads=8  multi-head  (MHA, 2017)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (8, 6, 8)  V (8, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three
+
+  n_kv_heads=2  grouped-query (GQA, 2023)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (2, 6, 8)  V (2, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three
+
+  n_kv_heads=1  multi-query (MQA, 2019)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (1, 6, 8)  V (1, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three</code></pre>
+
+  <p>
+    One line differs across the three blocks: <span class="ok">the K and V
+    shapes before the repeat</span>. That's the paper. Everything after the
+    repeat is the 2017 code you already know.
+  </p>
+
+  <h2>The repeat, and the bug nobody catches</h2>
+  <p>
+    You have 2 KV heads and need 8. There are two obvious ways to stretch a
+    list of 2 into a list of 8, and NumPy gives you both:
+  </p>
+
+<pre><code>np.repeat(kv, 4, axis=0)   -&gt; [kv0 kv0 kv0 kv0 kv1 kv1 kv1 kv1]  # block
+np.tile(kv, (4, 1, 1))     -&gt; [kv0 kv1 kv0 kv1 kv0 kv1 kv0 kv1]  # interleaved</code></pre>
+
+  <p>
+    Same shape. Same dtype. No error, either way. But every checkpoint on disk
+    was saved under the convention that query head <em>i</em> belongs to KV
+    head <code>i // g</code> — contiguous blocks — so only the first one is
+    right. Llama's reference implementation calls the operation
+    <code>repeat_kv</code> and documents it as
+    <code>torch.repeat_interleave</code> over the head axis, which is the block
+    version.
+  </p>
+
+<pre><code>  n_heads=8, n_kv_heads=2, group=4
+  query head       : [0, 1, 2, 3, 4, 5, 6, 7]
+  block  -&gt; kv head: [0, 0, 0, 0, 1, 1, 1, 1]  matches i // group
+  interl -&gt; kv head: [0, 1, 0, 1, 0, 1, 0, 1]  matches i %  n_kv
+  convention (i // group): [0, 0, 0, 0, 1, 1, 1, 1]
+
+  output shapes equal?            <span class="hl">True</span>
+  no exception raised?            <span class="hl">True</span>
+  max |block - interleave|        0.2661
+  mean |block|                    0.0651
+  -&gt; same shape, no error, different answer. That is the bug.</code></pre>
+
+  <div class="note">
+    <strong>The error is four times the size of the signal.</strong> Not a
+    crash, not a NaN, not a shape mismatch — a model that loads, runs, and
+    talks nonsense. If you ever port weights between frameworks and the outputs
+    are "close but wrong", this is the first thing to check.
+  </div>
+
+  <h2>At n_kv = n_heads, it is exactly multi-head</h2>
+  <p>
+    Worth proving rather than asserting, because it's how you sanity-check any
+    GQA implementation you write: set the group size to 1 and the repeat
+    becomes a no-op, so the function must reduce to plain 2017 attention. The
+    script computes multi-head the long way, with no repeat call anywhere, and
+    diffs.
+  </p>
+
+<pre><code>  max |grouped(n_kv=8) - plain multi-head| = 0.000e+00
+  bit-identical?                            <span class="ok">True</span>
+  group size is 1, so np.repeat is a no-op. Same code path.</code></pre>
+
+  <p>
+    Not "to float precision" — bit-identical, because <code>np.repeat</code>
+    with a count of 1 returns the same numbers in the same order. Your first
+    test for any implementation of this: does it still match multi-head when
+    you turn the sharing off?
+  </p>
+
+  <h2>What sharing actually costs</h2>
+  <p>
+    Now the honest part. Heads exist because they look for different things.
+    Force four of them through one set of keys and they can't all get what they
+    want. To show that mechanically I build eight query heads whose ideal key
+    is a different token each, then mean-pool the key heads into fewer and
+    fewer groups and measure how far the output drifts from the ideal.
+  </p>
+
+<pre><code>    n_kv | group |  max |out - ideal| | mean |out - ideal|
+       8 |     1 |           0.0000 |           0.0000
+       4 |     2 |           0.0321 |           0.0092
+       2 |     4 |           0.5660 |           0.1723
+       1 |     8 |           <span class="hl">1.4787</span> |           <span class="hl">0.4548</span>
+
+  per-head error at n_kv=2 (heads 0-3 share, heads 4-7 share):
+    head 0  group 0  error 0.3688   argmax attends to token 0 (wanted 0)
+    head 1  group 0  error 0.4308   argmax attends to token 1 (wanted 1)
+    head 2  group 0  error 0.3620   argmax attends to token 2 (wanted 2)
+    head 3  group 0  error 0.4960   argmax attends to token 3 (wanted 3)
+    head 4  group 1  error 0.2810   argmax attends to token 4 (wanted 4)
+    head 5  group 1  error 0.3821   argmax attends to token 5 (wanted 5)
+    head 6  group 1  error 0.2884   argmax attends to token 6 (wanted 6)
+    head 7  group 1  error 0.5660   argmax attends to token 7 (wanted 7)</code></pre>
+
+  <p>
+    The shape of it is what matters. Halving the KV heads is nearly free
+    (0.0092); quartering costs an order of magnitude more; collapsing to one
+    costs another factor of three. The heads still <em>point</em> at the right
+    token — the argmax is right in every row — but the distribution around it
+    has been dragged toward the group average, and the output carries that.
+    That's the graceful-degradation curve GQA is trading on.
+  </p>
+
+  <div class="note">
+    <strong>This is a mechanical illustration on vectors I constructed to make
+    the point, not a quality measurement.</strong> The paper's quality claims —
+    that GQA lands close to multi-head while MQA loses more — are the paper's,
+    measured on real tasks with real uptrained checkpoints. Don't quote my
+    numbers as evidence about language models; they're evidence about
+    averaging.
+  </div>
+
+  <h2>Parameters shrink a little. FLOPs don't move at all.</h2>
+  <p>
+    The interview question here is "so GQA is faster because it does less
+    arithmetic, right?" — and no. The keys are expanded back to the full head
+    count before the matmul, so the attention does exactly the same work.
+    <code>W<sub>q</sub></code> and <code>W<sub>o</sub></code> are untouched.
+    Only <code>W<sub>k</sub></code> and <code>W<sub>v</sub></code> get
+    narrower, which is a rounding error against total parameters — and the
+    cache, which is not.
+  </p>
+
+<pre><code>  Llama-2-7B-shaped layer: d_model=4096, n_heads=32, head_dim=128, seq=2048
+
+    variant     | n_kv | W_k+W_v params | vs MHA | attn MACs/token
+    multi-head  |   32 |     33,554,432 |   1.0x | 16,777,216
+    GQA-8       |    8 |      8,388,608 |   4.0x | 16,777,216
+    GQA-4       |    4 |      4,194,304 |   8.0x | 16,777,216
+    multi-query |    1 |      1,048,576 |  32.0x | <span class="ok">16,777,216</span>
+
+  W_q and W_o are untouched: 16,777,216 params each, in every variant.</code></pre>
+
+  <p>
+    Same column, four times. The win is memory traffic, not maths: fewer bytes
+    to read per decode step, and a cache small enough to batch more users
+    against. Bytes per token, and how fast that becomes your whole hardware
+    bill, is <a href="../kv-cache/">the KV-cache page</a>.
+  </p>
+
+  <h2>Uptraining: the part of the paper everyone forgets</h2>
+  <p>
+    The paper is titled <em>Training Generalized Multi-Query Transformer Models
+    from Multi-Head Checkpoints</em>, and that title is the contribution.
+    Nobody wants to pre-train a 70B model again to change one hyperparameter.
+    So: take the multi-head checkpoint you already have, mean-pool the key and
+    value heads inside each group, and train briefly — the paper reports doing
+    it with a small fraction of the original pre-training compute.
+  </p>
+  <p>
+    Mean-pooling, specifically, and not "keep head 0". <code>W_k</code> is
+    <code>(d_model, n_heads × head_dim)</code>; view it as
+    <code>(d_model, n_kv, group, head_dim)</code>, average over the group axis,
+    flatten. Four lines. The mean is the vector closest to all group members at
+    once; selecting one throws the other g−1 away. So mean-pooling starts the
+    short training run from a better place. That's the whole argument, and it's
+    measurable:
+  </p>
+
+<pre><code>  original multi-head output, mean |y| = 0.0673
+
+    n_kv | mean-pooled err | first-head err | first/mean
+       4 |          <span class="ok">0.0414</span> |         0.0671 |       1.62x
+       2 |          0.0580 |         0.1005 |       <span class="hl">1.73x</span>
+       1 |          0.0653 |         0.0794 |       1.22x</code></pre>
+
+  <p>
+    Mean-pooling is closer at every group size — up to 1.7× closer. Note also
+    that at <code>n_kv=1</code> the error is the same size as the signal
+    itself: conversion alone does not give you a working model. It gives you an
+    initialisation. The brief training run is not optional, it's the point.
+    That distinction is the thing to have straight if someone asks you how
+    Llama-2 70B got its GQA.
+  </p>
+
+  <div class="note">
+    <strong>Where this landed.</strong> Llama-2's 70B model uses GQA, and most
+    open models released since have followed. The notable dissent is DeepSeek,
+    which compresses K and V into a shared latent vector instead of sharing
+    heads — that's <a href="../mla/">multi-head latent attention</a>, a
+    different answer to the same cache problem. The rest of the Llama recipe —
+    RMSNorm, SwiGLU, RoPE — is <a href="../llama/">on its own page</a>, and the
+    attention this all modifies is <a href="../attention/">here</a>.
+  </div>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் <a href="../kv-cache/">KV-cache பக்கத்தைப்</a> படித்தேன் — அதை
+    எழுதியதும் நான்தான் — அது கணக்கில் முடிகிறது. Model-ஐ serve செய்ய
+    விடாமல் தடுப்பது cache தான்; <code>kv_heads</code>-ஐக் குறைத்தால்
+    cache அதே விகிதத்தில் குறையும். சரி. பிறகு "kv_heads-ஐக் குறை"
+    என்பது code-ல் எப்படி இருக்கிறது என்று பார்க்க ஒரு உண்மையான
+    implementation-ஐத் திறந்தேன் — ஆறு வரிகள், அதில் நான்கு எனக்குப்
+    படிக்கவே வராத tensor reshape. இந்த மாற்றம் <em>சரியான இடத்தில் ஒரே ஒரு
+    repeat</em> தான் என்றும், இங்குள்ள bug-களின் முழுக் குடும்பமும் அதைத்
+    தவறான இடத்தில் வைப்பதுதான் என்றும் யாரும் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (grouped-query,
+    multi-query, multi-head, key, value, query, head, repeat, checkpoint…)
+    அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள்
+    அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில்,
+    சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>பல app server-கள் பகிர்ந்துகொள்ளும் ஒரு read replica</h2>
+
+  <p>இதை நீங்கள் ஏற்கனவே size செய்திருக்கிறீர்கள்:</p>
+
+<pre><code>app_server_0 -&gt; replica_0     # ஒவ்வொருவருக்கும் ஒரு replica. முழு isolation,
+app_server_1 -&gt; replica_1     # ஆனால் எட்டு replica-க்குக் காசு கொடுக்கிறீர்கள்.
+...
+app_server_7 -&gt; replica_7</code></pre>
+
+  <p>
+    விலை உயர்ந்த பகுதி replica-தான், அதனால் நீங்கள் அவற்றை ஒருங்கிணைக்கிறீர்கள்.
+    எட்டு app server, இரண்டு replica, ஒரு replica-க்கு நான்கு server:
+  </p>
+
+<pre><code>app_server_0..3 -&gt; replica_0   # ஒவ்வொரு server-ம் தன் வேலையைத் தானே செய்கிறது,
+app_server_4..7 -&gt; replica_1   # ஆனால் ஒரே snapshot-ஐப் படிக்கின்றன</code></pre>
+
+  <p>
+    அதுதான் grouped-query attention, அப்படியே. Query head-கள்தான் app
+    server-கள் — ஒவ்வொன்றும் தன் சொந்த <code>W<sub>q</sub></code>, தன் சொந்த
+    score, தன் சொந்த output-ஐ வைத்திருக்கிறது. Key மற்றும் value head-கள்தான்
+    replica-க்கள், நீங்கள் store செய்வதும் அவைதான். Multi-head என்றால் ஒரு
+    server-க்கு ஒரு replica. Multi-query என்றால் முழு fleet-க்கும் ஒரே replica.
+    GQA என்பது நடுவில் உள்ள setting, நீங்கள் இதுவரை எடுத்த ஒவ்வொரு capacity
+    முடிவைப் போலவே, கேள்வி இதுதான்: பகிர்ந்துகொள்வதால் வரும் staleness-ஐ
+    எவ்வளவு தாங்குவீர்கள்?
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query head</strong></td><td>ஒரு தனித்த "நான் என்ன தேடுகிறேன்". ஒருபோதும் cache ஆவதில்லை — ஒருமுறை பயன்படுத்தி, தூக்கி எறியப்படுகிறது</td><td>ஒரு app server. சேர்க்க மலிவு</td></tr>
+      <tr><td><strong>KV head</strong></td><td>ஒரு set key மற்றும் value, இதுவரை வந்த ஒவ்வொரு token-க்கும் cache செய்யப்பட்டவை</td><td>ஒரு read replica. காசு கொடுக்கும் பொருள்</td></tr>
+      <tr><td><strong>Group</strong></td><td>ஒரு KV head-ஐப் பகிர்ந்துகொள்ளும் <code>n_heads / n_kv_heads</code> query head-கள்</td><td>ஒரு replica-வுடன் pin செய்யப்பட்ட server-கள்</td></tr>
+      <tr><td><strong>MQA</strong> (Shazeer, 2019)</td><td><code>n_kv_heads = 1</code></td><td>ஒரே replica, முழு fleet</td></tr>
+      <tr><td><strong>GQA</strong> (Ainslie et al., 2023)</td><td><code>1 &lt; n_kv_heads &lt; n_heads</code></td><td>நடுவில் உள்ள setting</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>இதை யாராவது ஏன் செய்தார்கள்</h2>
+  <p>
+    FLOPs-க்காக அல்ல. Decoding memory-bound: ஒவ்வொரு step-லும் weights-ஐயும்
+    முழு cache-ஐயும் memory bus வழியாக இழுத்து, ஒரு rounding error அளவு
+    கணக்கு மட்டுமே செய்யப்படுகிறது. ஒவ்வொரு token-லும் ஒவ்வொரு concurrent
+    user-லும் வளர்வது cache தான், அதில் architecture தேர்ந்தெடுக்கக்கூடிய ஒரே
+    காரணி <code>kv_heads</code>. அந்த table —  token-க்கு எத்தனை byte, 4×
+    மற்றும் 32× குறைப்பு, cache checkpoint-ஐ விட பெரிதாகும் புள்ளி —
+    <a href="../kv-cache/">KV-cache பக்கத்தில்</a> இருக்கிறது. அதை மீண்டும்
+    அச்சிடவில்லை. இந்தப் பக்கம் forward pass-ம், பகிர்வின் விலையும்.
+  </p>
+  <p>
+    Multi-query முதலில் வந்தது: Shazeer, 2019, "Fast Transformer Decoding: One
+    Write-Head is All You Need" — முழு வாதமும் decoding வேகத்தைப் பற்றியது
+    என்ற ஒரு சிறிய paper. GQA 2023-ல் இரண்டு கூற்றுகளுடன் வந்தது — பயனுள்ள
+    setting நடுவில் இருக்கிறது என்பதும், அதை pre-train செய்யத் தேவையில்லை
+    என்பதும். உங்களிடம் ஏற்கனவே இருக்கும் checkpoint-ஐ மாற்றிக்கொள்ளலாம்.
+  </p>
+
+  <p class="thanglish">
+    Query head-nga app server maadhiri, KV head-nga read replica maadhiri —
+    replica dhaan cache-la ninnu kaasu vaanguthu. GQA-nu solradhu nadula
+    irukka setting: konjam replica, niraya server.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">head<sub>i</sub> = Attention(Q<sub>i</sub>, K<sub>⌊i/g⌋</sub>, V<sub>⌊i/g⌋</sub>),&nbsp;&nbsp; g = n<sub>heads</sub> / n<sub>kv</sub></div>
+
+  <p>
+    Notation-ல் இதுதான் முழு paper. 2017-ல் K<sub>i</sub>, V<sub>i</sub> என்று
+    இருந்ததில் இருந்து மாறியது K, V-யின் subscript மட்டும்தான். Layer-ஐ
+    pipeline stage-களாகப் படியுங்கள்:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>X @ W_q</code></td><td>(n_heads, n, head_dim)</td><td>எல்லா query head-களும். எல்லா variant-லும் மாறாதது</td></tr>
+      <tr><td><code>X @ W_k</code>, <code>X @ W_v</code></td><td>(n_kv, n, head_dim)</td><td><strong>குறுகிய projection-கள்.</strong> இதுதான் மாற்றம், cache ஆவதும் இதுதான்</td></tr>
+      <tr><td><code>repeat_kv_heads</code></td><td>→ (n_heads, n, head_dim)</td><td><strong>முழு implementation.</strong> ஒவ்வொரு KV head-ஐயும் g முறை விரிவாக்குங்கள், query-க்கு சந்திக்க ஏதாவது வேண்டுமே</td></tr>
+      <tr><td><code>Q @ K<sup>T</sup> / √d</code></td><td>(n_heads, n, n)</td><td>வழக்கமான scaled dot-product. முழு head எண்ணிக்கை, முழு செலவு</td></tr>
+      <tr><td><code>softmax @ V</code></td><td>(n_heads, n, head_dim)</td><td>Head-க்கு ஒன்று, எடையிட்ட கலவை</td></tr>
+      <tr><td><code>merge @ W_o</code></td><td>(n, d_model)</td><td>Head-களை இணைத்து, வெளியே project செய்யுங்கள். இதுவும் மாறவில்லை</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <strong>Repeat எங்கே இருக்கிறது என்பதைக் கவனியுங்கள்: projection-க்குப்
+    பிறகு, matmul-க்கு முன், cache-ல் ஒருபோதும் இல்லை.</strong> குறுகிய K, V-ஐ
+    store செய்து, compute நேரத்தில் விரிவாக்குகிறீர்கள். முதலிலேயே
+    விரிவாக்கினால் நீங்கள் எழுதியது கூடுதல் step-களுடன் கூடிய multi-head
+    attention தான்.
+  </div>
+
+  <h2>ஒரு function, மூன்று variant</h2>
+  <p>
+    அந்த மூன்று பெயர்களும் ஒரே function, ஒரே argument. <code>n_kv_heads =
+    n_heads</code> கொடுத்தால் multi-head. <code>1</code> கொடுத்தால்
+    multi-query. நடுவில் எதைக் கொடுத்தாலும் grouped-query. Script ஒவ்வொரு
+    step-லும் shape-ஐ print செய்கிறது, அதனால் மாறுபடும் ஒரே வரி K/V
+    projection-ன் அகலம் மட்டும்தான் என்று நீங்களே பார்க்கலாம் — அதற்குப் பின்
+    எல்லாமே ஒரே மாதிரி.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>  n_kv_heads=8  multi-head  (MHA, 2017)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (8, 6, 8)  V (8, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three
+
+  n_kv_heads=2  grouped-query (GQA, 2023)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (2, 6, 8)  V (2, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three
+
+  n_kv_heads=1  multi-query (MQA, 2019)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (1, 6, 8)  V (1, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three</code></pre>
+
+  <p>
+    மூன்று block-களிலும் மாறுபடும் ஒரே வரி: <span class="ok">repeat-க்கு
+    முந்தைய K மற்றும் V shape-கள்</span>. அதுதான் paper. Repeat-க்குப் பிறகு
+    வருவதெல்லாம் நீங்கள் ஏற்கனவே அறிந்த 2017 code தான்.
+  </p>
+
+  <h2>அந்த repeat, யாரும் பிடிக்காத bug</h2>
+  <p>
+    உங்களிடம் 2 KV head இருக்கின்றன, 8 வேண்டும். 2 உள்ள list-ஐ 8 ஆக நீட்ட
+    இரண்டு வெளிப்படையான வழிகள் உள்ளன, NumPy இரண்டையும் தருகிறது:
+  </p>
+
+<pre><code>np.repeat(kv, 4, axis=0)   -&gt; [kv0 kv0 kv0 kv0 kv1 kv1 kv1 kv1]  # block
+np.tile(kv, (4, 1, 1))     -&gt; [kv0 kv1 kv0 kv1 kv0 kv1 kv0 kv1]  # interleaved</code></pre>
+
+  <p>
+    ஒரே shape. ஒரே dtype. இரண்டிலும் error இல்லை. ஆனால் disk-ல் உள்ள ஒவ்வொரு
+    checkpoint-ம் query head <em>i</em> என்பது KV head <code>i // g</code>-க்கு
+    சொந்தம் என்ற convention-ல்தான் — அதாவது தொடர்ச்சியான block-களாக —
+    சேமிக்கப்பட்டது, அதனால் முதலாவது மட்டுமே சரி. Llama-வின் reference
+    implementation இந்த operation-ஐ <code>repeat_kv</code> என்று அழைத்து,
+    head axis மேல் <code>torch.repeat_interleave</code> என்று ஆவணப்படுத்துகிறது
+    — அதுதான் block வடிவம்.
+  </p>
+
+<pre><code>  n_heads=8, n_kv_heads=2, group=4
+  query head       : [0, 1, 2, 3, 4, 5, 6, 7]
+  block  -&gt; kv head: [0, 0, 0, 0, 1, 1, 1, 1]  matches i // group
+  interl -&gt; kv head: [0, 1, 0, 1, 0, 1, 0, 1]  matches i %  n_kv
+  convention (i // group): [0, 0, 0, 0, 1, 1, 1, 1]
+
+  output shapes equal?            <span class="hl">True</span>
+  no exception raised?            <span class="hl">True</span>
+  max |block - interleave|        0.2661
+  mean |block|                    0.0651
+  -&gt; same shape, no error, different answer. That is the bug.</code></pre>
+
+  <div class="note">
+    <strong>Error என்பது signal-ஐ விட நான்கு மடங்கு பெரியது.</strong> Crash
+    இல்லை, NaN இல்லை, shape mismatch இல்லை — load ஆகி, ஓடி, முட்டாள்தனமாகப்
+    பேசும் ஒரு model. Framework-களுக்கு இடையே weights-ஐ port செய்யும்போது
+    output "கிட்டத்தட்ட சரி, ஆனால் தவறு" என்று இருந்தால், முதலில் சரிபார்க்க
+    வேண்டியது இதைத்தான்.
+  </div>
+
+  <p class="thanglish">
+    Block-um interleave-um ore shape, ore dtype, error-e illa — aana answer
+    vera. Disk-la irukka checkpoint ellam i // g convention-la save aagirukku,
+    so block dhaan sari.
+  </p>
+
+  <h2>n_kv = n_heads ஆனால், அது சரியாக multi-head தான்</h2>
+  <p>
+    இதை வெறுமனே சொல்லாமல் நிரூபிப்பது மதிப்புள்ளது, ஏனெனில் நீங்கள் எழுதும்
+    எந்த GQA implementation-ஐயும் இப்படித்தான் sanity-check செய்வீர்கள்: group
+    size-ஐ 1 ஆக வையுங்கள், repeat ஒரு no-op ஆகிவிடும், அதனால் function சாதாரண
+    2017 attention-ஆகச் சுருங்க வேண்டும். Script multi-head-ஐ நீளமான வழியில்,
+    எங்கும் repeat அழைப்பு இல்லாமல் கணக்கிட்டு, வித்தியாசத்தைப் பார்க்கிறது.
+  </p>
+
+<pre><code>  max |grouped(n_kv=8) - plain multi-head| = 0.000e+00
+  bit-identical?                            <span class="ok">True</span>
+  group size is 1, so np.repeat is a no-op. Same code path.</code></pre>
+
+  <p>
+    "Float precision அளவுக்கு" அல்ல — bit-identical, ஏனெனில் count 1-உடன்
+    <code>np.repeat</code> அதே எண்களை அதே வரிசையில் திருப்பித் தருகிறது. இதன்
+    எந்த implementation-க்கும் உங்கள் முதல் test: பகிர்வை off செய்தால் அது
+    இன்னும் multi-head-உடன் பொருந்துகிறதா?
+  </p>
+
+  <h2>பகிர்வு உண்மையில் என்ன விலை கேட்கிறது</h2>
+  <p>
+    இப்போது நேர்மையான பகுதி. Head-கள் இருப்பதே அவை வெவ்வேறு விஷயங்களைத்
+    தேடுவதால்தான். அவற்றில் நான்கை ஒரே set key வழியாகத் திணித்தால் எல்லாவற்றுக்கும்
+    வேண்டியது கிடைக்காது. இதை இயந்திரத்தனமாகக் காட்ட, ஒவ்வொன்றுக்கும் வெவ்வேறு
+    token-ஐ ideal key ஆகக் கொண்ட எட்டு query head-களை உருவாக்கி, பிறகு key
+    head-களை மேலும் மேலும் குறைவான group-களாக mean-pool செய்து, output
+    ideal-லிருந்து எவ்வளவு விலகுகிறது என்று அளக்கிறேன்.
+  </p>
+
+<pre><code>    n_kv | group |  max |out - ideal| | mean |out - ideal|
+       8 |     1 |           0.0000 |           0.0000
+       4 |     2 |           0.0321 |           0.0092
+       2 |     4 |           0.5660 |           0.1723
+       1 |     8 |           <span class="hl">1.4787</span> |           <span class="hl">0.4548</span>
+
+  per-head error at n_kv=2 (heads 0-3 share, heads 4-7 share):
+    head 0  group 0  error 0.3688   argmax attends to token 0 (wanted 0)
+    head 1  group 0  error 0.4308   argmax attends to token 1 (wanted 1)
+    head 2  group 0  error 0.3620   argmax attends to token 2 (wanted 2)
+    head 3  group 0  error 0.4960   argmax attends to token 3 (wanted 3)
+    head 4  group 1  error 0.2810   argmax attends to token 4 (wanted 4)
+    head 5  group 1  error 0.3821   argmax attends to token 5 (wanted 5)
+    head 6  group 1  error 0.2884   argmax attends to token 6 (wanted 6)
+    head 7  group 1  error 0.5660   argmax attends to token 7 (wanted 7)</code></pre>
+
+  <p>
+    இதன் வடிவம்தான் முக்கியம். KV head-களைப் பாதியாக்குவது கிட்டத்தட்ட இலவசம்
+    (0.0092); கால்பங்காக்குவது ஒரு order of magnitude அதிகம் செலவாகிறது;
+    ஒன்றாகச் சுருக்குவது மேலும் மூன்று மடங்கு. Head-கள் இன்னும் சரியான
+    token-ஐத்தான் <em>சுட்டிக்காட்டுகின்றன</em> — ஒவ்வொரு வரியிலும் argmax சரி —
+    ஆனால் அதைச் சுற்றியுள்ள distribution group சராசரியை நோக்கி இழுக்கப்பட்டுள்ளது,
+    output அதைச் சுமக்கிறது. GQA வியாபாரம் செய்யும் graceful-degradation
+    வளைவு அதுதான்.
+  </p>
+
+  <div class="note">
+    <strong>இது நான் இந்தக் கருத்தைக் காட்டவே உருவாக்கிய vector-கள் மேல் செய்த
+    ஒரு இயந்திரத்தனமான விளக்கம், quality அளவீடு அல்ல.</strong> Paper-ன் quality
+    கூற்றுகள் — GQA multi-head-க்கு அருகில் வருகிறது, MQA அதிகம் இழக்கிறது —
+    அவை paper-ன் கூற்றுகள், உண்மையான task-களில் உண்மையான uptrained
+    checkpoint-களுடன் அளக்கப்பட்டவை. என் எண்களை language model பற்றிய
+    ஆதாரமாக மேற்கோள் காட்டாதீர்கள்; அவை சராசரி எடுப்பதைப் பற்றிய ஆதாரம்.
+  </div>
+
+  <h2>Parameter கொஞ்சம் குறையும். FLOPs சிறிதும் அசையாது.</h2>
+  <p>
+    இங்கு வரும் interview கேள்வி "அப்படியானால் GQA குறைவான கணக்கு செய்வதால்
+    வேகமானது, சரிதானே?" — இல்லை. Matmul-க்கு முன் key-கள் முழு head
+    எண்ணிக்கைக்கு விரிவாக்கப்படுகின்றன, அதனால் attention அதே வேலையைத்தான்
+    செய்கிறது. <code>W<sub>q</sub></code>-ம் <code>W<sub>o</sub></code>-ம்
+    தொடப்படவில்லை. <code>W<sub>k</sub></code>, <code>W<sub>v</sub></code>
+    மட்டுமே குறுகுகின்றன — மொத்த parameter-க்கு எதிராக அது ஒரு rounding error —
+    மற்றும் cache, அது rounding error அல்ல.
+  </p>
+
+<pre><code>  Llama-2-7B-shaped layer: d_model=4096, n_heads=32, head_dim=128, seq=2048
+
+    variant     | n_kv | W_k+W_v params | vs MHA | attn MACs/token
+    multi-head  |   32 |     33,554,432 |   1.0x | 16,777,216
+    GQA-8       |    8 |      8,388,608 |   4.0x | 16,777,216
+    GQA-4       |    4 |      4,194,304 |   8.0x | 16,777,216
+    multi-query |    1 |      1,048,576 |  32.0x | <span class="ok">16,777,216</span>
+
+  W_q and W_o are untouched: 16,777,216 params each, in every variant.</code></pre>
+
+  <p>
+    ஒரே column, நான்கு முறை. வெற்றி memory traffic-ல், கணக்கில் அல்ல: ஒவ்வொரு
+    decode step-லும் படிக்க வேண்டிய byte குறைவு, மேலும் அதிக user-களை batch
+    செய்யும் அளவுக்குச் சிறிய cache. Token-க்கு எத்தனை byte, அது எவ்வளவு
+    வேகமாக உங்கள் முழு hardware bill ஆகிறது என்பது
+    <a href="../kv-cache/">KV-cache பக்கம்</a>.
+  </p>
+
+  <h2>Uptraining: paper-ல் எல்லோரும் மறக்கும் பகுதி</h2>
+  <p>
+    Paper-ன் தலைப்பு <em>Training Generalized Multi-Query Transformer Models
+    from Multi-Head Checkpoints</em>, அந்தத் தலைப்புதான் அதன் பங்களிப்பு. ஒரு
+    hyperparameter-ஐ மாற்ற 70B model-ஐ மீண்டும் pre-train செய்ய யாரும்
+    விரும்பவில்லை. அதனால்: ஏற்கனவே உங்களிடம் இருக்கும் multi-head
+    checkpoint-ஐ எடுத்து, ஒவ்வொரு group-க்குள்ளும் key மற்றும் value head-களை
+    mean-pool செய்து, சிறிது நேரம் train செய்யுங்கள் — original pre-training
+    compute-ன் ஒரு சிறிய பகுதியில் இதைச் செய்ததாக paper சொல்கிறது.
+  </p>
+  <p>
+    குறிப்பாக mean-pooling, "head 0-ஐ வைத்துக்கொள்" அல்ல. <code>W_k</code>
+    என்பது <code>(d_model, n_heads × head_dim)</code>; அதை
+    <code>(d_model, n_kv, group, head_dim)</code> ஆகப் பாருங்கள், group axis
+    மேல் சராசரி எடுங்கள், flatten செய்யுங்கள். நான்கு வரிகள். சராசரிதான்
+    group-ல் உள்ள எல்லா உறுப்பினர்களுக்கும் ஒரே சமயத்தில் மிக அருகில் இருக்கும்
+    vector; ஒன்றைத் தேர்ந்தெடுத்தால் மற்ற g−1-ஐத் தூக்கி எறிகிறீர்கள். அதனால்
+    mean-pooling அந்தச் சிறிய training run-ஐ ஒரு சிறந்த இடத்திலிருந்து
+    தொடங்குகிறது. முழு வாதமும் அதுதான், அதை அளக்கவும் முடியும்:
+  </p>
+
+<pre><code>  original multi-head output, mean |y| = 0.0673
+
+    n_kv | mean-pooled err | first-head err | first/mean
+       4 |          <span class="ok">0.0414</span> |         0.0671 |       1.62x
+       2 |          0.0580 |         0.1005 |       <span class="hl">1.73x</span>
+       1 |          0.0653 |         0.0794 |       1.22x</code></pre>
+
+  <p>
+    ஒவ்வொரு group size-லும் mean-pooling அருகில் இருக்கிறது — 1.7× வரை அருகில்.
+    <code>n_kv=1</code>-ல் error signal-ன் அளவுக்கே இருக்கிறது என்பதையும்
+    கவனியுங்கள்: conversion மட்டும் உங்களுக்கு வேலை செய்யும் model-ஐத் தராது.
+    அது ஒரு initialisation-ஐத் தருகிறது. அந்தச் சிறிய training run
+    விருப்பத்தேர்வு அல்ல, அதுதான் விஷயம். Llama-2 70B-க்கு GQA எப்படி வந்தது
+    என்று யாராவது கேட்டால் தெளிவாக இருக்க வேண்டிய வேறுபாடு அதுதான்.
+  </p>
+
+  <div class="note">
+    <strong>இது எங்கே வந்து நின்றது.</strong> Llama-2-ன் 70B model GQA
+    பயன்படுத்துகிறது, அதற்குப் பிறகு வெளியான பெரும்பாலான open model-களும்
+    அதையே பின்பற்றின. குறிப்பிடத்தக்க மாற்றுக் கருத்து DeepSeek — அது head-களைப்
+    பகிர்வதற்குப் பதிலாக K, V-ஐ ஒரு பகிரப்பட்ட latent vector-ஆகச் சுருக்குகிறது
+    — அதுதான் <a href="../mla/">multi-head latent attention</a>, அதே cache
+    பிரச்சனைக்கு வேறொரு பதில். மீதி Llama recipe — RMSNorm, SwiGLU, RoPE —
+    <a href="../llama/">தனிப் பக்கத்தில்</a> இருக்கிறது, இவை எல்லாம் மாற்றும்
+    attention <a href="../attention/">இங்கே</a>.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने <a href="../kv-cache/">KV-cache वाला पेज</a> पढ़ा — वह मैंने ही लिखा
+    है — और वह गणित पर ख़त्म होता है। Model को serve करने से जो रोकता है वह
+    cache है; <code>kv_heads</code> घटाइए और cache ठीक उसी अनुपात में घट जाता
+    है। ठीक। फिर मैंने एक असली implementation खोली यह देखने के लिए कि
+    "kv_heads घटाना" code में क्या है — छह लाइनें, जिनमें चार एक tensor
+    reshape थीं जो मुझे पढ़नी ही नहीं आईं। किसी ने नहीं बताया कि यह बदलाव
+    <em>सही जगह पर एक repeat</em> है, और यहाँ के bugs की पूरी नस्ल उसे ग़लत
+    जगह रख देने से पैदा होती है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (grouped-query,
+    multi-query, multi-head, key, value, query, head, repeat, checkpoint…)
+    मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द
+    दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>कई app servers के बीच साझा एक read replica</h2>
+
+  <p>यह आप पहले भी size कर चुके हैं:</p>
+
+<pre><code>app_server_0 -&gt; replica_0     # हर एक को अपना replica. पूरा isolation,
+app_server_1 -&gt; replica_1     # और आप आठ replicas का पैसा देते हैं.
+...
+app_server_7 -&gt; replica_7</code></pre>
+
+  <p>
+    महँगा हिस्सा replicas हैं, तो आप उन्हें consolidate करते हैं। आठ app
+    servers, दो replicas, हर replica पर चार servers:
+  </p>
+
+<pre><code>app_server_0..3 -&gt; replica_0   # हर server अपना काम ख़ुद करता है,
+app_server_4..7 -&gt; replica_1   # पर वे एक ही snapshot पढ़ते हैं</code></pre>
+
+  <p>
+    यही grouped-query attention है, बिल्कुल वैसा ही। Query heads app servers
+    हैं — हर एक के पास अपना <code>W<sub>q</sub></code>, अपने scores, अपना
+    output। Key और value heads replicas हैं, और वही आप store करते हैं।
+    Multi-head यानी हर server का अपना replica। Multi-query यानी पूरे fleet के
+    लिए एक replica। GQA बीच वाली setting है, और आपके हर capacity फ़ैसले की
+    तरह सवाल यही है कि साझा staleness आप कितनी बर्दाश्त कर सकते हैं।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query head</strong></td><td>एक स्वतंत्र "मैं क्या ढूँढ़ रहा हूँ"। कभी cache नहीं होता — एक बार इस्तेमाल, फिर फेंक दिया</td><td>एक app server। जोड़ना सस्ता</td></tr>
+      <tr><td><strong>KV head</strong></td><td>keys और values का एक set, अब तक के हर token के लिए cache किया हुआ</td><td>एक read replica। जिसका पैसा लगता है</td></tr>
+      <tr><td><strong>Group</strong></td><td>एक KV head को साझा करने वाले <code>n_heads / n_kv_heads</code> query heads</td><td>एक replica पर pin किए गए servers</td></tr>
+      <tr><td><strong>MQA</strong> (Shazeer, 2019)</td><td><code>n_kv_heads = 1</code></td><td>एक replica, पूरा fleet</td></tr>
+      <tr><td><strong>GQA</strong> (Ainslie et al., 2023)</td><td><code>1 &lt; n_kv_heads &lt; n_heads</code></td><td>बीच वाली setting</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>यह किया ही क्यों गया</h2>
+  <p>
+    FLOPs के लिए नहीं। Decoding memory-bound है: हर step में weights और पूरा
+    cache memory bus के पार खींचे जाते हैं, और गणित उतना ही होता है जितना एक
+    rounding error। हर token और हर concurrent user के साथ जो बढ़ता है वह cache
+    है, और उसमें architecture जिसे चुन सकती है वह अकेला factor
+    <code>kv_heads</code> है। वह table — प्रति token bytes, 4× और 32× की कमी,
+    वह बिंदु जहाँ cache checkpoint से बड़ा हो जाता है —
+    <a href="../kv-cache/">KV-cache पेज</a> पर है। मैं उसे दोबारा नहीं छाप रहा।
+    यह पेज forward pass है, और साझा करने की क़ीमत।
+  </p>
+  <p>
+    Multi-query पहले आया: Shazeer, 2019, "Fast Transformer Decoding: One
+    Write-Head is All You Need" — एक छोटा paper जिसकी पूरी दलील decoding speed
+    है। GQA 2023 में दो दावों के साथ आया — कि काम की setting बीच में है, और कि
+    उसे pre-train करने की ज़रूरत नहीं। जो checkpoint आपके पास पहले से है, उसी
+    को बदला जा सकता है।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">head<sub>i</sub> = Attention(Q<sub>i</sub>, K<sub>⌊i/g⌋</sub>, V<sub>⌊i/g⌋</sub>),&nbsp;&nbsp; g = n<sub>heads</sub> / n<sub>kv</sub></div>
+
+  <p>
+    Notation में यही पूरा paper है। 2017 में जो K<sub>i</sub>, V<sub>i</sub>
+    लिखा था, उसके बाद बदली है तो सिर्फ़ K और V की subscript। Layer को pipeline
+    stages की तरह पढ़िए:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>X @ W_q</code></td><td>(n_heads, n, head_dim)</td><td>सारे query heads। हर variant में अपरिवर्तित</td></tr>
+      <tr><td><code>X @ W_k</code>, <code>X @ W_v</code></td><td>(n_kv, n, head_dim)</td><td><strong>सँकरे projections।</strong> यही बदलाव है, और यही cache होता है</td></tr>
+      <tr><td><code>repeat_kv_heads</code></td><td>→ (n_heads, n, head_dim)</td><td><strong>पूरा implementation।</strong> हर KV head को g बार फैलाइए ताकि queries को मिलने के लिए कुछ हो</td></tr>
+      <tr><td><code>Q @ K<sup>T</sup> / √d</code></td><td>(n_heads, n, n)</td><td>साधारण scaled dot-product। पूरी head संख्या, पूरी लागत</td></tr>
+      <tr><td><code>softmax @ V</code></td><td>(n_heads, n, head_dim)</td><td>हर head के लिए भारित मिश्रण</td></tr>
+      <tr><td><code>merge @ W_o</code></td><td>(n, d_model)</td><td>Heads जोड़िए, बाहर project कीजिए। यह भी अपरिवर्तित</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <strong>ध्यान दीजिए repeat कहाँ बैठता है: projection के बाद, matmul से
+    पहले, और cache पर कभी नहीं।</strong> आप सँकरे K और V store करते हैं और
+    compute के समय उन्हें फैलाते हैं। पहले फैला दिया तो आपने अतिरिक्त steps
+    वाला multi-head attention ही लिखा है।
+  </div>
+
+  <h2>एक function, तीन variants</h2>
+  <p>
+    तीनों नाम एक ही function हैं, एक ही argument के साथ।
+    <code>n_kv_heads = n_heads</code> दीजिए तो multi-head। <code>1</code>
+    दीजिए तो multi-query। बीच का कुछ भी दीजिए तो grouped-query। Script हर step
+    पर shape print करती है ताकि आप देख सकें कि फ़र्क़ सिर्फ़ एक लाइन में है —
+    K/V projection की चौड़ाई — उसके आगे सब कुछ एक जैसा है।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>  n_kv_heads=8  multi-head  (MHA, 2017)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (8, 6, 8)  V (8, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three
+
+  n_kv_heads=2  grouped-query (GQA, 2023)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (2, 6, 8)  V (2, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three
+
+  n_kv_heads=1  multi-query (MQA, 2019)
+    X (6, 64) -&gt; Q (8, 6, 8)  K (1, 6, 8)  V (1, 6, 8)
+    Q (8, 6, 8)  K after repeat (8, 6, 8)  V after repeat (8, 6, 8)
+    scores (8, 6, 6)  weights (8, 6, 6)  out (8, 6, 8)
+    layer output (6, 64)   &lt;- identical for all three</code></pre>
+
+  <p>
+    तीनों blocks में एक ही लाइन बदलती है: <span class="ok">repeat से पहले K
+    और V के shapes</span>। यही paper है। Repeat के बाद जो है वह 2017 का वही
+    code है जो आप पहले से जानते हैं।
+  </p>
+
+  <h2>वह repeat, और वह bug जो किसी को नहीं पकड़ में आता</h2>
+  <p>
+    आपके पास 2 KV heads हैं और चाहिए 8। 2 की list को 8 तक खींचने के दो ज़ाहिर
+    तरीक़े हैं, और NumPy दोनों देता है:
+  </p>
+
+<pre><code>np.repeat(kv, 4, axis=0)   -&gt; [kv0 kv0 kv0 kv0 kv1 kv1 kv1 kv1]  # block
+np.tile(kv, (4, 1, 1))     -&gt; [kv0 kv1 kv0 kv1 kv0 kv1 kv0 kv1]  # interleaved</code></pre>
+
+  <p>
+    वही shape। वही dtype। दोनों में कोई error नहीं। पर disk पर हर checkpoint
+    इस convention के तहत सहेजा गया है कि query head <em>i</em> KV head
+    <code>i // g</code> का है — यानी लगातार blocks — इसलिए सही सिर्फ़ पहला है।
+    Llama का reference implementation इस operation को <code>repeat_kv</code>
+    कहता है और उसे head axis पर <code>torch.repeat_interleave</code> के रूप में
+    दर्ज करता है, जो block वाला रूप है।
+  </p>
+
+<pre><code>  n_heads=8, n_kv_heads=2, group=4
+  query head       : [0, 1, 2, 3, 4, 5, 6, 7]
+  block  -&gt; kv head: [0, 0, 0, 0, 1, 1, 1, 1]  matches i // group
+  interl -&gt; kv head: [0, 1, 0, 1, 0, 1, 0, 1]  matches i %  n_kv
+  convention (i // group): [0, 0, 0, 0, 1, 1, 1, 1]
+
+  output shapes equal?            <span class="hl">True</span>
+  no exception raised?            <span class="hl">True</span>
+  max |block - interleave|        0.2661
+  mean |block|                    0.0651
+  -&gt; same shape, no error, different answer. That is the bug.</code></pre>
+
+  <div class="note">
+    <strong>Error signal से चार गुना बड़ा है।</strong> न crash, न NaN, न shape
+    mismatch — एक ऐसा model जो load होता है, चलता है, और बकवास बोलता है। अगर
+    कभी frameworks के बीच weights port करें और outputs "क़रीब पर ग़लत" लगें, तो
+    सबसे पहले यही जाँचिए।
+  </div>
+
+  <h2>n_kv = n_heads पर यह ठीक-ठीक multi-head है</h2>
+  <p>
+    इसे कहने से बेहतर है साबित करना, क्योंकि आप जो भी GQA implementation
+    लिखेंगे उसकी sanity-check यही है: group size 1 कर दीजिए, repeat no-op बन
+    जाता है, तो function को सादे 2017 attention में सिमट जाना चाहिए। Script
+    multi-head को लंबे रास्ते से, कहीं भी repeat बुलाए बिना, गणना करती है और
+    फ़र्क़ निकालती है।
+  </p>
+
+<pre><code>  max |grouped(n_kv=8) - plain multi-head| = 0.000e+00
+  bit-identical?                            <span class="ok">True</span>
+  group size is 1, so np.repeat is a no-op. Same code path.</code></pre>
+
+  <p>
+    "Float precision तक" नहीं — bit-identical, क्योंकि count 1 के साथ
+    <code>np.repeat</code> वही संख्याएँ उसी क्रम में लौटाता है। इसके किसी भी
+    implementation के लिए आपका पहला test: sharing बंद कर दें तो क्या वह अब भी
+    multi-head से मेल खाता है?
+  </p>
+
+  <h2>साझा करने की असली क़ीमत</h2>
+  <p>
+    अब ईमानदार हिस्सा। Heads इसलिए हैं क्योंकि वे अलग-अलग चीज़ें ढूँढ़ते हैं।
+    चार को एक ही set keys से गुज़ार दीजिए तो सबको वह नहीं मिलेगा जो चाहिए। इसे
+    यांत्रिक रूप से दिखाने के लिए मैं आठ query heads बनाता हूँ जिनका ideal key
+    अलग-अलग token है, फिर key heads को कम से कम groups में mean-pool करके नापता
+    हूँ कि output ideal से कितना खिसकता है।
+  </p>
+
+<pre><code>    n_kv | group |  max |out - ideal| | mean |out - ideal|
+       8 |     1 |           0.0000 |           0.0000
+       4 |     2 |           0.0321 |           0.0092
+       2 |     4 |           0.5660 |           0.1723
+       1 |     8 |           <span class="hl">1.4787</span> |           <span class="hl">0.4548</span>
+
+  per-head error at n_kv=2 (heads 0-3 share, heads 4-7 share):
+    head 0  group 0  error 0.3688   argmax attends to token 0 (wanted 0)
+    head 1  group 0  error 0.4308   argmax attends to token 1 (wanted 1)
+    head 2  group 0  error 0.3620   argmax attends to token 2 (wanted 2)
+    head 3  group 0  error 0.4960   argmax attends to token 3 (wanted 3)
+    head 4  group 1  error 0.2810   argmax attends to token 4 (wanted 4)
+    head 5  group 1  error 0.3821   argmax attends to token 5 (wanted 5)
+    head 6  group 1  error 0.2884   argmax attends to token 6 (wanted 6)
+    head 7  group 1  error 0.5660   argmax attends to token 7 (wanted 7)</code></pre>
+
+  <p>
+    असली बात इसका आकार है। KV heads आधे करना लगभग मुफ़्त है (0.0092); चौथाई
+    करना एक order of magnitude महँगा; एक पर सिकोड़ना उससे भी तीन गुना। Heads अब
+    भी सही token की <em>ओर इशारा</em> करते हैं — हर पंक्ति में argmax सही है —
+    पर उसके आसपास का distribution group के औसत की ओर खिंच गया है, और output
+    वही ढोता है। यही वह graceful-degradation curve है जिस पर GQA का सौदा टिका
+    है।
+  </p>
+
+  <div class="note">
+    <strong>यह उन vectors पर एक यांत्रिक उदाहरण है जो मैंने बात समझाने के लिए
+    ख़ुद बनाए हैं, quality की माप नहीं।</strong> Paper के quality दावे — कि GQA
+    multi-head के क़रीब रहता है जबकि MQA ज़्यादा खोता है — paper के हैं, असली
+    tasks पर असली uptrained checkpoints के साथ नापे गए। मेरे नंबरों को language
+    models के बारे में सबूत की तरह मत उद्धृत कीजिए; वे averaging के बारे में
+    सबूत हैं।
+  </div>
+
+  <h2>Parameters थोड़े घटते हैं। FLOPs ज़रा भी नहीं हिलते।</h2>
+  <p>
+    यहाँ का interview सवाल है "तो GQA तेज़ है क्योंकि वह कम गणित करता है, है
+    न?" — नहीं। Matmul से पहले keys पूरी head संख्या तक फैला दी जाती हैं,
+    इसलिए attention बिल्कुल उतना ही काम करता है।
+    <code>W<sub>q</sub></code> और <code>W<sub>o</sub></code> अछूते हैं। सिर्फ़
+    <code>W<sub>k</sub></code> और <code>W<sub>v</sub></code> सँकरे होते हैं, जो
+    कुल parameters के मुक़ाबले एक rounding error है — और cache, जो नहीं है।
+  </p>
+
+<pre><code>  Llama-2-7B-shaped layer: d_model=4096, n_heads=32, head_dim=128, seq=2048
+
+    variant     | n_kv | W_k+W_v params | vs MHA | attn MACs/token
+    multi-head  |   32 |     33,554,432 |   1.0x | 16,777,216
+    GQA-8       |    8 |      8,388,608 |   4.0x | 16,777,216
+    GQA-4       |    4 |      4,194,304 |   8.0x | 16,777,216
+    multi-query |    1 |      1,048,576 |  32.0x | <span class="ok">16,777,216</span>
+
+  W_q and W_o are untouched: 16,777,216 params each, in every variant.</code></pre>
+
+  <p>
+    वही column, चार बार। जीत memory traffic की है, गणित की नहीं: हर decode step
+    पर कम bytes पढ़ने हैं, और cache इतना छोटा कि ज़्यादा users एक साथ batch किए
+    जा सकें। प्रति token bytes, और वह कितनी जल्दी आपका पूरा hardware bill बन
+    जाता है, यह <a href="../kv-cache/">KV-cache पेज</a> है।
+  </p>
+
+  <h2>Uptraining: paper का वह हिस्सा जो सब भूल जाते हैं</h2>
+  <p>
+    Paper का शीर्षक है <em>Training Generalized Multi-Query Transformer Models
+    from Multi-Head Checkpoints</em>, और वही शीर्षक उसका योगदान है। एक
+    hyperparameter बदलने के लिए 70B model दोबारा pre-train कोई नहीं करना
+    चाहता। तो: जो multi-head checkpoint आपके पास है उसे लीजिए, हर group के
+    भीतर key और value heads को mean-pool कीजिए, और थोड़ी देर train कीजिए —
+    paper बताता है कि यह मूल pre-training compute के एक छोटे से अंश में हो
+    जाता है।
+  </p>
+  <p>
+    ख़ास तौर पर mean-pooling, "head 0 रख लो" नहीं। <code>W_k</code> है
+    <code>(d_model, n_heads × head_dim)</code>; उसे
+    <code>(d_model, n_kv, group, head_dim)</code> की तरह देखिए, group axis पर
+    औसत लीजिए, flatten कीजिए। चार लाइनें। औसत वह vector है जो group के सभी
+    सदस्यों के एक साथ सबसे क़रीब है; किसी एक को चुनना बाक़ी g−1 को फेंक देना है।
+    इसलिए mean-pooling उस छोटे training run को बेहतर जगह से शुरू करता है। यही
+    पूरी दलील है, और यह नापी जा सकती है:
+  </p>
+
+<pre><code>  original multi-head output, mean |y| = 0.0673
+
+    n_kv | mean-pooled err | first-head err | first/mean
+       4 |          <span class="ok">0.0414</span> |         0.0671 |       1.62x
+       2 |          0.0580 |         0.1005 |       <span class="hl">1.73x</span>
+       1 |          0.0653 |         0.0794 |       1.22x</code></pre>
+
+  <p>
+    हर group size पर mean-pooling ज़्यादा क़रीब है — 1.7× तक क़रीब। यह भी
+    देखिए कि <code>n_kv=1</code> पर error signal जितना ही बड़ा है: अकेला
+    conversion आपको चलता हुआ model नहीं देता। वह एक initialisation देता है।
+    वह छोटा training run वैकल्पिक नहीं है, वही असल बात है। कोई पूछे कि Llama-2
+    70B को उसका GQA कैसे मिला, तो यही फ़र्क़ साफ़ होना चाहिए।
+  </p>
+
+  <div class="note">
+    <strong>यह कहाँ जाकर टिका।</strong> Llama-2 का 70B model GQA इस्तेमाल करता
+    है, और उसके बाद रिलीज़ हुए ज़्यादातर open models ने वही राह ली। उल्लेखनीय
+    असहमति DeepSeek की है, जो heads साझा करने के बजाय K और V को एक साझा latent
+    vector में दबा देता है — वह है <a href="../mla/">multi-head latent
+    attention</a>, उसी cache समस्या का दूसरा जवाब। बाक़ी Llama recipe —
+    RMSNorm, SwiGLU, RoPE — <a href="../llama/">अपने अलग पेज पर</a> है, और यह
+    सब जिस attention को बदलते हैं वह <a href="../attention/">यहाँ</a> है।
+  </div>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no training — the forward pass and the
+  checkpoint conversion, so you can watch the numbers move. Every function
+  under 20 lines; the whole thing runs in well under a second. Everything
+  below is verbatim from the script, minus <code>softmax</code> and the two
+  reshape helpers.
+</p>
+<p>
+  <a href="gqa_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 150 lines of mechanism plus seven runnable demos. Then:
+</p>
+<pre><code>python3 gqa_from_scratch.py</code></pre>
+
+<pre><code># THE WHOLE IMPLEMENTATION. One repeat, in the right place.
+#
+# kv is (n_kv_heads, n, head_dim). We need (n_heads, n, head_dim) so
+# every query head has a key head to talk to.
+#
+#   "block"      np.repeat -&gt; [kv0 kv0 kv0 kv0 kv1 kv1 kv1 kv1]
+#                             head i uses kv head i // group  &lt;-- right
+#   "interleave" np.tile   -&gt; [kv0 kv1 kv0 kv1 kv0 kv1 kv0 kv1]
+#                             head i uses kv head i %  n_kv   &lt;-- wrong
+#
+# Both produce the correct SHAPE. Only one matches the convention every
+# checkpoint on disk was saved with. Getting it wrong raises nothing.
+def repeat_kv_heads(kv, n_heads, mode="block"):
+    n_kv_heads = kv.shape[0]
+    if n_heads % n_kv_heads != 0:
+        raise ValueError(
+            f"n_heads={n_heads} not divisible by n_kv_heads={n_kv_heads}: "
+            "groups must be equal-sized"
+        )
+    group = n_heads // n_kv_heads
+    if mode == "block":
+        return np.repeat(kv, group, axis=0)   # head i -&gt; kv head i // group
+    if mode == "interleave":
+        return np.tile(kv, (group, 1, 1))     # head i -&gt; kv head i % n_kv
+    raise ValueError(f"unknown repeat mode {mode!r}")
+
+
+# This ONE function is multi-head, multi-query and grouped-query. The
+# only difference is how many rows K and V arrive with.
+#
+#   Q  (n_heads,    n, head_dim)
+#   K  (n_kv_heads, n, head_dim)   n_kv == n_heads -&gt; multi-head
+#   V  (n_kv_heads, n, head_dim)   n_kv == 1       -&gt; multi-query
+#                                  in between      -&gt; grouped-query
+def attention(Q, K, V, mode="block", causal=False, verbose=False):
+    n_heads, n, head_dim = Q.shape
+    K = repeat_kv_heads(K, n_heads, mode)
+    V = repeat_kv_heads(V, n_heads, mode)
+
+    scores = Q @ K.transpose(0, 2, 1) / np.sqrt(head_dim)   # (H, n, n)
+    if causal:
+        mask = np.tril(np.ones((n, n), dtype=bool))
+        scores = np.where(mask, scores, -np.inf)
+    weights = softmax(scores, axis=-1)
+    out = weights @ V                                       # (H, n, dim)
+    return out, weights
+
+
+# One attention layer. n_kv_heads picks the variant. W_q and W_o do not
+# move; only W_k and W_v get narrower.
+def forward(X, W, n_heads, n_kv_heads, head_dim, mode="block"):
+    Q = split_heads(X @ W["W_q"], n_heads, head_dim)
+    K = split_heads(X @ W["W_k"], n_kv_heads, head_dim)
+    V = split_heads(X @ W["W_v"], n_kv_heads, head_dim)
+    out, _ = attention(Q, K, V, mode=mode)
+    merged = out.transpose(1, 0, 2).reshape(X.shape[0], n_heads * head_dim)
+    return merged @ W["W_o"]
+
+
+# UPTRAINING, the paper's actual contribution. You do not train a GQA
+# model from scratch. You take an existing multi-head checkpoint and
+# MEAN-POOL the key and value heads inside each group, then train
+# briefly. The mean is the projection closest to all group members;
+# picking one head throws the other g-1 away.
+def convert_checkpoint(W_mha, n_heads, n_kv_heads, head_dim, how="mean"):
+    group = n_heads // n_kv_heads
+    out = {"W_q": W_mha["W_q"].copy(), "W_o": W_mha["W_o"].copy()}
+    for name in ("W_k", "W_v"):
+        w = W_mha[name].reshape(-1, n_kv_heads, group, head_dim)
+        if how == "mean":
+            w = w.mean(axis=2)            # mean-pool inside each group
+        elif how == "first":
+            w = w[:, :, 0, :]             # keep head 0, bin the rest
+        out[name] = w.reshape(-1, n_kv_heads * head_dim)
+    return out</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode,
+  and every row here is a bug someone has actually shipped.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Pass <code>mode="interleave"</code> to <code>forward</code></td><td>No error, no shape mismatch. <code>max |block − interleave| = 0.2661</code> against a mean output magnitude of <code>0.0651</code> — four times the signal. A model that loads and talks nonsense.</td></tr>
+    <tr><td>Call <code>repeat_kv_heads</code> with <code>n_kv_heads=3</code>, <code>n_heads=8</code></td><td><code>ValueError: n_heads=8 not divisible by n_kv_heads=3</code>. Uneven groups mean head→group isn't a function; every implementation requires the divide.</td></tr>
+    <tr><td>In <code>convert_checkpoint</code>, use <code>how="first"</code></td><td>Conversion error goes from <code>0.0580</code> to <code>0.1005</code> at n_kv=2 — 1.73× further from the original model before uptraining even starts.</td></tr>
+    <tr><td>Share <code>W_k</code> but leave <code>W_v</code> at full width</td><td>Cache per token per layer goes 2,048 → 5,120 floats instead of 8,192. Your 4× reduction is now 1.6×, for the same quality cost.</td></tr>
+    <tr><td>Move <code>repeat_kv_heads</code> to before the cache append</td><td>Cached floats per token per layer back to <code>8,192</code> — identical maths, zero saving. You've written multi-head with extra steps. See <a href="../kv-cache/">the cache page</a>.</td></tr>
+    <tr><td>Set <code>n_kv_heads=1</code> in demo 4</td><td>Mean error jumps to <code>0.4548</code>, roughly 50× the n_kv=4 error. That gap is why GQA exists instead of everyone just using MQA.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — it's short. The method section (the
+  uptraining procedure and the mean-pooling figure) is the part worth your
+  time; the rest is ablations on summarisation and translation benchmarks that
+  you can skim for the shape of the curve rather than the numbers. Read
+  Shazeer's 2019 multi-query paper first if you want the original argument, and
+  note it's mostly about decoder memory bandwidth, not quality.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There isn't any here, and that's not me being encouraging. GQA needs one
+  idea: the mean of g vectors is the single vector closest to all of them. You
+  already believe that. Everything else on this page is array indexing —
+  knowing that head <em>i</em> lives at columns
+  <code>i·head_dim : (i+1)·head_dim</code>, and that
+  <code>i // g</code> maps a head to its group.
+</p>
+<p>
+  What is genuinely hard is the reshape. <code>(n, h·d) → (h, n, d)</code> and
+  back, with a transpose in the middle, is where I lose an afternoon every
+  time. Print <code>.shape</code> after every line — that's how the people who
+  wrote these implementations debug them too. And the judgement call, 8 groups
+  or 4, GQA or latent attention, isn't maths either. It's capacity planning:
+  cache bytes per token against acceptable quality loss, at your context
+  length and batch size.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the forward pass and the conversion, in code
+  you can break. It deliberately skipped the memory arithmetic, the real
+  benchmarks, and everything about how this interacts with a serving stack.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2305.13245">
+      <span class="paper-title">GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints</span>
+      <span class="paper-meta">Ainslie et al., 2023. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the method section for the uptraining procedure — the mean-pooling
+      figure is the one picture worth having. Then the ablations, for the
+      quality claims I refused to paraphrase into numbers. It's a short paper
+      and you now know its implementation better than its notation.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1911.02150">
+      <span class="paper-title">Fast Transformer Decoding: One Write-Head is All You Need</span>
+      <span class="paper-meta">Shazeer, 2019. Where multi-query starts.</span>
+    </a>
+    <p class="paper-pitch">
+      The endpoint GQA interpolates from, argued four years earlier and almost
+      entirely on memory-bandwidth grounds. Worth reading for the framing this
+      page assumes: that decoding is bound by bytes moved, not FLOPs done.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://github.com/meta-llama/llama/blob/main/llama/model.py">
+      <span class="paper-title">llama/model.py — <code>repeat_kv</code> and <code>Attention</code></span>
+      <span class="paper-meta">Meta. The reference implementation.</span>
+    </a>
+    <p class="paper-pitch">
+      My <code>repeat_kv_heads</code> written for real, in about eight lines of
+      PyTorch, with the cache, RoPE and tensor-parallel sharding around it.
+      Read it to see the block convention stated as
+      <code>torch.repeat_interleave</code>, and where the repeat sits relative
+      to the cache.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2023-01-10-inference-optimization/">
+      <span class="paper-title">Large Transformer Model Inference Optimization</span>
+      <span class="paper-meta">Lilian Weng. Survey, with the maths.</span>
+    </a>
+    <p class="paper-pitch">
+      The context this page sits in: multi-query alongside quantisation,
+      pruning, sparsity and the memory-bandwidth argument for all of them. Go
+      here when you want to know which knob to reach for before you reach for
+      the architecture.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Shazeer first for the motivation,
+  then the GQA paper's method section, then <code>llama/model.py</code> to see
+  it shipped — and if you want the road not taken, <a href="../mla/">latent
+  attention</a>, which compresses instead of shares.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

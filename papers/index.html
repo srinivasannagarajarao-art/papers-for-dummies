@@ -182,6 +182,19 @@
   <ul class="paper-list">
 
     <li class="paper">
+      <a class="paper-link" href="gpu/">
+        <span class="paper-title">The GPU, for people who only ever call .cuda()</span>
+        <span class="paper-meta">The hardware every other page assumes</span>
+      </a>
+      <p class="paper-pitch">One number, arithmetic intensity, predicts which of your operations will be slow before you profile anything.</p>
+      <p class="paper-langs">
+        <a href="gpu/?lang=en">English</a>
+        <a href="gpu/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="gpu/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
       <a class="paper-link" href="kv-cache/">
         <span class="paper-title">KV caching and the generation loop</span>
         <span class="paper-meta">Folklore, and the papers that fixed it</span>
@@ -191,6 +204,19 @@
         <a href="kv-cache/?lang=en">English</a>
         <a href="kv-cache/?lang=ta" lang="ta">தமிழ்</a>
         <a href="kv-cache/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="gqa/">
+        <span class="paper-title">Grouped-Query Attention: one set of keys for several heads</span>
+        <span class="paper-meta">Ainslie et al., 2023</span>
+      </a>
+      <p class="paper-pitch">The default in every modern open model. One repeat operation, and getting it wrong produces plausible garbage with no error.</p>
+      <p class="paper-langs">
+        <a href="gqa/?lang=en">English</a>
+        <a href="gqa/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="gqa/?lang=hi" lang="hi">हिंदी</a>
       </p>
     </li>
 
@@ -243,6 +269,19 @@
         <a href="speculative-decoding/?lang=en">English</a>
         <a href="speculative-decoding/?lang=ta" lang="ta">தமிழ்</a>
         <a href="speculative-decoding/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="serving/">
+        <span class="paper-title">How a serving engine actually works</span>
+        <span class="paper-meta">Kwon et al., 2023, and what surrounds it</span>
+      </a>
+      <p class="paper-pitch">Continuous batching and paged memory. Your inference server is an operating system, and this is its scheduler and allocator.</p>
+      <p class="paper-langs">
+        <a href="serving/?lang=en">English</a>
+        <a href="serving/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="serving/?lang=hi" lang="hi">हिंदी</a>
       </p>
     </li>
 
@@ -437,6 +476,50 @@
         <a href="chain-of-thought/?lang=en">English</a>
         <a href="chain-of-thought/?lang=ta" lang="ta">தமிழ்</a>
         <a href="chain-of-thought/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+  </ul>
+
+  <h2 class="papers-group">ai-ml/production/</h2>
+  <ul class="paper-list">
+
+    <li class="paper">
+      <a class="paper-link" href="structured-output/">
+        <span class="paper-title">Constrained decoding: making the model return valid JSON</span>
+        <span class="paper-meta">Willard &amp; Louf, 2023</span>
+      </a>
+      <p class="paper-pitch">Stop retrying until it parses. Mask the tokens that cannot continue a valid document, and invalid output becomes unrepresentable.</p>
+      <p class="paper-langs">
+        <a href="structured-output/?lang=en">English</a>
+        <a href="structured-output/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="structured-output/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="evals/">
+        <span class="paper-title">Evaluation: the part everyone skips</span>
+        <span class="paper-meta">Zheng et al., 2023, and the contamination problem</span>
+      </a>
+      <p class="paper-pitch">How big a golden set has to be before a difference means anything, and what a biased judge does to your numbers.</p>
+      <p class="paper-langs">
+        <a href="evals/?lang=en">English</a>
+        <a href="evals/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="evals/?lang=hi" lang="hi">हिंदी</a>
+      </p>
+    </li>
+
+    <li class="paper">
+      <a class="paper-link" href="prompt-injection/">
+        <span class="paper-title">Prompt injection: why the model cannot tell your instructions from theirs</span>
+        <span class="paper-meta">Greshake et al., 2023</span>
+      </a>
+      <p class="paper-pitch">Instructions and data share one channel, and there is no prepared statement to switch to. A system-design problem, not a filter.</p>
+      <p class="paper-langs">
+        <a href="prompt-injection/?lang=en">English</a>
+        <a href="prompt-injection/?lang=ta" lang="ta">தமிழ்</a>
+        <a href="prompt-injection/?lang=hi" lang="hi">हिंदी</a>
       </p>
     </li>
 

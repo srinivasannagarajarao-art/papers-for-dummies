@@ -1,0 +1,1483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evaluation: the part everyone skips — for programmers</title>
+<meta name="description" content="LLM-as-a-judge, benchmarks and contamination explained as a test suite. Sample size, judge bias, leakage and slice regressions, printed as real numbers by a runnable NumPy script.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Evaluation: the part everyone skips</h1>
+    <p class="paper-meta">Zheng et al., 2023 — with Liang et al., 2022 and Sainz et al., 2023</p>
+    <p class="lede">
+      You can't unit-test "is this answer good", so people ship on vibes and
+      find the regression in production.
+    </p>
+    <p>
+      <a href="evals_from_scratch.py" download>Download evals_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+
+  <p>
+    Blunt about the script first, the same way
+    <a href="../chain-of-thought/">the chain-of-thought page</a> is about its
+    state machine and <a href="../rag/">the RAG page</a> is about its retriever.
+    <strong>There is no language model in this one.</strong> The systems, the
+    judges and the graders are explicit probability models, five lines each,
+    and the code says so on the line above. That is not a shortcut — it is the
+    only way any of this can be measured. You cannot check whether an
+    evaluation recovers the truth unless you set the truth yourself first.
+  </p>
+
+  <p>
+    <a href="../attention/">The attention page</a> ends with a list of what
+    actually separates AI engineers from people who can recite the transformer
+    architecture. Eval design is on that list. This page is that debt paid.
+    Every other page on this site proves its claim by running code. This is the
+    one where that stops being easy, and that is exactly why it gets skipped.
+  </p>
+
+  <h2>It's a test suite. That's the whole metaphor.</h2>
+
+  <p>You have written this a thousand times:</p>
+
+<pre><code>def test_parse_date():
+    assert parse("2024-01-02") == date(2024, 1, 2)   # passes or it doesn't</code></pre>
+
+  <p>
+    The assertion is exact, deterministic and free. Now the model version. The
+    output is a paragraph, "correct" is a matter of degree, and the only thing
+    on hand that can grade it at any scale is another model:
+  </p>
+
+<pre><code>def test_summary():
+    out = model(prompt)
+    assert judge(out) == "good"      # a flaky assertion, and it costs money</code></pre>
+
+  <p>
+    Nothing about your instincts changes here. A flaky test is worse than no
+    test, because it teaches you to ignore red. A test that passes because the
+    answer leaked into the fixture is worse still, because it teaches you to
+    trust green. Both of those failures have exact analogues in LLM evaluation,
+    they both have numbers attached, and this page prints them.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Golden set</strong></td><td>Your fixed set of test cases with known-good answers</td><td>The test fixtures, checked into the repo</td></tr>
+      <tr><td><strong>LLM-as-a-judge</strong></td><td>A model grading another model's output</td><td>An assertion that is itself a flaky service call</td></tr>
+      <tr><td><strong>Pairwise / arena</strong></td><td>Show a grader two answers, ask which is better</td><td>A diff review instead of an absolute code score</td></tr>
+      <tr><td><strong>Contamination</strong></td><td>Benchmark items that were in the training data</td><td>The test leaked into the fixture. It always passes.</td></tr>
+      <tr><td><strong>Slice</strong></td><td>Score broken out per category of input</td><td>Per-module test results, not just "42 passed"</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Three papers, one problem</h2>
+
+  <p>
+    <strong>HELM</strong> (Liang et al., 2022) is the argument against a single
+    number. Its contribution is breadth and multi-metric reporting: scenarios
+    crossed with metrics — accuracy, calibration, robustness, bias, toxicity,
+    efficiency — side by side rather than collapsed into one leaderboard
+    column. In test-suite terms: stop reporting "97% passing", report the
+    matrix.
+  </p>
+
+  <p>
+    <strong>Judging LLM-as-a-Judge</strong> (Zheng et al., 2023) is the paper
+    that made grading-by-model respectable. On their benchmarks — MT-Bench and
+    Chatbot Arena — they report strong agreement between capable judge models
+    and human preference, on the order of the agreement between two humans.
+    That is their reported finding on their data, not a general guarantee about
+    your task. The same paper documents the failure modes carefully: position
+    bias, verbosity bias, self-enhancement bias, and weakness on maths and
+    reasoning grading. Read it as "this works, here is exactly how it lies".
+  </p>
+
+  <p>
+    <strong>Contamination</strong> (Sainz et al., 2023, and a growing pile
+    since) is the unresolved one. Benchmarks are public text on the internet.
+    Training corpora are scraped from the internet. Detecting the overlap
+    reliably, especially for a model whose training data you cannot see, is
+    still an open problem. Nobody has fixed this. Assume your favourite public
+    benchmark is partly contaminated and you will rarely be wrong.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <p>
+    Not a model formula. This is the one you actually need, and almost nobody
+    computes it before sizing a golden set:
+  </p>
+
+  <div class="formula">gap ± 1.96 √( p<sub>A</sub>(1−p<sub>A</sub>)/n + p<sub>B</sub>(1−p<sub>B</sub>)/n )</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Size</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>p<sub>A</sub>, p<sub>B</sub></code></td><td>scalars</td><td>Measured pass rates. Each test case is a coin flip; this is the coin's bias</td></tr>
+      <tr><td><code>p(1−p)/n</code></td><td>scalar</td><td>Variance of one measured rate. Note the <code>n</code> underneath — this is the only knob you own</td></tr>
+      <tr><td><code>sum, then √</code></td><td>scalar</td><td>Two independent systems: add variances, take the root. That's the standard error of the difference</td></tr>
+      <tr><td><code>× 1.96</code></td><td>scalar</td><td>Turns it into a 95% interval. The 1.96 is a lookup, not a derivation</td></tr>
+      <tr><td><code>gap ±</code></td><td>interval</td><td>If it straddles 0, <strong>your eval cannot tell the two systems apart</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>How big does the golden set have to be?</h2>
+
+  <p>
+    Set up two systems where I <em>know</em> the answer: A is right 72% of the
+    time, B is right 78%. A real, worth-shipping, six-point improvement. Now run
+    the eval at four sizes, four thousand times each, and count how often it
+    gets the ranking backwards.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>true accuracy:  system A = 0.72   system B = 0.78   true gap = +0.06
+
+ n      mean measured   typical 95% CI        picks the
+        gap             on the gap            WORSE system
+ --------------------------------------------------------------
+   20     +0.059       [-0.208, +0.328]        <span class="hl">26.8%</span>
+   50     +0.060       [-0.109, +0.229]         20.7%
+  200     +0.060       [-0.025, +0.145]          6.8%
+ 1000     +0.059       [+0.022, +0.098]        <span class="ok">0.1% ✓</span></code></pre>
+
+  <p>
+    Look at the middle column, not the left one. The measured gap is right on
+    average at every size — the eval isn't <em>biased</em>. It's just so wide at
+    n=20 that the interval spans everything from "B is 21 points worse" to "B is
+    33 points better", and one run in four crowns the worse system. That's a
+    coin flip with extra steps and a dashboard.
+  </p>
+
+  <p>
+    At n=1000 the interval finally excludes zero. That is what a six-point
+    difference actually costs. If your golden set is twenty hand-written cases
+    — and mine was, for a year — you have been sampling noise and telling a
+    story about it.
+  </p>
+
+  <div class="note">
+    <strong>Smaller effects need quadratically more cases.</strong> The
+    <code>√n</code> is doing the damage: halving the effect you want to detect
+    costs four times the test set. This is why "we'll just eyeball a few
+    examples" fails at exactly the point where it matters — the late-stage
+    changes are always the small ones.
+  </div>
+
+  <h2>Your judge is right 80% of the time. What does that cost?</h2>
+
+  <p>
+    Model the judge as simply as it can be modelled: it repeats the true verdict
+    with probability <code>a</code>, and flips it otherwise. That has a closed
+    form, and the closed form is the whole lesson:
+  </p>
+
+  <div class="formula">measured_gap = (2a − 1) × true_gap</div>
+
+  <p>
+    A judge that agrees with a human 80% of the time doesn't add noise around
+    your number. It <strong>multiplies your number by 0.6</strong>, every time,
+    in the same direction. Two systems 20 points apart in reality:
+  </p>
+
+<pre><code>true gap between A and B, graded by a perfect human: 0.2003
+
+ judge      measured    measured    measured   gap kept
+ agreement  acc(A)      acc(B)      gap
+ --------------------------------------------------------------
+  1.00      0.5998      0.8001      +0.2003     <span class="ok">100.0% ✓</span>
+  0.95      0.5904      0.7712      +0.1808      90.3%
+  0.90      0.5823      0.7369      +0.1547      77.3%
+  0.80      0.5559      0.6791      +0.1232      61.5%
+  0.70      0.5398      0.6223      +0.0825      41.2%
+  0.60      0.5223      0.5626      +0.0403      20.1%
+  0.50      0.5017      0.4951      -0.0066      <span class="hl">-3.3%</span></code></pre>
+
+  <p>
+    Two things fall out of that table. First: a mediocre judge doesn't tell you
+    lies at random, it <em>compresses</em> — every system drifts toward 50% and
+    every gap shrinks. Your leaderboard gets flatter and flatter until
+    everything looks the same, which people read as "we've plateaued". Second,
+    and worse: the compression interacts with the section above. A gap squeezed
+    to 60% of its size needs roughly <em>three times</em> the test cases to
+    reach the same confidence.
+  </p>
+
+  <p>
+    This is why "measure your judge against human labels" is not bureaucracy.
+    You need <code>a</code> to know what your numbers mean, and it costs a few
+    hundred human-labelled cases, once.
+  </p>
+
+  <h2>The three biases, each one measurable</h2>
+
+  <p>
+    Give two answers of <em>identical</em> quality to a judge. A fair judge
+    returns 50.0% and nothing else. Anything above that is manufactured. Here
+    are the three biases the LLM-as-a-judge paper documents, each simulated as a
+    single additive nudge, then mitigated:
+  </p>
+
+<pre><code>Two answers of IDENTICAL quality. A fair judge must return 50.0%.
+
+ bias                       naive     after mitigation  residual
+ --------------------------------------------------------------
+ position (+0.10 to first)  <span class="hl">60.1%</span>     49.9%            <span class="ok">0.0012 ✓</span>
+ length   (+0.12 to longer) <span class="hl">62.2%</span>     49.7%            <span class="ok">0.0031 ✓</span>
+ self-preference (+0.08)    <span class="hl">57.9%</span>     49.7%            <span class="ok">0.0032 ✓</span></code></pre>
+
+  <p>The mitigations are all boring, which is the good news:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Bias</th><th>Mitigation</th><th>Why it works</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Position</strong> — whoever is shown first wins more</td><td>Ask twice, positions swapped, average the two verdicts</td><td>A constant bonus to "first" appears on both sides and cancels exactly</td></tr>
+      <tr><td><strong>Length</strong> — the longer answer wins</td><td>Compare within a length bucket, or normalise for length</td><td>If both answers are the same length there is nothing for the bias to key on</td></tr>
+      <tr><td><strong>Self-preference</strong> — the judge likes its own family</td><td>A panel of judges from different families, verdicts averaged</td><td>Two opposite leans of roughly equal size cancel in the mean</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The residual column is the point. It's what the mitigation did
+    <em>not</em> remove, it is never exactly zero, and it belongs in your report
+    next to the win rate. "System A wins 58% of the time" and "system A wins 58%
+    of the time, and our judge manufactures 8 points of that when it grades its
+    own family" are different claims.
+  </p>
+
+  <div class="note">
+    <strong>The swap is the cheapest win in this entire page.</strong> It
+    doubles your judge cost and removes a ten-point systematic lie. If you do
+    one thing from here, do that.
+  </div>
+
+  <h2>Contamination: the test leaked into the fixture</h2>
+
+  <p>
+    Hold a model's true ability fixed at 0.55 — it never gets better, not once,
+    anywhere in this table — and vary only the fraction of the benchmark that
+    appeared in its training data. Leaked items aren't tests any more. They're
+    dictionary lookups.
+  </p>
+
+<pre><code>true held-out ability, held CONSTANT at 0.55
+
+ leaked fraction   benchmark score   clean score   inflation
+ --------------------------------------------------------------
+        0%            0.5500           0.5500       <span class="ok">+0.0000 ✓</span>
+        5%            0.5715           0.5500       +0.0215
+       15%            0.6145           0.5500       +0.0645
+       30%            0.6790           0.5500       +0.1290
+       50%            0.7650           0.5500       +0.2150
+       80%            0.8940           0.5500       <span class="hl">+0.3440</span>
+
+A leaderboard-topping model on a 30% contaminated benchmark:
+  model X: contaminated 0.6790   clean 0.5500
+  model Y: contaminated 0.6200   clean 0.6200
+  ranking on the benchmark: X wins. Ranking on clean data: Y wins.</code></pre>
+
+  <p>
+    That last block is the shape of the problem in three lines. X looks
+    excellent and is ordinary. Y looks ordinary and is better. The benchmark
+    ranks them backwards and no amount of re-running fixes it, because
+    <strong>leakage is bias, not noise</strong>. It only ever points up. Noise
+    averages out; this doesn't.
+  </p>
+
+  <p>
+    Nothing in that table measures any real model or any real benchmark — it's
+    arithmetic on numbers I chose. What it shows is the <em>shape</em>: a 30%
+    leak buys thirteen free points of nothing.
+  </p>
+
+  <div class="note">
+    <strong>The engineering response is dull and it works:</strong> hold out a
+    private eval set that has never been published anywhere, date-stamp it after
+    the model's training cutoff where you can, and treat every public benchmark
+    number — including your own — as an upper bound.
+  </div>
+
+  <h2>Why "rate it 1 to 5" is worse than "which is better"</h2>
+
+  <p>
+    Same underlying quality, two ways of asking. A is truly 0.60, B is truly
+    0.70. The absolute grader maps quality onto a 1–5 scale and carries a
+    per-session calibration offset — today it's generous, next week it's stern —
+    because a scale needs an anchor it doesn't have. You rate A in one session
+    and B in another, so that offset lands straight in your gap. The pairwise
+    grader sees both answers in the same session and only has to say which is
+    better, so the offset sits on both sides and cancels.
+  </p>
+
+<pre><code>true quality: A = 0.60, B = 0.70. 400 repeats of a 30-case eval.
+grader noise 0.7 per item, calibration drift 0.6 per session.
+
+  absolute 1-5   mean gap +0.445   std 0.799   picks B  <span class="hl">68.5%</span>
+  pairwise A/B   mean rate 0.659   std 0.085   picks B  <span class="ok">94.0% ✓</span>
+
+  signal-to-spread: absolute 0.56, pairwise 1.88</code></pre>
+
+  <p>
+    Note what does <em>not</em> fix the absolute score: more test cases. The
+    drift is shared by every item in the session, so averaging over items never
+    touches it. The comparison isn't less noisy because the grader tried
+    harder — it's less noisy because the question has fewer degrees of freedom.
+  </p>
+
+  <p>
+    This is the same reason <a href="../rlhf/">the reward model in RLHF</a> is
+    fitted to A-vs-B votes rather than star ratings, and it's why the arena
+    format in the LLM-as-a-judge paper is pairwise. Humans and models are both
+    bad at absolute scales and both fine at comparisons. Design around it.
+  </p>
+
+  <h2>The aggregate went up. Do not ship it.</h2>
+
+  <p>
+    This is what an eval harness is actually <em>for</em>, and it's the section
+    I'd want on a whiteboard in an interview. A deploy improves four categories
+    and destroys the fifth:
+  </p>
+
+<pre><code> category      before    after     delta
+ --------------------------------------------------------------
+ summarise     0.6970   0.8270   +0.1300
+ extract       0.7155   0.8520   +0.1365
+ classify      0.7480   0.8645   +0.1165
+ translate     0.6875   0.7995   +0.1120
+ code          0.7025   0.3425   <span class="hl">-0.3600  &lt;-- REGRESSION</span>
+ --------------------------------------------------------------
+ AGGREGATE     0.7101   0.7371   <span class="ok">+0.0270   &lt;-- ships green</span>
+
+ aggregate 95% CI on the change: [+0.0146, +0.0394] -- 'significant improvement'</code></pre>
+
+  <p>
+    The aggregate rose. The confidence interval excludes zero. By every rule in
+    the first half of this page, that is a real, statistically significant
+    improvement, and it is also a disaster: one user in five just lost more than
+    half their success rate. The green number and the red one are the same
+    deploy.
+  </p>
+
+  <p>
+    The fix is four lines — group by category, compare per group, fail the build
+    if any group drops past a threshold. It's the difference between "42 tests
+    passed" and a per-module report. Nobody would accept the former from CI and
+    everybody accepts it from an eval.
+  </p>
+
+  <div class="note">
+    <strong>Slice before you aggregate.</strong> Every aggregate score is a
+    weighted average that can hide an arbitrarily bad category, and the rarer
+    the category, the better it hides. Your smallest slice is where your worst
+    regression lives.
+  </div>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    முதலில் script-ஐப் பற்றி நேரடியாக — <a href="../chain-of-thought/">chain-of-thought
+    பக்கம்</a> தன் state machine பற்றியும், <a href="../rag/">RAG பக்கம்</a> தன்
+    retriever பற்றியும் நேரடியாகச் சொல்வது போலவே.
+    <strong>இதில் language model எதுவும் இல்லை.</strong> Systems, judges,
+    graders — எல்லாமே வெளிப்படையான probability models, தலா ஐந்து வரிகள், அதற்கு
+    மேலே உள்ள வரியில் code அதைச் சொல்லிவிடுகிறது. இது ஒரு எளிய வழி அல்ல — இதைத்
+    தவிர இதை அளக்க வேறு வழியே இல்லை. உண்மையை நீங்களே முதலில் நிர்ணயிக்காமல்,
+    ஒரு evaluation அந்த உண்மையை மீட்டெடுக்கிறதா என்று சோதிக்க முடியாது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (eval, golden set, judge,
+    benchmark, contamination, confidence interval, position bias, length bias,
+    self-preference, pairwise, absolute, slice, regression…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <p>
+    <a href="../attention/">Attention பக்கம்</a>, transformer architecture-ஐ
+    ஒப்பிக்கத் தெரிந்தவர்களுக்கும் உண்மையான AI engineers-க்கும் இடையே உள்ள
+    வித்தியாசம் என்ன என்ற பட்டியலோடு முடிகிறது. Eval design அந்தப் பட்டியலில்
+    இருக்கிறது. இந்தப் பக்கம் அந்தக் கடனைத் தீர்ப்பது. இந்த site-ன் ஒவ்வொரு
+    பக்கமும் தன் கூற்றை code ஓட்டி நிரூபிக்கிறது. அது எளிதாக இருப்பது இங்கே
+    நின்றுவிடுகிறது — அதனால்தான் இது தவிர்க்கப்படுகிறது.
+  </p>
+
+  <h2>இது ஒரு test suite. உருவகம் அவ்வளவுதான்.</h2>
+
+  <p>இதை நீங்கள் ஆயிரம் முறை எழுதியிருக்கிறீர்கள்:</p>
+
+<pre><code>def test_parse_date():
+    assert parse("2024-01-02") == date(2024, 1, 2)   # pass ஆகும், இல்லை fail</code></pre>
+
+  <p>
+    Assertion துல்லியமானது, deterministic, இலவசம். இப்போது model பதிப்பு.
+    Output ஒரு பத்தி, "சரி" என்பது அளவின் விஷயம், அதை எந்த scale-லும் grade
+    செய்யக் கையில் இருப்பது இன்னொரு model மட்டுமே:
+  </p>
+
+<pre><code>def test_summary():
+    out = model(prompt)
+    assert judge(out) == "good"      # flaky assertion, அதுவும் காசு பிடிக்கும்</code></pre>
+
+  <p>
+    உங்கள் உள்ளுணர்வில் இங்கே எதுவும் மாறவில்லை. Test-ஏ இல்லாததை விட flaky
+    test மோசம், ஏனெனில் அது சிவப்பை அலட்சியப்படுத்தக் கற்றுத் தருகிறது. விடை
+    fixture-க்குள் கசிந்ததால் pass ஆகும் test அதைவிட மோசம், ஏனெனில் அது
+    பச்சையை நம்பக் கற்றுத் தருகிறது. இந்த இரண்டு தோல்விகளுக்கும் LLM
+    evaluation-ல் அப்படியே இணையான வடிவங்கள் உண்டு, இரண்டுக்கும் எண்கள் உண்டு,
+    இந்தப் பக்கம் அவற்றை அச்சிடுகிறது.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Golden set</strong></td><td>சரியான விடைகள் தெரிந்த, நிலையான test cases தொகுப்பு</td><td>Repo-வில் check-in செய்த test fixtures</td></tr>
+      <tr><td><strong>LLM-as-a-judge</strong></td><td>ஒரு model இன்னொரு model-ன் output-ஐ grade செய்வது</td><td>தானே flaky service call ஆக இருக்கும் ஒரு assertion</td></tr>
+      <tr><td><strong>Pairwise / arena</strong></td><td>Grader-க்கு இரண்டு விடைகளைக் காட்டி, எது சிறந்தது எனக் கேட்பது</td><td>Absolute code score-க்குப் பதிலாக ஒரு diff review</td></tr>
+      <tr><td><strong>Contamination</strong></td><td>Training data-வில் ஏற்கனவே இருந்த benchmark items</td><td>Test fixture-க்குள் கசிந்துவிட்டது. எப்போதும் pass ஆகும்.</td></tr>
+      <tr><td><strong>Slice</strong></td><td>Input வகைவாரியாகப் பிரித்த score</td><td>"42 passed" மட்டுமல்ல, module வாரியான முடிவுகள்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>மூன்று papers, ஒரே பிரச்சனை</h2>
+
+  <p>
+    <strong>HELM</strong> (Liang et al., 2022) என்பது ஒரே எண்ணுக்கு எதிரான
+    வாதம். அதன் பங்களிப்பு அகலமும் multi-metric reporting-ம்: scenarios ×
+    metrics — accuracy, calibration, robustness, bias, toxicity, efficiency —
+    ஒரே leaderboard column-ஆகச் சுருக்காமல் பக்கம் பக்கமாக. Test suite
+    மொழியில்: "97% passing" என்று சொல்வதை நிறுத்துங்கள், matrix-ஐக்
+    காட்டுங்கள்.
+  </p>
+
+  <p>
+    <strong>Judging LLM-as-a-Judge</strong> (Zheng et al., 2023) தான்
+    model-ஐ வைத்து grade செய்வதை மதிப்புக்குரியதாக்கிய paper. அவர்களின்
+    benchmarks-ல் — MT-Bench மற்றும் Chatbot Arena — திறமையான judge models-க்கும்
+    மனித விருப்பத்திற்கும் இடையே வலுவான ஒத்திசைவு, அதாவது இரு மனிதர்களுக்கு
+    இடையேயான ஒத்திசைவின் அளவு, என்று அவர்கள் அறிக்கையிடுகிறார்கள். அது
+    அவர்களின் data-வில் அவர்கள் கண்ட முடிவு; உங்கள் task-க்கான பொதுவான உத்தரவாதம்
+    அல்ல. அதே paper தோல்வி வடிவங்களையும் கவனமாகப் பதிவு செய்கிறது: position
+    bias, verbosity bias, self-enhancement bias, மற்றும் கணிதம் மற்றும்
+    reasoning grading-ல் பலவீனம். "இது வேலை செய்கிறது, இதோ இது எப்படிப்
+    பொய் சொல்கிறது" என்று படியுங்கள்.
+  </p>
+
+  <p>
+    <strong>Contamination</strong> (Sainz et al., 2023, அதன் பிறகு வளர்ந்து
+    வரும் குவியல்) தான் தீர்க்கப்படாதது. Benchmarks என்பவை internet-ல் உள்ள
+    பொதுவான text. Training corpora internet-லிருந்து scrape செய்யப்படுகிறது.
+    அந்த overlap-ஐ நம்பகமாகக் கண்டறிவது — குறிப்பாக training data தெரியாத ஒரு
+    model-க்கு — இன்னும் திறந்த பிரச்சனையாகவே இருக்கிறது. இதை யாரும்
+    சரிசெய்யவில்லை. உங்களுக்குப் பிடித்த பொது benchmark ஓரளவு contaminated
+    என்று வைத்துக்கொள்ளுங்கள், அரிதாகவே தவறாகப் போவீர்கள்.
+  </p>
+
+  <p class="thanglish">
+    Moonu papers, ore problem: HELM sollradhu "ore number venaam, matrix
+    kaattu". LLM-as-a-judge sollradhu "model judge nalla velai seiyum, aana
+    idhoda bias-um irukku". Contamination paper sollradhu "public benchmark
+    ellaam konjam leak aagi irukkum, adhu innum solve aagala".
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <p>
+    Model சூத்திரம் அல்ல. உங்களுக்கு உண்மையில் தேவைப்படுவது இதுதான், golden
+    set-ன் அளவை முடிவு செய்யும் முன் இதை யாருமே கணக்கிடுவதில்லை:
+  </p>
+
+  <div class="formula">gap ± 1.96 √( p<sub>A</sub>(1−p<sub>A</sub>)/n + p<sub>B</sub>(1−p<sub>B</sub>)/n )</div>
+
+  <p>Pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>அளவு</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>p<sub>A</sub>, p<sub>B</sub></code></td><td>scalars</td><td>அளந்த pass rates. ஒவ்வொரு test case-ம் ஒரு நாணய சுழற்சி; இது அந்த நாணயத்தின் சாய்வு</td></tr>
+      <tr><td><code>p(1−p)/n</code></td><td>scalar</td><td>அளந்த ஒரு rate-ன் variance. கீழே உள்ள <code>n</code>-ஐக் கவனியுங்கள் — உங்கள் கையில் இருக்கும் ஒரே knob அதுதான்</td></tr>
+      <tr><td><code>sum, பிறகு √</code></td><td>scalar</td><td>இரு தனித்த systems: variance-களைக் கூட்டி, root எடுங்கள். அதுதான் வித்தியாசத்தின் standard error</td></tr>
+      <tr><td><code>× 1.96</code></td><td>scalar</td><td>அதை 95% interval ஆக்குகிறது. 1.96 என்பது ஒரு lookup, derivation அல்ல</td></tr>
+      <tr><td><code>gap ±</code></td><td>interval</td><td>இது 0-ஐத் தாண்டி நின்றால், <strong>இரு systems-ஐயும் உங்கள் eval-ஆல் வேறுபடுத்த முடியாது</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Golden set எவ்வளவு பெரிதாக இருக்க வேண்டும்?</h2>
+
+  <p>
+    விடை எனக்கு <em>தெரிந்த</em> இரு systems அமைக்கிறேன்: A 72% நேரம் சரி,
+    B 78% நேரம் சரி. உண்மையான, ship செய்யத் தகுந்த, ஆறு புள்ளி முன்னேற்றம்.
+    இப்போது eval-ஐ நான்கு அளவுகளில், தலா நாலாயிரம் முறை ஓட்டி, எத்தனை முறை
+    ranking-ஐத் தலைகீழாகச் சொல்கிறது என்று எண்ணுங்கள்.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்பாதீர்கள். இதோ உண்மையான output:</strong></p>
+
+<pre><code>true accuracy:  system A = 0.72   system B = 0.78   true gap = +0.06
+
+ n      mean measured   typical 95% CI        picks the
+        gap             on the gap            WORSE system
+ --------------------------------------------------------------
+   20     +0.059       [-0.208, +0.328]        <span class="hl">26.8%</span>
+   50     +0.060       [-0.109, +0.229]         20.7%
+  200     +0.060       [-0.025, +0.145]          6.8%
+ 1000     +0.059       [+0.022, +0.098]        <span class="ok">0.1% ✓</span></code></pre>
+
+  <p>
+    இடது column அல்ல, நடு column-ஐப் பாருங்கள். அளந்த gap எல்லா அளவுகளிலும்
+    சராசரியாகச் சரியாகவே இருக்கிறது — eval <em>bias</em> கொண்டதல்ல. ஆனால்
+    n=20-ல் அது எவ்வளவு அகலமாக இருக்கிறது என்றால், interval "B 21 புள்ளி
+    மோசம்" முதல் "B 33 புள்ளி சிறந்தது" வரை பரவுகிறது, நான்கில் ஒரு run
+    மோசமான system-க்கு முடி சூட்டுகிறது. அது கூடுதல் படிகளும் ஒரு dashboard-ம்
+    சேர்ந்த நாணய சுழற்சி.
+  </p>
+
+  <p>
+    n=1000-ல் தான் interval இறுதியாக zero-ஐ விலக்குகிறது. ஆறு புள்ளி
+    வித்தியாசத்திற்கு உண்மையில் ஆகும் விலை அதுதான். உங்கள் golden set இருபது
+    கையால் எழுதிய cases என்றால் — என்னுடையதும் ஒரு வருடம் அப்படித்தான் இருந்தது
+    — நீங்கள் noise-ஐ sample செய்து அதைப் பற்றி ஒரு கதை சொல்லிக்கொண்டிருந்தீர்கள்.
+  </p>
+
+  <div class="note">
+    <strong>சிறிய effects-க்கு இருமடங்கு அல்ல, வர்க்க அளவில் அதிக cases
+    தேவை.</strong> <code>√n</code> தான் இந்தச் சேதத்தைச் செய்கிறது: கண்டறிய
+    விரும்பும் effect-ஐ பாதியாக்கினால் test set நான்கு மடங்கு ஆகும். "சில
+    examples-ஐப் பார்த்துவிடலாம்" என்பது எங்கே முக்கியமோ அங்கேயே தோல்வியடைவதற்குக்
+    காரணம் இதுதான் — கடைசி கட்ட மாற்றங்கள் எப்போதும் சிறியவை.
+  </div>
+
+  <h2>உங்கள் judge 80% நேரம் சரி. அதன் விலை என்ன?</h2>
+
+  <p>
+    Judge-ஐ முடிந்தவரை எளிமையாக model செய்யுங்கள்: அது உண்மையான தீர்ப்பை
+    <code>a</code> நிகழ்தகவுடன் திரும்பச் சொல்கிறது, இல்லையேல் அதைப் புரட்டிப்
+    போடுகிறது. அதற்கு ஒரு closed form உண்டு, அந்த closed form தான் முழுப்
+    பாடம்:
+  </p>
+
+  <div class="formula">measured_gap = (2a − 1) × true_gap</div>
+
+  <p>
+    80% நேரம் மனிதனுடன் ஒத்துப்போகும் ஒரு judge, உங்கள் எண்ணைச் சுற்றி noise
+    சேர்ப்பதில்லை. அது <strong>உங்கள் எண்ணை 0.6-ஆல் பெருக்குகிறது</strong>,
+    ஒவ்வொரு முறையும், ஒரே திசையில். உண்மையில் 20 புள்ளி இடைவெளியுள்ள இரு
+    systems:
+  </p>
+
+<pre><code>true gap between A and B, graded by a perfect human: 0.2003
+
+ judge      measured    measured    measured   gap kept
+ agreement  acc(A)      acc(B)      gap
+ --------------------------------------------------------------
+  1.00      0.5998      0.8001      +0.2003     <span class="ok">100.0% ✓</span>
+  0.95      0.5904      0.7712      +0.1808      90.3%
+  0.90      0.5823      0.7369      +0.1547      77.3%
+  0.80      0.5559      0.6791      +0.1232      61.5%
+  0.70      0.5398      0.6223      +0.0825      41.2%
+  0.60      0.5223      0.5626      +0.0403      20.1%
+  0.50      0.5017      0.4951      -0.0066      <span class="hl">-3.3%</span></code></pre>
+
+  <p>
+    அந்த table-லிருந்து இரண்டு விஷயங்கள் விழுகின்றன. முதலாவது: சுமாரான judge
+    தற்செயலாகப் பொய் சொல்வதில்லை, அது <em>சுருக்குகிறது</em> — ஒவ்வொரு system-ம்
+    50%-ஐ நோக்கி நகர்கிறது, ஒவ்வொரு gap-ம் சுருங்குகிறது. உங்கள் leaderboard
+    தட்டையாகிக்கொண்டே போய் எல்லாமே ஒரே மாதிரி தெரியும், அதை மக்கள் "நாம்
+    plateau அடைந்துவிட்டோம்" என்று படிக்கிறார்கள். இரண்டாவது, இன்னும் மோசம்:
+    இந்தச் சுருக்கம் மேலே உள்ள பகுதியுடன் இணைந்து செயல்படுகிறது. அதன் அளவில்
+    60%-ஆகச் சுருக்கப்பட்ட ஒரு gap, அதே confidence-ஐ அடைய ஏறக்குறைய
+    <em>மூன்று மடங்கு</em> test cases கேட்கும்.
+  </p>
+
+  <p>
+    "உங்கள் judge-ஐ மனித labels-க்கு எதிராக அளவிடுங்கள்" என்பது அதிகாரவர்க்க
+    சடங்கு அல்ல, அதற்குக் காரணம் இதுதான். உங்கள் எண்களின் அர்த்தம் தெரிய
+    <code>a</code> வேண்டும், அதற்கு ஒரே ஒரு முறை சில நூறு மனிதர் label
+    செய்த cases போதும்.
+  </p>
+
+  <p class="thanglish">
+    Judge 80% agreement-nu vechukkonga — adhu gap-ai 0.6-ah kuraikkum,
+    randomly illa, ore direction-la. Ellaa system-um 50%-kku nagarum,
+    leaderboard flat aagum. So judge-oda agreement-ai oru thadava alandhu vainga.
+  </p>
+
+  <h2>மூன்று biases, ஒவ்வொன்றும் அளக்கக்கூடியது</h2>
+
+  <p>
+    <em>ஒரே</em> தரமுள்ள இரு விடைகளை ஒரு judge-க்குக் கொடுங்கள். நேர்மையான
+    judge 50.0% திருப்பித் தரும், வேறெதுவும் இல்லை. அதற்கு மேல் உள்ளது எல்லாம்
+    தயாரிக்கப்பட்டது. LLM-as-a-judge paper பதிவு செய்யும் மூன்று biases இதோ,
+    ஒவ்வொன்றும் ஒரே ஒரு கூட்டல் தள்ளலாக simulate செய்யப்பட்டு, பிறகு
+    தணிக்கப்படுகிறது:
+  </p>
+
+<pre><code>Two answers of IDENTICAL quality. A fair judge must return 50.0%.
+
+ bias                       naive     after mitigation  residual
+ --------------------------------------------------------------
+ position (+0.10 to first)  <span class="hl">60.1%</span>     49.9%            <span class="ok">0.0012 ✓</span>
+ length   (+0.12 to longer) <span class="hl">62.2%</span>     49.7%            <span class="ok">0.0031 ✓</span>
+ self-preference (+0.08)    <span class="hl">57.9%</span>     49.7%            <span class="ok">0.0032 ✓</span></code></pre>
+
+  <p>Mitigations எல்லாமே சலிப்பானவை, அதுதான் நல்ல செய்தி:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Bias</th><th>Mitigation</th><th>ஏன் வேலை செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Position</strong> — முதலில் காட்டப்படுபவர் அதிகம் ஜெயிக்கிறார்</td><td>இரு முறை கேளுங்கள், position-களை மாற்றி, இரு தீர்ப்புகளையும் சராசரி செய்யுங்கள்</td><td>"முதலில்" இருப்பவருக்கான நிலையான bonus இரு பக்கமும் வந்து சரியாக ரத்தாகிறது</td></tr>
+      <tr><td><strong>Length</strong> — நீளமான விடை ஜெயிக்கிறது</td><td>ஒரே length bucket-க்குள் ஒப்பிடுங்கள், அல்லது length-க்கு normalise செய்யுங்கள்</td><td>இரு விடைகளும் ஒரே நீளம் என்றால் bias-க்குப் பிடித்துக்கொள்ள எதுவும் இல்லை</td></tr>
+      <tr><td><strong>Self-preference</strong> — judge-க்குத் தன் குடும்பமே பிடிக்கும்</td><td>வெவ்வேறு families-லிருந்து ஒரு panel of judges, தீர்ப்புகளைச் சராசரி செய்யுங்கள்</td><td>ஏறக்குறைய சம அளவுள்ள எதிரெதிர் சாய்வுகள் சராசரியில் ரத்தாகின்றன</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Residual column தான் முக்கியம். Mitigation எதை நீக்க <em>வில்லையோ</em>
+    அதுதான் அது, அது ஒருபோதும் சரியாகப் பூஜ்யம் அல்ல, அது உங்கள் அறிக்கையில்
+    win rate-க்கு அடுத்ததாக இடம்பெற வேண்டும். "System A 58% நேரம் ஜெயிக்கிறது"
+    என்பதும், "System A 58% நேரம் ஜெயிக்கிறது, அதில் 8 புள்ளிகளை நம் judge
+    தன் சொந்தக் குடும்பத்தை grade செய்யும்போது தானே தயாரிக்கிறது" என்பதும்
+    வெவ்வேறு கூற்றுகள்.
+  </p>
+
+  <div class="note">
+    <strong>இந்தப் பக்கத்திலேயே மலிவான வெற்றி இந்த swap தான்.</strong> இது
+    உங்கள் judge செலவை இரட்டிப்பாக்குகிறது, பத்து புள்ளி systematic பொய்யை
+    நீக்குகிறது. இங்கிருந்து ஒரே ஒரு விஷயம் செய்வதாக இருந்தால், இதைச்
+    செய்யுங்கள்.
+  </div>
+
+  <h2>Contamination: test, fixture-க்குள் கசிந்துவிட்டது</h2>
+
+  <p>
+    ஒரு model-ன் உண்மையான திறனை 0.55-ல் நிலையாக வையுங்கள் — இந்த table-ல்
+    எங்குமே, ஒரு முறை கூட, அது மேம்படவில்லை — மேலும் benchmark-ல் எவ்வளவு
+    பங்கு training data-வில் வந்திருந்தது என்பதை மட்டும் மாற்றுங்கள். கசிந்த
+    items இனி tests அல்ல. அவை dictionary lookups.
+  </p>
+
+<pre><code>true held-out ability, held CONSTANT at 0.55
+
+ leaked fraction   benchmark score   clean score   inflation
+ --------------------------------------------------------------
+        0%            0.5500           0.5500       <span class="ok">+0.0000 ✓</span>
+        5%            0.5715           0.5500       +0.0215
+       15%            0.6145           0.5500       +0.0645
+       30%            0.6790           0.5500       +0.1290
+       50%            0.7650           0.5500       +0.2150
+       80%            0.8940           0.5500       <span class="hl">+0.3440</span>
+
+A leaderboard-topping model on a 30% contaminated benchmark:
+  model X: contaminated 0.6790   clean 0.5500
+  model Y: contaminated 0.6200   clean 0.6200
+  ranking on the benchmark: X wins. Ranking on clean data: Y wins.</code></pre>
+
+  <p>
+    அந்தக் கடைசி block தான் பிரச்சனையின் வடிவம், மூன்று வரிகளில். X அற்புதமாகத்
+    தெரிகிறது, சாதாரணமானது. Y சாதாரணமாகத் தெரிகிறது, சிறந்தது. Benchmark
+    அவற்றைத் தலைகீழாக வரிசைப்படுத்துகிறது, எத்தனை முறை மீண்டும் ஓட்டினாலும்
+    அது சரியாகாது, ஏனெனில் <strong>leakage என்பது bias, noise அல்ல</strong>.
+    அது எப்போதும் மேல்நோக்கியே சுட்டுகிறது. Noise சராசரியில் அழிந்துவிடும்;
+    இது அழியாது.
+  </p>
+
+  <p>
+    அந்த table-ல் எதுவும் உண்மையான model-ஐயோ உண்மையான benchmark-ஐயோ
+    அளக்கவில்லை — நான் தேர்ந்தெடுத்த எண்களின் மீதான கணக்கு அது. அது காட்டுவது
+    <em>வடிவம்</em>: 30% leak, பதின்மூன்று புள்ளிகளை இலவசமாக, ஒன்றுமில்லாமல்
+    வாங்கித் தருகிறது.
+  </p>
+
+  <div class="note">
+    <strong>Engineering பதில் சலிப்பானது, ஆனால் வேலை செய்கிறது:</strong>
+    எங்கும் வெளியிடப்படாத ஒரு தனிப்பட்ட eval set-ஐ ஒதுக்கி வையுங்கள்,
+    முடிந்தவரை model-ன் training cutoff-க்குப் பிறகான தேதி முத்திரையிடுங்கள்,
+    மேலும் ஒவ்வொரு பொது benchmark எண்ணையும் — உங்களுடையது உட்பட — ஒரு
+    upper bound ஆகவே கருதுங்கள்.
+  </div>
+
+  <h2>"1 முதல் 5 வரை மதிப்பிடு" ஏன் "எது சிறந்தது"-ஐ விட மோசம்</h2>
+
+  <p>
+    ஒரே அடிப்படைத் தரம், இரு விதமான கேள்விகள். A உண்மையில் 0.60, B உண்மையில்
+    0.70. Absolute grader தரத்தை 1–5 scale-ல் map செய்கிறது, மேலும் ஒவ்வொரு
+    session-க்கும் ஒரு calibration offset சுமக்கிறது — இன்று தாராளமாக,
+    அடுத்த வாரம் கடுமையாக — ஏனெனில் ஒரு scale-க்கு ஓர் anchor தேவை, அது
+    அதனிடம் இல்லை. நீங்கள் A-ஐ ஒரு session-லும் B-ஐ இன்னொன்றிலும்
+    மதிப்பிடுகிறீர்கள், அதனால் அந்த offset நேராக உங்கள் gap-ல் வந்து விழுகிறது.
+    Pairwise grader இரு விடைகளையும் ஒரே session-ல் பார்க்கிறது, எது சிறந்தது
+    என்று மட்டும் சொன்னால் போதும், அதனால் offset இரு பக்கமும் அமர்ந்து
+    ரத்தாகிறது.
+  </p>
+
+<pre><code>true quality: A = 0.60, B = 0.70. 400 repeats of a 30-case eval.
+grader noise 0.7 per item, calibration drift 0.6 per session.
+
+  absolute 1-5   mean gap +0.445   std 0.799   picks B  <span class="hl">68.5%</span>
+  pairwise A/B   mean rate 0.659   std 0.085   picks B  <span class="ok">94.0% ✓</span>
+
+  signal-to-spread: absolute 0.56, pairwise 1.88</code></pre>
+
+  <p>
+    Absolute score-ஐ எது சரிசெய்ய <em>வில்லை</em> என்பதைக் கவனியுங்கள்:
+    அதிகமான test cases. அந்த drift-ஐ session-ல் உள்ள ஒவ்வொரு item-ம் பகிர்ந்து
+    கொள்கிறது, எனவே items மீது சராசரி எடுப்பது அதைத் தொடுவதே இல்லை. ஒப்பீடு
+    குறைந்த noise உடையது grader அதிகம் முயற்சித்ததால் அல்ல — கேள்விக்கு
+    குறைவான degrees of freedom இருப்பதால்.
+  </p>
+
+  <p>
+    <a href="../rlhf/">RLHF-ல் reward model</a> star ratings-க்குப் பதிலாக
+    A-vs-B votes-க்குப் பொருத்தப்படுவதற்கும் இதே காரணம்தான், LLM-as-a-judge
+    paper-ல் arena format pairwise-ஆக இருப்பதற்கும் இதுவே காரணம். மனிதர்களும்
+    models-ம் absolute scales-ல் மோசம், ஒப்பீடுகளில் இரண்டுமே நன்றாக
+    இருக்கின்றன. அதைச் சுற்றி design செய்யுங்கள்.
+  </p>
+
+  <p class="thanglish">
+    Absolute rating-la oru session offset irukku, adhu neradiya gap-la
+    vandhu vizhum — case-a koottinaalum poga poradhu illa. Pairwise-la
+    rendu answer-um ore session, so offset cancel aagidum.
+  </p>
+
+  <h2>Aggregate ஏறிவிட்டது. Ship செய்யாதீர்கள்.</h2>
+
+  <p>
+    ஒரு eval harness உண்மையில் <em>எதற்காக</em> இருக்கிறது என்பது இதுதான்,
+    ஓர் interview-ல் whiteboard-ல் நான் விரும்பும் பகுதியும் இதுதான். ஒரு
+    deploy நான்கு categories-ஐ மேம்படுத்தி ஐந்தாவதை அழிக்கிறது:
+  </p>
+
+<pre><code> category      before    after     delta
+ --------------------------------------------------------------
+ summarise     0.6970   0.8270   +0.1300
+ extract       0.7155   0.8520   +0.1365
+ classify      0.7480   0.8645   +0.1165
+ translate     0.6875   0.7995   +0.1120
+ code          0.7025   0.3425   <span class="hl">-0.3600  &lt;-- REGRESSION</span>
+ --------------------------------------------------------------
+ AGGREGATE     0.7101   0.7371   <span class="ok">+0.0270   &lt;-- ships green</span>
+
+ aggregate 95% CI on the change: [+0.0146, +0.0394] -- 'significant improvement'</code></pre>
+
+  <p>
+    Aggregate ஏறியது. Confidence interval zero-ஐ விலக்குகிறது. இந்தப்
+    பக்கத்தின் முதல் பாதியில் உள்ள ஒவ்வொரு விதிப்படியும், அது ஓர் உண்மையான,
+    statistically significant முன்னேற்றம் — அதே சமயம் ஒரு பேரழிவும் கூட:
+    ஐந்தில் ஒரு பயனாளர் தன் வெற்றி விகிதத்தில் பாதிக்கு மேல் இழந்தார். பச்சை
+    எண்ணும் சிவப்பு எண்ணும் ஒரே deploy தான்.
+  </p>
+
+  <p>
+    சரிசெய்வது நான்கு வரிகள் — category வாரியாக group செய்யுங்கள், group
+    வாரியாக ஒப்பிடுங்கள், ஏதேனும் group ஒரு threshold-ஐத் தாண்டிக் குறைந்தால்
+    build-ஐ fail செய்யுங்கள். "42 tests passed"-க்கும் module வாரியான
+    அறிக்கைக்கும் இடையேயான வித்தியாசம் அதுதான். முதலாவதை CI-யிடமிருந்து யாரும்
+    ஏற்க மாட்டார்கள், eval-லிடமிருந்து எல்லாரும் ஏற்கிறார்கள்.
+  </p>
+
+  <div class="note">
+    <strong>Aggregate செய்வதற்கு முன் slice செய்யுங்கள்.</strong> ஒவ்வொரு
+    aggregate score-ம் ஒரு weighted average, அது எவ்வளவு மோசமான category-ஐயும்
+    மறைக்க முடியும், category எவ்வளவு அரிதோ அவ்வளவு நன்றாக மறைக்கும். உங்கள்
+    மிகச் சிறிய slice-ல் தான் உங்கள் மிக மோசமான regression வாழ்கிறது.
+  </div>
+
+</section>
+
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    पहले script के बारे में साफ़-साफ़ — जैसे <a href="../chain-of-thought/">chain-of-thought
+    वाला पन्ना</a> अपने state machine के बारे में और <a href="../rag/">RAG वाला
+    पन्ना</a> अपने retriever के बारे में साफ़ कहता है।
+    <strong>इसमें कोई language model नहीं है।</strong> Systems, judges और
+    graders सब स्पष्ट probability models हैं, हर एक पाँच लाइन का, और code
+    ऊपर वाली लाइन में यही कहता है। यह कोई shortcut नहीं है — इसे नापने का
+    यही अकेला तरीक़ा है। जब तक आप सच ख़ुद तय न करें, यह जाँचा ही नहीं जा सकता
+    कि कोई evaluation उस सच तक पहुँचती है या नहीं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (eval, golden set, judge,
+    benchmark, contamination, confidence interval, position bias, length bias,
+    self-preference, pairwise, absolute, slice, regression…) मैंने वैसे ही रखे
+    हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>
+    <a href="../attention/">Attention वाला पन्ना</a> उस सूची पर ख़त्म होता है
+    जो असली AI engineers को उन लोगों से अलग करती है जो transformer architecture
+    रट सकते हैं। Eval design उस सूची में है। यह पन्ना वही उधार चुकाता है। इस
+    site का हर पन्ना अपना दावा code चलाकर साबित करता है। यहीं वह आसान होना बंद
+    हो जाता है, और ठीक इसीलिए इसे छोड़ दिया जाता है।
+  </p>
+
+  <h2>यह एक test suite है। पूरा रूपक बस इतना ही।</h2>
+
+  <p>यह आपने हज़ार बार लिखा है:</p>
+
+<pre><code>def test_parse_date():
+    assert parse("2024-01-02") == date(2024, 1, 2)   # pass या fail, बस</code></pre>
+
+  <p>
+    Assertion सटीक है, deterministic है, और मुफ़्त है। अब model वाला रूप।
+    Output एक पैराग्राफ़ है, "सही" होना डिग्री की बात है, और उसे किसी भी
+    scale पर grade करने के लिए पास में सिर्फ़ एक और model है:
+  </p>
+
+<pre><code>def test_summary():
+    out = model(prompt)
+    assert judge(out) == "good"      # flaky assertion, और पैसे भी लगते हैं</code></pre>
+
+  <p>
+    यहाँ आपकी कोई भी सहज-बुद्धि बदलती नहीं। कोई test न होने से flaky test
+    बुरा है, क्योंकि वह आपको लाल रंग नज़रअंदाज़ करना सिखाता है। और वह test
+    उससे भी बुरा है जो इसलिए pass होता है कि जवाब fixture में लीक हो गया था,
+    क्योंकि वह आपको हरे रंग पर भरोसा करना सिखाता है। इन दोनों विफलताओं के
+    ठीक वैसे ही रूप LLM evaluation में मौजूद हैं, दोनों के साथ संख्याएँ जुड़ी
+    हैं, और यह पन्ना उन्हें छापता है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Golden set</strong></td><td>जाने-पहचाने सही जवाबों वाला आपका तय test cases का सेट</td><td>Repo में check-in किए गए test fixtures</td></tr>
+      <tr><td><strong>LLM-as-a-judge</strong></td><td>एक model दूसरे model का output grade करता है</td><td>ऐसा assertion जो ख़ुद एक flaky service call है</td></tr>
+      <tr><td><strong>Pairwise / arena</strong></td><td>Grader को दो जवाब दिखाओ, पूछो कौन बेहतर है</td><td>Absolute code score की जगह एक diff review</td></tr>
+      <tr><td><strong>Contamination</strong></td><td>वे benchmark items जो training data में थे</td><td>Test fixture में लीक हो गया। हमेशा pass होता है।</td></tr>
+      <tr><td><strong>Slice</strong></td><td>Input की श्रेणी के हिसाब से अलग-अलग score</td><td>सिर्फ़ "42 passed" नहीं, per-module नतीजे</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>तीन papers, एक ही समस्या</h2>
+
+  <p>
+    <strong>HELM</strong> (Liang et al., 2022) एक अकेली संख्या के ख़िलाफ़ दलील
+    है। इसका योगदान है विस्तार और multi-metric reporting: scenarios ×
+    metrics — accuracy, calibration, robustness, bias, toxicity, efficiency —
+    एक leaderboard column में निचोड़ने के बजाय अगल-बग़ल। Test suite की भाषा में:
+    "97% passing" कहना बंद कीजिए, पूरा matrix दिखाइए।
+  </p>
+
+  <p>
+    <strong>Judging LLM-as-a-Judge</strong> (Zheng et al., 2023) वह paper है
+    जिसने model से grading कराने को इज़्ज़त दिलाई। अपने benchmarks पर —
+    MT-Bench और Chatbot Arena — वे सक्षम judge models और मानवीय पसंद के बीच
+    मज़बूत सहमति दर्ज करते हैं, लगभग उतनी जितनी दो इंसानों के बीच होती है। यह
+    उनके data पर उनका दर्ज किया नतीजा है, आपके task के लिए कोई आम गारंटी नहीं।
+    वही paper failure modes भी सावधानी से दर्ज करता है: position bias,
+    verbosity bias, self-enhancement bias, और गणित तथा reasoning की grading
+    में कमज़ोरी। इसे ऐसे पढ़िए — "यह काम करता है, और यह रहा इसके झूठ बोलने का
+    तरीक़ा"।
+  </p>
+
+  <p>
+    <strong>Contamination</strong> (Sainz et al., 2023, और उसके बाद का बढ़ता
+    ढेर) अनसुलझा वाला है। Benchmarks internet पर मौजूद सार्वजनिक text हैं।
+    Training corpora internet से scrape होते हैं। उस overlap को भरोसे के साथ
+    पकड़ना — ख़ासकर उस model के लिए जिसका training data आप देख ही नहीं सकते —
+    आज भी खुली समस्या है। इसे किसी ने ठीक नहीं किया। मान लीजिए कि आपका पसंदीदा
+    सार्वजनिक benchmark कुछ हद तक contaminated है, और आप बहुत कम ही ग़लत होंगे।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <p>
+    Model वाला सूत्र नहीं। असल में आपको यही चाहिए, और golden set का आकार तय
+    करने से पहले इसे लगभग कोई नहीं गिनता:
+  </p>
+
+  <div class="formula">gap ± 1.96 √( p<sub>A</sub>(1−p<sub>A</sub>)/n + p<sub>B</sub>(1−p<sub>B</sub>)/n )</div>
+
+  <p>इसे pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>आकार</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>p<sub>A</sub>, p<sub>B</sub></code></td><td>scalars</td><td>नापी गई pass rates. हर test case एक सिक्का उछाल है; यह उस सिक्के का झुकाव है</td></tr>
+      <tr><td><code>p(1−p)/n</code></td><td>scalar</td><td>एक नापी गई rate का variance. नीचे वाले <code>n</code> पर ध्यान दें — यही अकेला knob आपके हाथ में है</td></tr>
+      <tr><td><code>sum, फिर √</code></td><td>scalar</td><td>दो स्वतंत्र systems: variances जोड़ो, फिर root लो। यही अंतर का standard error है</td></tr>
+      <tr><td><code>× 1.96</code></td><td>scalar</td><td>इसे 95% interval बना देता है। 1.96 एक lookup है, derivation नहीं</td></tr>
+      <tr><td><code>gap ±</code></td><td>interval</td><td>अगर यह 0 के आर-पार फैला है, तो <strong>आपकी eval दोनों systems में फ़र्क़ बता ही नहीं सकती</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Golden set कितना बड़ा होना चाहिए?</h2>
+
+  <p>
+    दो systems बनाता हूँ जिनका जवाब मुझे <em>पता</em> है: A 72% बार सही, B
+    78% बार सही। एक असली, ship करने लायक़, छह अंक का सुधार। अब eval को चार
+    आकारों पर, हर आकार पर चार हज़ार बार चलाइए, और गिनिए कि वह कितनी बार
+    ranking उलटी बता देती है।
+  </p>
+
+  <p><strong>मेरी बात मत मानिए। यह रहा असली output:</strong></p>
+
+<pre><code>true accuracy:  system A = 0.72   system B = 0.78   true gap = +0.06
+
+ n      mean measured   typical 95% CI        picks the
+        gap             on the gap            WORSE system
+ --------------------------------------------------------------
+   20     +0.059       [-0.208, +0.328]        <span class="hl">26.8%</span>
+   50     +0.060       [-0.109, +0.229]         20.7%
+  200     +0.060       [-0.025, +0.145]          6.8%
+ 1000     +0.059       [+0.022, +0.098]        <span class="ok">0.1% ✓</span></code></pre>
+
+  <p>
+    बाईं नहीं, बीच वाली column देखिए। नापा गया gap हर आकार पर औसतन सही है —
+    eval <em>biased</em> नहीं है। बस n=20 पर वह इतना चौड़ा है कि interval "B
+    21 अंक ख़राब है" से लेकर "B 33 अंक बेहतर है" तक सब कुछ समेट लेता है, और
+    चार में से एक run ख़राब system को ताज पहना देता है। यह कुछ अतिरिक्त क़दमों
+    और एक dashboard वाला सिक्का उछाल है।
+  </p>
+
+  <p>
+    n=1000 पर जाकर interval आख़िरकार शून्य को बाहर करता है। छह अंक के अंतर
+    की असली क़ीमत यही है। अगर आपका golden set बीस हाथ से लिखे cases है — और
+    मेरा साल भर यही था — तो आप noise sample कर रहे थे और उस पर कहानी सुना
+    रहे थे।
+  </p>
+
+  <div class="note">
+    <strong>छोटे effects के लिए cases वर्ग के अनुपात में चाहिए।</strong> नुक़सान
+    <code>√n</code> कर रहा है: जिस effect को पकड़ना है उसे आधा करने पर test
+    set चार गुना चाहिए। इसीलिए "बस कुछ examples देख लेंगे" ठीक उसी जगह विफल
+    होता है जहाँ मायने रखता है — आख़िरी दौर के बदलाव हमेशा छोटे ही होते हैं।
+  </div>
+
+  <h2>आपका judge 80% बार सही है। इसकी क़ीमत क्या है?</h2>
+
+  <p>
+    Judge को जितना सरल model किया जा सकता है उतना कीजिए: वह सच्चा फ़ैसला
+    <code>a</code> probability से दोहराता है, वरना उसे उलट देता है। इसका एक
+    closed form है, और वही closed form पूरा सबक़ है:
+  </p>
+
+  <div class="formula">measured_gap = (2a − 1) × true_gap</div>
+
+  <p>
+    जो judge इंसान से 80% बार सहमत होता है, वह आपकी संख्या के इर्द-गिर्द noise
+    नहीं जोड़ता। वह <strong>आपकी संख्या को 0.6 से गुणा कर देता है</strong>, हर
+    बार, एक ही दिशा में। असल में 20 अंक की दूरी वाले दो systems:
+  </p>
+
+<pre><code>true gap between A and B, graded by a perfect human: 0.2003
+
+ judge      measured    measured    measured   gap kept
+ agreement  acc(A)      acc(B)      gap
+ --------------------------------------------------------------
+  1.00      0.5998      0.8001      +0.2003     <span class="ok">100.0% ✓</span>
+  0.95      0.5904      0.7712      +0.1808      90.3%
+  0.90      0.5823      0.7369      +0.1547      77.3%
+  0.80      0.5559      0.6791      +0.1232      61.5%
+  0.70      0.5398      0.6223      +0.0825      41.2%
+  0.60      0.5223      0.5626      +0.0403      20.1%
+  0.50      0.5017      0.4951      -0.0066      <span class="hl">-3.3%</span></code></pre>
+
+  <p>
+    उस table से दो बातें निकलती हैं। पहली: औसत दर्जे का judge बेतरतीब झूठ
+    नहीं बोलता, वह <em>दबाता</em> है — हर system 50% की ओर खिसकता है और हर
+    gap सिकुड़ता है। आपका leaderboard चपटा होता जाता है जब तक सब एक जैसा न
+    दिखने लगे, जिसे लोग "हम plateau पर आ गए" पढ़ते हैं। दूसरी, और उससे बुरी:
+    यह दबाव ऊपर वाले हिस्से के साथ मिलकर काम करता है। अपने आकार के 60% पर
+    निचोड़ा गया gap उसी confidence तक पहुँचने के लिए लगभग <em>तीन गुना</em>
+    test cases माँगता है।
+  </p>
+
+  <p>
+    इसीलिए "अपने judge को मानवीय labels के ख़िलाफ़ नापिए" कोई दफ़्तरी औपचारिकता
+    नहीं है। आपकी संख्याओं का मतलब जानने के लिए <code>a</code> चाहिए, और यह
+    एक बार में कुछ सौ इंसानों से label कराए cases में हो जाता है।
+  </p>
+
+  <h2>तीन biases, हर एक नापा जा सकता है</h2>
+
+  <p>
+    Judge को <em>बिल्कुल एक जैसी</em> गुणवत्ता वाले दो जवाब दीजिए। निष्पक्ष
+    judge 50.0% लौटाएगा, और कुछ नहीं। उससे ऊपर जो भी है वह गढ़ा हुआ है। ये
+    रहे वे तीन biases जो LLM-as-a-judge paper दर्ज करता है, हर एक को एक ही
+    जोड़ वाले धक्के के रूप में simulate किया गया, फिर घटाया गया:
+  </p>
+
+<pre><code>Two answers of IDENTICAL quality. A fair judge must return 50.0%.
+
+ bias                       naive     after mitigation  residual
+ --------------------------------------------------------------
+ position (+0.10 to first)  <span class="hl">60.1%</span>     49.9%            <span class="ok">0.0012 ✓</span>
+ length   (+0.12 to longer) <span class="hl">62.2%</span>     49.7%            <span class="ok">0.0031 ✓</span>
+ self-preference (+0.08)    <span class="hl">57.9%</span>     49.7%            <span class="ok">0.0032 ✓</span></code></pre>
+
+  <p>Mitigations सब उबाऊ हैं, यही अच्छी ख़बर है:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Bias</th><th>Mitigation</th><th>यह काम क्यों करता है</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Position</strong> — जो पहले दिखे वही ज़्यादा जीतता है</td><td>दो बार पूछिए, positions बदलकर, दोनों फ़ैसलों का औसत लीजिए</td><td>"पहले" वाले को मिलने वाला स्थिर बोनस दोनों तरफ़ आता है और ठीक-ठीक कट जाता है</td></tr>
+      <tr><td><strong>Length</strong> — लंबा जवाब जीतता है</td><td>एक ही length bucket के भीतर तुलना कीजिए, या length के लिए normalise कीजिए</td><td>अगर दोनों जवाब बराबर लंबे हैं तो bias के पकड़ने को कुछ बचता ही नहीं</td></tr>
+      <tr><td><strong>Self-preference</strong> — judge को अपना ही परिवार पसंद है</td><td>अलग-अलग families के judges का एक panel, फ़ैसलों का औसत</td><td>लगभग बराबर आकार के दो उलटे झुकाव औसत में कट जाते हैं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    असली बात residual column है। वह वही है जो mitigation हटा <em>नहीं</em>
+    पाई, वह कभी ठीक शून्य नहीं होती, और उसकी जगह आपकी रिपोर्ट में win rate
+    के ठीक बग़ल में है। "System A 58% बार जीतता है" और "System A 58% बार जीतता
+    है, और उसमें से 8 अंक हमारा judge तब गढ़ता है जब वह अपने ही परिवार को
+    grade करता है" — ये दो अलग दावे हैं।
+  </p>
+
+  <div class="note">
+    <strong>इस पूरे पन्ने की सबसे सस्ती जीत यही swap है।</strong> यह आपकी
+    judge लागत दोगुनी करता है और दस अंक का व्यवस्थित झूठ हटा देता है। अगर
+    यहाँ से सिर्फ़ एक चीज़ करनी हो, तो यही कीजिए।
+  </div>
+
+  <h2>Contamination: test, fixture में लीक हो गया</h2>
+
+  <p>
+    एक model की असली क्षमता 0.55 पर स्थिर रखिए — इस पूरी table में वह कहीं
+    भी, एक बार भी बेहतर नहीं होती — और सिर्फ़ यह बदलिए कि benchmark का कितना
+    हिस्सा उसके training data में आया था। लीक हुए items अब tests नहीं रहे।
+    वे dictionary lookups हैं।
+  </p>
+
+<pre><code>true held-out ability, held CONSTANT at 0.55
+
+ leaked fraction   benchmark score   clean score   inflation
+ --------------------------------------------------------------
+        0%            0.5500           0.5500       <span class="ok">+0.0000 ✓</span>
+        5%            0.5715           0.5500       +0.0215
+       15%            0.6145           0.5500       +0.0645
+       30%            0.6790           0.5500       +0.1290
+       50%            0.7650           0.5500       +0.2150
+       80%            0.8940           0.5500       <span class="hl">+0.3440</span>
+
+A leaderboard-topping model on a 30% contaminated benchmark:
+  model X: contaminated 0.6790   clean 0.5500
+  model Y: contaminated 0.6200   clean 0.6200
+  ranking on the benchmark: X wins. Ranking on clean data: Y wins.</code></pre>
+
+  <p>
+    वह आख़िरी block तीन लाइनों में पूरी समस्या का आकार है। X शानदार दिखता है
+    और मामूली है। Y मामूली दिखता है और बेहतर है। Benchmark उन्हें उलटी
+    क्रम में रखता है और बार-बार चलाने से कुछ ठीक नहीं होता, क्योंकि
+    <strong>leakage bias है, noise नहीं</strong>। वह हमेशा ऊपर की ओर ही
+    इशारा करता है। Noise औसत में मिट जाता है; यह नहीं मिटता।
+  </p>
+
+  <p>
+    उस table में कुछ भी किसी असली model या असली benchmark को नहीं नापता — यह
+    मेरी चुनी हुई संख्याओं पर की गई गणित है। यह जो दिखाता है वह
+    <em>आकार</em> है: 30% का leak तेरह अंक मुफ़्त में, बिना कुछ किए, ख़रीद
+    लेता है।
+  </p>
+
+  <div class="note">
+    <strong>Engineering का जवाब उबाऊ है और काम करता है:</strong> एक निजी
+    eval set अलग रखिए जो कहीं प्रकाशित न हुआ हो, जहाँ हो सके उस पर model के
+    training cutoff के बाद की तारीख़ डालिए, और हर सार्वजनिक benchmark संख्या
+    को — अपनी भी — एक upper bound मानिए।
+  </div>
+
+  <h2>"1 से 5 तक अंक दो" क्यों "कौन बेहतर है" से बुरा है</h2>
+
+  <p>
+    वही अंतर्निहित गुणवत्ता, पूछने के दो तरीक़े। A असल में 0.60 है, B असल में
+    0.70। Absolute grader गुणवत्ता को 1–5 scale पर map करता है और हर session
+    के साथ एक calibration offset ढोता है — आज उदार है, अगले हफ़्ते सख़्त —
+    क्योंकि scale को एक anchor चाहिए जो उसके पास है ही नहीं। आप A को एक
+    session में और B को दूसरे में आँकते हैं, तो वह offset सीधे आपके gap में
+    उतर आता है। Pairwise grader दोनों जवाब एक ही session में देखता है और उसे
+    बस यह कहना है कि कौन बेहतर है, तो offset दोनों तरफ़ बैठता है और कट जाता है।
+  </p>
+
+<pre><code>true quality: A = 0.60, B = 0.70. 400 repeats of a 30-case eval.
+grader noise 0.7 per item, calibration drift 0.6 per session.
+
+  absolute 1-5   mean gap +0.445   std 0.799   picks B  <span class="hl">68.5%</span>
+  pairwise A/B   mean rate 0.659   std 0.085   picks B  <span class="ok">94.0% ✓</span>
+
+  signal-to-spread: absolute 0.56, pairwise 1.88</code></pre>
+
+  <p>
+    ध्यान दीजिए कि absolute score को क्या ठीक <em>नहीं</em> करता: ज़्यादा
+    test cases. वह drift session के हर item में साझा है, इसलिए items पर औसत
+    लेने से उसे कभी छुआ ही नहीं जाता। तुलना में noise कम इसलिए नहीं है कि
+    grader ने ज़्यादा मेहनत की — बल्कि इसलिए कि सवाल में degrees of freedom
+    कम हैं।
+  </p>
+
+  <p>
+    यही वजह है कि <a href="../rlhf/">RLHF में reward model</a> star ratings
+    के बजाय A-vs-B votes पर fit किया जाता है, और यही वजह है कि
+    LLM-as-a-judge paper का arena format pairwise है। इंसान और models दोनों
+    absolute scales पर ख़राब हैं और तुलना में दोनों ठीक हैं। Design इसी के
+    आस-पास कीजिए।
+  </p>
+
+  <h2>Aggregate ऊपर गया। इसे ship मत कीजिए।</h2>
+
+  <p>
+    Eval harness असल में <em>इसी</em> के लिए है, और यही वह हिस्सा है जो मैं
+    किसी interview के whiteboard पर चाहूँगा। एक deploy चार categories सुधारता
+    है और पाँचवीं को तबाह कर देता है:
+  </p>
+
+<pre><code> category      before    after     delta
+ --------------------------------------------------------------
+ summarise     0.6970   0.8270   +0.1300
+ extract       0.7155   0.8520   +0.1365
+ classify      0.7480   0.8645   +0.1165
+ translate     0.6875   0.7995   +0.1120
+ code          0.7025   0.3425   <span class="hl">-0.3600  &lt;-- REGRESSION</span>
+ --------------------------------------------------------------
+ AGGREGATE     0.7101   0.7371   <span class="ok">+0.0270   &lt;-- ships green</span>
+
+ aggregate 95% CI on the change: [+0.0146, +0.0394] -- 'significant improvement'</code></pre>
+
+  <p>
+    Aggregate ऊपर गया। Confidence interval शून्य को बाहर रखता है। इस पन्ने
+    के पहले आधे हिस्से के हर नियम से यह एक असली, statistically significant
+    सुधार है — और यह एक आपदा भी है: पाँच में से एक user की सफलता दर आधी से
+    ज़्यादा गिर गई। हरी संख्या और लाल संख्या एक ही deploy हैं।
+  </p>
+
+  <p>
+    इलाज चार लाइनों का है — category से group कीजिए, group के हिसाब से तुलना
+    कीजिए, और अगर कोई group किसी threshold से नीचे गिरे तो build fail कर
+    दीजिए। यही "42 tests passed" और per-module रिपोर्ट के बीच का फ़र्क़ है।
+    पहला कोई CI से स्वीकार नहीं करेगा, और eval से सब स्वीकार कर लेते हैं।
+  </p>
+
+  <div class="note">
+    <strong>Aggregate करने से पहले slice कीजिए।</strong> हर aggregate score
+    एक weighted average है जो कितनी भी ख़राब category छिपा सकता है, और
+    category जितनी दुर्लभ हो उतनी अच्छी तरह छिपाता है। आपका सबसे छोटा slice
+    ही वह जगह है जहाँ आपका सबसे बुरा regression रहता है।
+  </div>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no model, no network. Judges and graders are explicit
+  probability models — which is precisely what lets the script know the truth
+  and catch the eval getting it wrong. Every function under 15 lines.
+</p>
+<p>
+  <a href="evals_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 130 lines of mechanism plus eight runnable demos. Then:
+</p>
+<pre><code>python3 evals_from_scratch.py</code></pre>
+
+<pre><code>import numpy as np
+
+RNG = np.random.default_rng(0)
+
+
+def run_eval(p, n, rng):
+    """Return the pass/fail vector for one system on n cases."""
+    # A system with true accuracy p, run on n test cases, is n Bernoulli
+    # draws. That is the entire statistical model of your golden set.
+    return (rng.random(n) &lt; p).astype(int)
+
+
+def diff_ci(a, b):
+    """95% CI on (mean(a) - mean(b)) for two pass/fail vectors."""
+    # Standard error of one proportion: sqrt(p(1-p)/n).
+    # Two independent systems: add the variances, then sqrt.
+    # If the interval straddles 0, your eval cannot tell them apart.
+    pa, pb = a.mean(), b.mean()
+    se = np.sqrt(pa * (1 - pa) / len(a) + pb * (1 - pb) / len(b))
+    d = pa - pb
+    return d, d - 1.96 * se, d + 1.96 * se
+
+
+def judged_accuracy(truth, agree, rng):
+    """Grade a pass/fail vector through a judge with agreement `agree`."""
+    # The judge repeats the true verdict with probability `agree`, else
+    # flips it. Closed form: measured = agree*p + (1-agree)*(1-p),
+    # i.e. measured_gap = (2*agree - 1) * true_gap.
+    keep = rng.random(len(truth)) &lt; agree
+    return np.where(keep, truth, 1 - truth).mean()
+
+
+def pairwise_judge(qa, qb, len_a, len_b, own_a, own_b,
+                   pos=0.0, length=0.0, self_pref=0.0, rng=RNG):
+    """P(judge picks A) -&gt; a 0/1 vote. A is always shown first."""
+    p = 0.5 + 0.5 * (qa - qb)          # quality: a fair judge stops here
+    p += pos                            # position: A is on top, A gets a bump
+    p += length * np.sign(len_a - len_b)
+    p += self_pref * (own_a - own_b)
+    return (rng.random() &lt; np.clip(p, 0.0, 1.0)) * 1
+
+
+def swapped_win_rate(n, qa, qb, len_a, len_b, own_a, own_b,
+                     pos, length, self_pref, rng):
+    """A's win rate, averaged over both presentation orders."""
+    # A constant bonus to whoever is first appears on both sides of the
+    # average and cancels. Same trick as running an A/B test both ways.
+    wins = 0.0
+    for _ in range(n):
+        v1 = pairwise_judge(qa, qb, len_a, len_b, own_a, own_b,
+                            pos, length, self_pref, rng)          # A first
+        v2 = pairwise_judge(qb, qa, len_b, len_a, own_b, own_a,
+                            pos, length, self_pref, rng)          # B first
+        wins += 0.5 * (v1 + (1 - v2))
+    return wins / n
+
+
+def contaminated_score(true_ability, leak, memorised=0.98):
+    """The score a contaminated benchmark reports for a true ability."""
+    # `leak` of the items were in training: on those the model scores
+    # `memorised`. On the rest it scores what it can actually do.
+    return leak * memorised + (1 - leak) * true_ability
+
+
+def absolute_rating(q, offset, noise, rng):
+    """Quality in [0,1] -&gt; a 1-5 rating, session offset plus noise."""
+    raw = 1 + 4 * q + offset + rng.normal(0, noise)
+    return float(np.clip(np.round(raw), 1, 5))
+
+
+def pairwise_vote(qa, qb, offset, noise, rng):
+    """Same grader, same session: which of these two is better?"""
+    a = 1 + 4 * qa + offset + rng.normal(0, noise)
+    b = 1 + 4 * qb + offset + rng.normal(0, noise)   # offset cancels here
+    return int(a &gt; b)</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode,
+  and every row below is a mistake I have personally shipped.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>demo_1</code>, keep only <code>n = 20</code></td><td>The eval crowns the <em>worse</em> system 26.8% of the time. A golden set of 20 is a coin with a dashboard.</td></tr>
+    <tr><td>In <code>demo_3</code>, call <code>naive(pos=0.10)</code> and never <code>swapped_win_rate</code></td><td>60.1% win rate for two identical answers. Ten points manufactured purely by which one is printed first.</td></tr>
+    <tr><td>In <code>demo_6</code>, print only the <code>AGGREGATE</code> row</td><td>+0.0270 with a CI of [+0.0146, +0.0394]. Ships green while the <code>code</code> slice falls 0.7025 → 0.3425.</td></tr>
+    <tr><td>In <code>demo_7</code>, report <code>scores[winner]</code> instead of the fresh set</td><td>0.7608 reported against a true 0.70. A free +0.0616, from 20 candidates that were all identical.</td></tr>
+    <tr><td>In <code>demo_8</code>, compare <code>agree=0.92</code> against <code>agree=0.84</code></td><td>A −0.0320 "regression" in a system that did not change. You moved the ruler, not the model.</td></tr>
+    <tr><td>In <code>judged_accuracy</code>, set <code>agree=0.50</code></td><td>Measured gap goes to −0.0066 on a true gap of +0.2003. The leaderboard flattens and every system ties.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers — but selectively. In the
+  LLM-as-a-judge paper: the section on the judge's limitations and biases, and
+  the agreement numbers against human votes. Skip the prompt appendices on a
+  first pass. In HELM: the taxonomy of scenarios and metrics in the front half.
+  Do not attempt the full results grid, it's over a hundred pages and it is a
+  reference, not a read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is more maths on this page than on any other one I've written, and it's
+  also the easiest maths on the site. Nothing here goes past what a decent
+  A-level stats course covers: a proportion, its variance <code>p(1−p)/n</code>,
+  adding two variances, and multiplying by 1.96 because that's the number in the
+  table for 95%. No calculus. No linear algebra. No gradients.
+</p>
+<p>
+  You don't need the derivation of the standard error to use it, the same way
+  you don't need to have written a TCP stack to reason about retries. What you
+  do need is the <em>reflex</em>: whenever someone shows you a difference
+  between two numbers, ask how many samples it came from. That reflex is worth
+  more in this job than the whole transformer architecture, and it takes an
+  afternoon to acquire.
+</p>
+<p>
+  What this page skips: real inter-annotator agreement statistics (Cohen's
+  kappa and friends), multiple-comparison correction when you're testing twenty
+  slices at once, Elo and Bradley–Terry rating systems as used by the arenas,
+  and every practical question about actually writing good test cases — which
+  is a content problem, not a statistics problem, and is genuinely harder than
+  anything here. The question you will be asked in an interview is not "derive
+  the standard error". It is "how do you know your change helped?", and the
+  answer starts with a number of test cases.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you the statistics of evaluation, in code you can break. It
+  deliberately skipped the craft: how to write test cases that catch real
+  failures, and how anyone runs this at scale.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2306.05685">
+      <span class="paper-title">Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena</span>
+      <span class="paper-meta">Zheng et al., 2023. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the limitations section first — position, verbosity and
+      self-enhancement bias, and the judges' weakness at grading maths. I
+      simulated those three as one-line nudges; this is where they were
+      actually measured, on real models, with the agreement-against-humans
+      numbers next to them.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2211.09110">
+      <span class="paper-title">Holistic Evaluation of Language Models (HELM)</span>
+      <span class="paper-meta">Liang et al., 2022. Enormous. A reference.</span>
+    </a>
+    <p class="paper-pitch">
+      The front half only: the argument for scenarios × metrics instead of one
+      accuracy number, and the taxonomy they use to build it. My "slice before
+      you aggregate" section is one demo; this is that idea taken as far as it
+      goes, with calibration, robustness and bias as first-class metrics.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2310.18018">
+      <span class="paper-title">NLP Evaluation in trouble: measuring LLM data contamination</span>
+      <span class="paper-meta">Sainz et al., 2023. Short, and it names the problem.</span>
+    </a>
+    <p class="paper-pitch">
+      My contamination demo assumes you know the leak fraction. You never do.
+      This is the paper on why detecting it per benchmark is hard, why closed
+      training sets make it harder, and why the field has not solved it.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://hamel.dev/blog/posts/evals/">
+      <span class="paper-title">Your AI Product Needs Evals</span>
+      <span class="paper-meta">Hamel Husain. Practitioner, with code.</span>
+    </a>
+    <p class="paper-pitch">
+      The craft half I skipped entirely: how to actually build the test cases,
+      how to look at your data, how to wire evals into a real product loop. No
+      statistics here, and it doesn't need any — this is the part that decides
+      whether your golden set is worth the n you computed.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Husain first, because it will change
+  what you do on Monday; then the LLM-as-a-judge limitations section; then HELM
+  and the contamination paper when someone quotes a benchmark number at you and
+  you want to know what it's worth.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

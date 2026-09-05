@@ -1,0 +1,1126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The GPU, for people who only ever call .cuda() — for programmers</title>
+<meta name="description" content="The hardware model every systems page assumes, as arithmetic you can run. The roofline, arithmetic intensity, the memory hierarchy, tensor cores, occupancy and the interconnect — in a NumPy script against published specifications.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Tamil:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+<main class="main-content">
+  <div class="title-block">
+    <h1>The GPU, for people who only ever call .cuda()</h1>
+    <p class="paper-meta">The hardware every other page assumes</p>
+    <p class="lede">Not a paper. The model underneath four other pages on this site, so they stop being four separate
+      mysteries.</p>
+    <p><a href="gpu_from_scratch.py" download>Download gpu_from_scratch.py</a> — everything below runs from
+      it. NumPy only, no GPU required.</p>
+  </div>
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+<section data-panel="en">
+  <p>I wrote the <a href="../flash-attention/">FlashAttention</a> page and said SRAM is small and HBM is
+    far. I wrote the <a href="../kv-cache/">KV cache</a> page and said decode is memory-bound. I wrote
+    the <a href="../deepseek-v3/">DeepSeek-V3</a> page and said the interconnect is the constraint.
+    Three pages, three hand-waves at the same machine, and I never once explained the machine.</p>
+  <p>This is that page. There is no paper to summarise — but there is one 2009 paper that organises all
+    of it, and I have built the whole thing as arithmetic you can run. The claim: <strong>you can
+    predict which of your operations will be slow before you profile anything</strong>, from one ratio.</p>
+  <div class="note"><strong>Read this before anything else on the page.</strong> Every hardware number here is a
+    <em>published specification</em> — a vendor datasheet figure, rounded, approximate, and named to the
+    part it belongs to. Nothing was measured. Peak numbers are ceilings nobody reaches; real kernels
+    land well below them. This page tells you <em>which wall you are standing against</em>, not how fast
+    your code will run.</div>
+  <h2>A memory hierarchy is a supply chain</h2>
+  <p>You already reason like this about a database. Some data is in the process, some in Redis, some on
+    a disk in the same rack, some in another region. You never think "this query is slow because the CPU
+    is slow". You think "how many round trips did I just buy?" A GPU is the same shape:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Level</th><th>Plain meaning</th><th>Supply chain</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Registers</strong></td><td>Scratch values a single thread is holding right now</td><td>In your hands</td></tr>
+      <tr><td><strong>Shared memory / L1</strong></td><td>A scratchpad the programmer manages, private to one SM</td><td>The shelf behind you</td></tr>
+      <tr><td><strong>L2 cache</strong></td><td>Shared by the whole die, automatic, not yours to control</td><td>The stockroom</td></tr>
+      <tr><td><strong>HBM</strong></td><td>The GPU's main memory. What <code>.cuda()</code> puts things in</td><td>Warehouse across the yard</td></tr>
+      <tr><td><strong>NVLink</strong></td><td>The link to another GPU in the same server</td><td>The next building</td></tr>
+      <tr><td><strong>InfiniBand</strong></td><td>The link to a GPU in another server</td><td>Another site entirely</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Three NVIDIA words, defined once. A <strong>streaming multiprocessor (SM)</strong> is one of the
+    ~130 independent processors on the die; you get the whole GPU only if your work fills all of them. A
+    <strong>warp</strong> is 32 threads executing the same instruction in lockstep. <strong>Shared
+    memory</strong> is a software-managed scratchpad on each SM — not a cache you hope hits, a buffer
+    you explicitly load into. <strong>HBM</strong> is the stacked DRAM on the package: the 80 GB
+    number in the marketing.</p>
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+<pre><code>Accelerator: NVIDIA H100 SXM (published specification, approximate)
+All figures PUBLISHED SPECIFICATIONS, not measurements.
+
+level           capacity  bandwidth  latency* supply chain           FLOPs missed
+---------------------------------------------------------------------------------
+registers         256 KB  ~100 TB/s      1 ns on the bench                 990000
+shared mem/L1     228 KB   ~20 TB/s     30 ns shelf behind you           29700000
+L2 cache           50 MB   ~10 TB/s    200 ns stockroom                 198000000
+HBM3               80 GB  3.35 TB/s    500 ns warehouse in the yard  <span class="hl">   495000000</span>
+NVLink peer            -   900 GB/s   2000 ns the next building      <span class="hl">  1980000000</span>
+InfiniBand             -    50 GB/s   5000 ns another site           <span class="hl">  4950000000</span>
+
+* latency is an order-of-magnitude figure, NOT a vendor spec.</code></pre>
+  <p>The last column is the whole page in one number: peak FP16 throughput times the latency of that
+    trip — the arithmetic you <em>could</em> have done while waiting. Half a billion floating point
+    operations, for one round trip to the GPU's own main memory.</p>
+  <p>And the capacities run the other way: 228 KB of shared memory per SM against 80 GB of HBM. That
+    asymmetry is not a detail — it is the entire reason
+    <a href="../flash-attention/">FlashAttention</a> exists, and why its tile size is what it is.</p>
+  <div class="note"><strong>The chip is not slow at arithmetic. It is starving.</strong> Nearly every optimisation you
+    will ever apply to a GPU is a way of taking fewer trips, or taking them further from the hot loop.
+    Almost none of them are about doing less maths.</div>
+  <h2>The one formula</h2>
+  <p>Williams, Waterman and Patterson published this in 2009 — <em>Roofline: An Insightful Visual
+    Performance Model for Multicore Architectures</em>, in Communications of the ACM. It predates CUDA's
+    rise, predates tensor cores, predates every accelerator on this page, and still explains all of
+    them, because it assumes only two things: you have a ceiling on arithmetic and a ceiling on
+    bandwidth.</p>
+  <div class="formula">attainable FLOP/s = min( peak FLOP/s ,&nbsp; bandwidth × I )&nbsp;&nbsp;&nbsp; where I = FLOPs ÷ bytes moved</div>
+  <p>Read it as pipeline stages:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Units</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>I</code></td><td>FLOP/byte</td><td><strong>Arithmetic intensity.</strong> A property of your <em>operation</em>, not the chip. How much work you get out of each byte you dragged in</td></tr>
+      <tr><td><code>bandwidth × I</code></td><td>FLOP/s</td><td>The slanted roof. If you can only move B bytes a second and you do I flops per byte, that is your ceiling. No arithmetic unit can help</td></tr>
+      <tr><td><code>peak FLOP/s</code></td><td>FLOP/s</td><td>The flat roof. The chip's published maximum. You cannot exceed it however many bytes you feed it</td></tr>
+      <tr><td><code>min(…)</code></td><td>FLOP/s</td><td>Whichever roof is lower is the one you hit. And <em>which</em> one it is tells you what to go and fix</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>That is it. Two straight lines and a <code>min()</code>. There is no curve to fit and nothing to
+    measure. In code:</p>
+<pre><code>def roofline(intensity, peak_flops, bandwidth):
+    memory_bound_ceiling = bandwidth * intensity
+    attainable = min(peak_flops, memory_bound_ceiling)
+    limiter = "compute" if memory_bound_ceiling &gt;= peak_flops else "memory"
+    return attainable, limiter</code></pre>
+  <h2>Six operations, and which wall each one hits</h2>
+  <p>Here is the payoff. I counted FLOPs and bytes for six things you actually run, divided one by the
+    other, and compared against two published H100 figures. Nothing profiled, nothing run on a GPU.</p>
+  <p>Byte counts assume the <em>ideal</em> case: each input read from HBM once, each output written once,
+    everything else kept on chip. Real kernels move more, so these intensities are optimistic — which
+    makes the bad news below worse, not better.</p>
+<pre><code>Ceiling  : 990 TFLOP/s dense FP16 tensor core (published peak)
+Bandwidth: 3.35 TB/s HBM3 (published peak)
+Ridge    : 295.5 FLOP/byte -- below this you are memory-bound
+
+operation                         FLOP/byte     attainable   bound by
+----------------------------------------------------------------------
+element-wise add, n=67108864          0.167         0.6 TF/s     memory
+mat-vec 4096x4096                     1.000         3.3 TF/s     memory
+mat-mul 4096x4096x4096             1365.333       990.0 TF/s    compute <span class="ok">✓</span>
+attention, seq=512, d_head=64       256.000       857.6 TF/s     memory
+attention, seq=8192, d_head=64     4096.000       990.0 TF/s    compute <span class="ok">✓</span>
+decode step, 7B params, batch=1       1.000         3.4 TF/s  <span class="hl">   memory</span></code></pre>
+  <p>Four of six are memory-bound. The big square matrix multiply is the one operation here that
+    genuinely uses the arithmetic units you paid for, and it is why a GPU looks fast in a benchmark. An
+    element-wise add reaches <strong>0.1%</strong> of the chip's arithmetic peak, because it touches
+    every byte exactly once — which is why kernel fusion is not micro-optimisation for an add, it is the
+    <em>only</em> lever that exists. Attention crosses the line as the sequence grows: seq=512
+    memory-bound, seq=8192 compute-bound, same kernel, same code. And the last row:</p>
+  <div class="note"><strong>A single-token decode step sits at 1.00 FLOP/byte, roughly 296× below the ridge.</strong>
+    Every weight is dragged out of HBM and used for two flops. The <a href="../kv-cache/">KV cache
+    page</a> argues decode is memory-bound from the software side, by counting what the cache costs.
+    This is the same conclusion arriving from the hardware side, with no model in sight. Two independent
+    routes, one answer — which is usually how you know a claim is structural rather than an artefact.</div>
+  <h2>The ridge point, and why the field keeps getting more memory-bound</h2>
+  <p>The two roofs meet somewhere. That crossover is the <strong>ridge point</strong>:</p>
+  <div class="formula">ridge = peak FLOP/s ÷ bandwidth&nbsp;&nbsp;&nbsp;(FLOP per byte)</div>
+  <p>One number per chip per precision. Below it, memory-bound. Above it, compute-bound. It decides the
+    fate of every kernel you will ever write, and you can compute it on a napkin from a datasheet.</p>
+  <p>Watch what it has been doing:</p>
+<pre><code>part                          HBM      FP16 peak ridge FLOP/byte
+--------------------------------------------------------------
+V100 SXM2 (2017)          0.90 TB/s        125 TF/s            139
+A100 SXM  (2020)          2.04 TB/s        312 TF/s            153
+H100 SXM  (2022)          3.35 TB/s        990 TF/s        <span class="hl">    296</span>
+
+Over those three parts:
+  arithmetic throughput grew 7.9x
+  memory bandwidth  grew 3.7x
+  so the ridge point grew 2.1x</code></pre>
+  <p>Arithmetic got cheap roughly twice as fast as bytes did. Which means the intensity you need in order
+    to stay compute-bound goes <em>up</em> every generation. An operation that comfortably used a V100's
+    arithmetic units can be memory-bound on an H100 without a single line of your code changing. You
+    upgraded, and your kernel got relatively worse.</p>
+  <p>This is the thing I wish someone had told me five years ago. It explains why almost every
+    interesting systems paper of the last five years is about moving fewer bytes rather than doing less
+    arithmetic — FlashAttention, GQA, quantised caches, paged attention, all of it. The field did not
+    decide to care about memory. The hardware decided for it.</p>
+  <h2>Tensor cores: precision is a throughput knob</h2>
+  <p>A <strong>tensor core</strong> is a unit that does a small fixed-size matrix multiply-accumulate as
+    a single instruction, instead of one multiply-add at a time. It is much faster, and it is much
+    faster the narrower the numbers get. Here is the same matrix multiply, four times, changing only the
+    dtype:</p>
+<pre><code>Same operation: C = A @ B, 4096x4096x4096. Only the dtype changes.
+
+precision              bytes/el        peak   ridge  FLOP/byte  bound by
+------------------------------------------------------------------------
+FP32 (no tensor core)         4     67 TF/s      20        683   compute
+TF32 tensor core              4    495 TF/s     148        683   compute
+FP16 tensor core              2    990 TF/s     296       1365   compute
+FP8 tensor core               1   1979 TF/s     591       2731   compute <span class="ok">✓</span>
+
+Same maths, 137 GFLOPs either way.
+Bytes moved: 201.3 MB at FP32, 50.3 MB at FP8 -- 4x less traffic.
+Peak arithmetic: 67 TF/s at plain FP32 against 1979 TF/s at FP8
+-- 30x more, from the published ceilings.</code></pre>
+  <p>Look at what dropping precision does. It moves you on the roofline <em>twice</em>. The bytes halve,
+    so your arithmetic intensity doubles and you slide right along the slanted roof. <em>And</em> the
+    flat roof itself lifts, because the tensor cores do more per clock at narrower widths. Two
+    independent wins from one change.</p>
+  <p>Quantisation gets sold almost entirely as a memory saving — the model fits on the card. On this
+    hardware it is also an arithmetic saving of the same order, and that half rarely gets mentioned. The
+    <a href="../quantization/">quantisation page</a> is about what the precision drop costs you in
+    accuracy and which numbers you are allowed to squash; this page only counts the throughput you get
+    back.</p>
+  <div class="note"><strong>The 30× is between two different things and I want to be honest about it.</strong> 67 TF/s
+    is plain FP32 on the CUDA cores, no tensor core involved; 1979 TF/s is FP8 on the tensor cores. Most
+    of that ratio is "you started using the tensor cores at all", not "you narrowed the dtype". The
+    dtype-only comparison is the clean 2× per halving: 495 → 990 → 1979.</div>
+  <h2>Occupancy: a small kernel wastes a large machine</h2>
+  <p>The roofline says nothing about whether your work actually fills the chip. An H100 has 132 SMs. A
+    thread block runs on exactly one SM. If your problem produces fewer blocks than there are SMs, the
+    rest sit idle no matter which side of the ridge you are on.</p>
+  <p>Crudest possible model: equal-cost blocks dealt round-robin, kernel ends when the busiest SM does.</p>
+<pre><code>     batch     blocks    waves    utilisation       SMs idle
+------------------------------------------------------------
+         1          1        1  <span class="hl">         0.8%            131</span>
+         8          8        1           6.1%            124
+        32         32        1          24.2%            100
+        64         64        1          48.5%             68
+       132        132        1         100.0%              0 <span class="ok">✓</span>
+       133        133        2  <span class="hl">        50.4%            131</span>
+       264        264        2         100.0%              0 <span class="ok">✓</span>
+       512        512        4          97.0%             16</code></pre>
+  <p>At batch 1 you are using 0.76% of the machine and 131 of the 132 SMs have nothing to do. You did not
+    buy a slow GPU. You bought a fast one and handed it one job.</p>
+  <p>The batch=133 row is the one that will actually bite you in production. One block past a full wave
+    and utilisation halves, because the second wave is almost entirely empty but you wait for it anyway.
+    Sizes that are not multiples of the SM count leave a quantised tail of idle time, and this is why
+    tuning guides obsess over shapes that divide nicely.</p>
+  <div class="note"><strong>This is the entire argument for batching.</strong> Batch-1 decode is memory-bound
+    <em>and</em> leaves the machine idle — two separate failures with one fix. Batching raises intensity
+    (the same weights serve more tokens) and fills the SMs. It costs you per-request latency, which is
+    why continuous batching exists and why every <a href="../serving/">serving stack</a> has a knob
+    labelled something like <code>max_num_seqs</code>. See
+    <a href="../speculative-decoding/">speculative decoding</a> for the other way out: more useful work
+    per weight-load, without waiting for more requests.</div>
+  <h2>Scaling out: NVLink is next door, InfiniBand is a lorry</h2>
+  <p>One more level down the supply chain. Inside a server, GPUs talk over NVLink. Between servers, over
+    InfiniBand. The published gap is about 18×, and that single ratio shapes every distributed training
+    decision anyone makes.</p>
+  <p>A ring all-reduce — the gradient sync every data-parallel step — moves 2(N−1)/N × S bytes through
+    each link, reduce-scatter then all-gather. That is bandwidth-optimal and is what the collectives
+    library actually does. So:</p>
+<pre><code>Published link bandwidths (approximate, per GPU):
+  NVLink (in a node)   : 900 GB/s
+  InfiniBand NDR 400G  : 50 GB/s
+  Ratio                : 18x
+
+All-reduce of 7B BF16 gradients = 14.0 GB buffer.
+
+configuration                      bytes/GPU      time
+--------------------------------------------------------------
+8 GPUs, 1 node, over NVLink          24.5 GB     27.2 ms <span class="ok">✓</span>
+  + 2 nodes, over InfiniBand         1.75 GB     62.2 ms  <span class="hl">(56% on IB)</span>
+  + 4 nodes, over InfiniBand         2.62 GB     79.7 ms  <span class="hl">(66% on IB)</span>
+  + 16 nodes, over InfiniBand        3.28 GB     92.8 ms  <span class="hl">(71% on IB)</span></code></pre>
+  <p>At two nodes the InfiniBand leg carries 7.1% of the bytes the NVLink leg does — and still takes the
+    majority of the time. Inside a node, eight GPUs are effectively one machine. Across nodes they are
+    posting parcels to each other.</p>
+  <p>That is why expert placement, all-to-all fan-out and overlapping communication with compute are
+    genuine research problems rather than implementation details. <a
+    href="../deepseek-v3/">DeepSeek-V3</a> is what one team did about it, on hardware where the NVLink
+    number was cut in half again. This page is the constraint they were working against; that page is
+    the response.</p>
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>நான் <a href="../flash-attention/">FlashAttention</a> பக்கத்தை எழுதினேன், அதில் SRAM சிறியது,
+    HBM தொலைவில் இருக்கிறது என்று சொன்னேன். <a href="../kv-cache/">KV cache</a> பக்கத்தை எழுதி,
+    decode memory-bound என்று சொன்னேன். <a href="../deepseek-v3/">DeepSeek-V3</a> பக்கத்தை எழுதி,
+    interconnect-தான் கட்டுப்பாடு என்று சொன்னேன். மூன்று பக்கங்கள், ஒரே இயந்திரத்தை நோக்கி
+    மூன்று கை அசைப்புகள் — ஆனால் அந்த இயந்திரத்தை நான் ஒருபோதும் விளக்கவே இல்லை.</p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> GPU, register, shared memory, L1, L2, HBM, NVLink, InfiniBand,
+    streaming multiprocessor, warp, tensor core, roofline, arithmetic intensity, ridge point,
+    occupancy, all-reduce, compute-bound, memory-bound — இந்த English technical words
+    அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <p>இதுதான் அந்தப் பக்கம். சுருக்கிச் சொல்ல ஒரு paper இல்லை — ஆனால் 2009-ல் வெளியான ஒரு paper
+    இதையெல்லாம் ஒழுங்குபடுத்துகிறது, முழு விஷயத்தையும் நீங்கள் ஓட்டிப் பார்க்கக்கூடிய
+    கணக்காக நான் கட்டியிருக்கிறேன். சொல்வது இதுதான்: <strong>எந்த operation மெதுவாக இருக்கும்
+    என்பதை profile செய்வதற்கு முன்பே, ஒரே ஒரு விகிதத்திலிருந்து கணிக்க முடியும்</strong>.</p>
+
+  <div class="note"><strong>இந்தப் பக்கத்தில் வேறு எதையும் படிப்பதற்கு முன் இதைப் படியுங்கள்.</strong>
+    இங்குள்ள ஒவ்வொரு hardware எண்ணும் ஒரு <em>வெளியிடப்பட்ட specification</em> — vendor
+    datasheet-ல் உள்ள மதிப்பு, வட்டமிடப்பட்டது, தோராயமானது, அது சேர்ந்த part-உடன்
+    பெயரிடப்பட்டது. எதுவும் அளக்கப்படவில்லை. Peak எண்கள் என்பவை யாரும் எட்டாத உச்சவரம்புகள்;
+    நிஜமான kernels அவற்றுக்கு நன்கு கீழேதான் விழும். <em>நீங்கள் எந்தச் சுவரின் முன்
+    நிற்கிறீர்கள்</em> என்பதை இந்தப் பக்கம் சொல்கிறது; உங்கள் code எவ்வளவு வேகமாக ஓடும்
+    என்பதை அல்ல.</div>
+
+  <h2>Memory hierarchy என்பது ஒரு supply chain</h2>
+
+  <p>Database பற்றி நீங்கள் ஏற்கனவே இப்படித்தான் யோசிக்கிறீர்கள். சில data process-ல், சில
+    Redis-ல், சில அதே rack-ல் இருக்கும் disk-ல், சில வேறொரு region-ல். "CPU மெதுவாக இருப்பதால்
+    இந்த query மெதுவாக இருக்கிறது" என்று நீங்கள் நினைப்பதே இல்லை. "இப்போது நான் எத்தனை
+    round trips வாங்கினேன்?" என்றுதான் நினைப்பீர்கள். GPU-ம் அதே வடிவம்தான்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>நிலை</th><th>எளிய அர்த்தம்</th><th>Supply chain</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Registers</strong></td><td>ஒரு thread இப்போது கையில் வைத்திருக்கும் மதிப்புகள்</td><td>உங்கள் கையில்</td></tr>
+      <tr><td><strong>Shared memory / L1</strong></td><td>Programmer நிர்வகிக்கும் scratchpad, ஒரு SM-க்கு மட்டும் சொந்தம்</td><td>பின்னால் இருக்கும் அலமாரி</td></tr>
+      <tr><td><strong>L2 cache</strong></td><td>முழு die-க்கும் பொது, தானியங்கி, உங்கள் கட்டுப்பாட்டில் இல்லை</td><td>சரக்கறை</td></tr>
+      <tr><td><strong>HBM</strong></td><td>GPU-வின் முதன்மை memory. <code>.cuda()</code> பொருட்களை இங்குதான் போடுகிறது</td><td>முற்றத்திற்கு அப்பால் உள்ள கிடங்கு</td></tr>
+      <tr><td><strong>NVLink</strong></td><td>அதே server-ல் இருக்கும் இன்னொரு GPU-க்கான இணைப்பு</td><td>அடுத்த கட்டிடம்</td></tr>
+      <tr><td><strong>InfiniBand</strong></td><td>வேறொரு server-ல் இருக்கும் GPU-க்கான இணைப்பு</td><td>முற்றிலும் வேறு ஒரு தளம்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>NVIDIA-வின் மூன்று சொற்கள், ஒரே ஒரு முறை வரையறை. ஒரு <strong>streaming multiprocessor
+    (SM)</strong> என்பது die-ல் இருக்கும் ~130 தனித்தனி processors-ல் ஒன்று; உங்கள் வேலை
+    அத்தனையையும் நிரப்பினால் மட்டுமே முழு GPU-ம் உங்களுக்குக் கிடைக்கும். ஒரு
+    <strong>warp</strong> என்பது ஒரே instruction-ஐ ஒரே அணிவகுப்பில் இயக்கும் 32 threads.
+    <strong>Shared memory</strong> என்பது ஒவ்வொரு SM-லும் உள்ள, software நிர்வகிக்கும்
+    scratchpad — hit ஆகும் என்று நம்பும் cache அல்ல, நீங்களே வெளிப்படையாக load செய்யும்
+    buffer. <strong>HBM</strong> என்பது package-ல் அடுக்கப்பட்ட DRAM: விளம்பரத்தில் வரும்
+    80 GB என்ற எண்.</p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+<pre><code>Accelerator: NVIDIA H100 SXM (published specification, approximate)
+All figures PUBLISHED SPECIFICATIONS, not measurements.
+
+level           capacity  bandwidth  latency* supply chain           FLOPs missed
+---------------------------------------------------------------------------------
+registers         256 KB  ~100 TB/s      1 ns on the bench                 990000
+shared mem/L1     228 KB   ~20 TB/s     30 ns shelf behind you           29700000
+L2 cache           50 MB   ~10 TB/s    200 ns stockroom                 198000000
+HBM3               80 GB  3.35 TB/s    500 ns warehouse in the yard  <span class="hl">   495000000</span>
+NVLink peer            -   900 GB/s   2000 ns the next building      <span class="hl">  1980000000</span>
+InfiniBand             -    50 GB/s   5000 ns another site           <span class="hl">  4950000000</span>
+
+* latency is an order-of-magnitude figure, NOT a vendor spec.</code></pre>
+
+  <p>கடைசி column-தான் இந்தப் பக்கம் முழுவதும் ஒரே எண்ணில்: peak FP16 throughput-ஐ அந்தப்
+    பயணத்தின் latency-யால் பெருக்கியது — காத்திருக்கும் நேரத்தில் நீங்கள் செய்திருக்க
+    <em>முடிந்திருக்கும்</em> கணக்கு. GPU-வின் சொந்த main memory-க்கு ஒரே ஒரு
+    round trip-க்கு அரை பில்லியன் floating point operations.</p>
+
+  <p>Capacities நேர் எதிர் திசையில் ஓடுகின்றன: ஒரு SM-க்கு 228 KB shared memory, ஆனால்
+    80 GB HBM. அந்த சமச்சீரின்மை ஒரு சிறு விவரம் அல்ல —
+    <a href="../flash-attention/">FlashAttention</a> ஏன் இருக்கிறது, அதன் tile size ஏன்
+    அப்படி இருக்கிறது என்பதற்கு அதுவே முழுக் காரணம்.</p>
+
+  <div class="note"><strong>Chip கணக்கில் மெதுவாக இல்லை. அது பட்டினி கிடக்கிறது.</strong> ஒரு GPU-வுக்கு
+    நீங்கள் எப்போதாவது செய்யப்போகும் கிட்டத்தட்ட ஒவ்வொரு optimisation-ம், குறைவான
+    பயணங்களை எடுப்பதற்கான அல்லது அவற்றை hot loop-லிருந்து விலக்கி வைப்பதற்கான வழிதான்.
+    அவற்றில் எதுவுமே கணக்கைக் குறைப்பதைப் பற்றியது அல்ல.</div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <p>Williams, Waterman மற்றும் Patterson இதை 2009-ல் வெளியிட்டார்கள் — <em>Roofline: An
+    Insightful Visual Performance Model for Multicore Architectures</em>, Communications of the
+    ACM-ல். இது CUDA-வின் எழுச்சிக்கும் முந்தையது, tensor cores-க்கும் முந்தையது, இந்தப்
+    பக்கத்தில் உள்ள ஒவ்வொரு accelerator-க்கும் முந்தையது — இருந்தும் அத்தனையையும்
+    விளக்குகிறது, ஏனெனில் அது இரண்டையே அனுமானிக்கிறது: கணக்குக்கு ஒரு உச்சவரம்பு,
+    bandwidth-க்கு ஒரு உச்சவரம்பு.</p>
+
+  <div class="formula">attainable FLOP/s = min( peak FLOP/s ,&nbsp; bandwidth × I )&nbsp;&nbsp;&nbsp; where I = FLOPs ÷ bytes moved</div>
+
+  <p>இதை pipeline stages போலப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>அலகுகள்</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>I</code></td><td>FLOP/byte</td><td><strong>Arithmetic intensity.</strong> இது உங்கள் <em>operation</em>-ன் பண்பு, chip-ன் அல்ல. இழுத்து வந்த ஒவ்வொரு byte-லிருந்தும் எவ்வளவு வேலை கிடைக்கிறது</td></tr>
+      <tr><td><code>bandwidth × I</code></td><td>FLOP/s</td><td>சாய்ந்த கூரை. வினாடிக்கு B bytes மட்டுமே நகர்த்த முடிந்தால், byte-க்கு I flops செய்தால், அதுவே உங்கள் உச்சவரம்பு. எந்த arithmetic unit-ஆலும் உதவ முடியாது</td></tr>
+      <tr><td><code>peak FLOP/s</code></td><td>FLOP/s</td><td>தட்டையான கூரை. Chip-ன் வெளியிடப்பட்ட அதிகபட்சம். எத்தனை bytes ஊட்டினாலும் இதைத் தாண்ட முடியாது</td></tr>
+      <tr><td><code>min(…)</code></td><td>FLOP/s</td><td>எந்தக் கூரை தாழ்வாக இருக்கிறதோ அதைத்தான் நீங்கள் இடிப்பீர்கள். <em>எது</em> என்பது எதைச் சரிசெய்ய வேண்டும் என்பதைச் சொல்கிறது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>அவ்வளவுதான். இரண்டு நேர்கோடுகளும் ஒரு <code>min()</code>-ம். பொருத்த வேண்டிய வளைவும்
+    இல்லை, அளக்க வேண்டியதும் இல்லை. Code-ல்:</p>
+
+<pre><code>def roofline(intensity, peak_flops, bandwidth):
+    memory_bound_ceiling = bandwidth * intensity
+    attainable = min(peak_flops, memory_bound_ceiling)
+    limiter = "compute" if memory_bound_ceiling &gt;= peak_flops else "memory"
+    return attainable, limiter</code></pre>
+
+  <h2>ஆறு operations, ஒவ்வொன்றும் எந்தச் சுவரில் மோதுகிறது</h2>
+
+  <p>இதோ பலன். நீங்கள் நிஜமாகவே ஓட்டும் ஆறு விஷயங்களுக்கு FLOPs-ஐயும் bytes-ஐயும் எண்ணி,
+    ஒன்றை மற்றொன்றால் வகுத்து, வெளியிடப்பட்ட இரண்டு H100 மதிப்புகளுடன் ஒப்பிட்டேன். எதுவும்
+    profile செய்யப்படவில்லை, எதுவும் GPU-வில் ஓடவில்லை.</p>
+
+  <p>Byte எண்ணிக்கைகள் <em>சிறந்த</em> நிலையை அனுமானிக்கின்றன: ஒவ்வொரு input-ம் HBM-லிருந்து
+    ஒரு முறை படிக்கப்படுகிறது, ஒவ்வொரு output-ம் ஒரு முறை எழுதப்படுகிறது, மீதி அனைத்தும்
+    chip-ல் தங்குகின்றன. நிஜ kernels இதைவிட அதிகம் நகர்த்தும், எனவே இந்த intensities
+    நம்பிக்கையானவை — அது கீழே வரும் கெட்ட செய்தியை மேலும் கெட்டதாக்கும்.</p>
+
+<pre><code>Ceiling  : 990 TFLOP/s dense FP16 tensor core (published peak)
+Bandwidth: 3.35 TB/s HBM3 (published peak)
+Ridge    : 295.5 FLOP/byte -- below this you are memory-bound
+
+operation                         FLOP/byte     attainable   bound by
+----------------------------------------------------------------------
+element-wise add, n=67108864          0.167         0.6 TF/s     memory
+mat-vec 4096x4096                     1.000         3.3 TF/s     memory
+mat-mul 4096x4096x4096             1365.333       990.0 TF/s    compute <span class="ok">✓</span>
+attention, seq=512, d_head=64       256.000       857.6 TF/s     memory
+attention, seq=8192, d_head=64     4096.000       990.0 TF/s    compute <span class="ok">✓</span>
+decode step, 7B params, batch=1       1.000         3.4 TF/s  <span class="hl">   memory</span></code></pre>
+
+  <p>ஆறில் நான்கு memory-bound. பெரிய சதுர matrix multiply மட்டுமே நீங்கள் பணம் கொடுத்து
+    வாங்கிய arithmetic units-ஐ உண்மையாகப் பயன்படுத்தும் ஒரே operation — benchmark-ல் GPU
+    வேகமாகத் தெரிவதற்குக் காரணமும் அதுதான். ஒரு element-wise add, chip-ன் arithmetic
+    peak-ல் <strong>0.1%</strong>-ஐ மட்டுமே எட்டுகிறது, ஏனெனில் அது ஒவ்வொரு byte-ஐயும்
+    சரியாக ஒரு முறை தொடுகிறது — அதனால்தான் kernel fusion என்பது ஒரு add-க்குச் செய்யும்
+    micro-optimisation அல்ல, அது இருக்கும் <em>ஒரே</em> நெம்புகோல். Sequence வளர வளர
+    attention கோட்டைக் கடக்கிறது: seq=512 memory-bound, seq=8192 compute-bound, அதே kernel,
+    அதே code. கடைசி வரிசை:</p>
+
+  <div class="note"><strong>ஒற்றை token decode step 1.00 FLOP/byte-ல் உட்கார்ந்திருக்கிறது, ridge-க்கு
+    தோராயமாக 296× கீழே.</strong> ஒவ்வொரு weight-ம் HBM-லிருந்து இழுக்கப்பட்டு இரண்டு
+    flops-க்குப் பயன்படுகிறது. <a href="../kv-cache/">KV cache பக்கம்</a>, cache-ன்
+    விலையை எண்ணி, software பக்கத்திலிருந்து decode memory-bound என்று வாதிடுகிறது. இது
+    அதே முடிவு, hardware பக்கத்திலிருந்து வருகிறது, எந்த model-ஐயும் பார்க்காமல். இரண்டு
+    தனித்தனி வழிகள், ஒரே விடை — ஒரு கூற்று artefact அல்ல, கட்டமைப்புசார்ந்தது என்பதை
+    வழக்கமாக இப்படித்தான் அறிவீர்கள்.</div>
+
+  <p class="thanglish">
+    Ridge-kku 296x keezhe decode step okkarudhu. Ovvoru weight-um HBM-la irundhu izhuthu
+    rendu flops-kku dhaan use aagudhu. Software pakkamum hardware pakkamum ore answer.
+  </p>
+
+  <h2>Ridge point, மற்றும் field ஏன் மேலும் memory-bound ஆகிறது</h2>
+
+  <p>இரண்டு கூரைகளும் எங்கோ ஒரு இடத்தில் சந்திக்கின்றன. அந்தக் கடப்புதான்
+    <strong>ridge point</strong>:</p>
+
+  <div class="formula">ridge = peak FLOP/s ÷ bandwidth&nbsp;&nbsp;&nbsp;(FLOP per byte)</div>
+
+  <p>ஒரு chip-க்கு, ஒரு precision-க்கு ஒரே ஒரு எண். அதற்குக் கீழே memory-bound. மேலே
+    compute-bound. நீங்கள் எழுதப்போகும் ஒவ்வொரு kernel-ன் தலைவிதியையும் அது தீர்மானிக்கிறது,
+    அதை ஒரு datasheet-லிருந்து ஒரு துண்டுக் காகிதத்தில் கணக்கிட்டுவிடலாம்.</p>
+
+  <p>அது என்ன செய்துகொண்டிருக்கிறது என்று பாருங்கள்:</p>
+
+<pre><code>part                          HBM      FP16 peak ridge FLOP/byte
+--------------------------------------------------------------
+V100 SXM2 (2017)          0.90 TB/s        125 TF/s            139
+A100 SXM  (2020)          2.04 TB/s        312 TF/s            153
+H100 SXM  (2022)          3.35 TB/s        990 TF/s        <span class="hl">    296</span>
+
+Over those three parts:
+  arithmetic throughput grew 7.9x
+  memory bandwidth  grew 3.7x
+  so the ridge point grew 2.1x</code></pre>
+
+  <p>Bytes மலிவாகியதைவிட கிட்டத்தட்ட இரு மடங்கு வேகமாகக் கணக்கு மலிவாகியிருக்கிறது. அதாவது,
+    compute-bound-ஆக இருக்க உங்களுக்குத் தேவைப்படும் intensity ஒவ்வொரு தலைமுறையிலும்
+    <em>ஏறுகிறது</em>. V100-ன் arithmetic units-ஐ வசதியாகப் பயன்படுத்திய ஒரு operation,
+    உங்கள் code-ல் ஒரு வரி கூட மாறாமல் H100-ல் memory-bound ஆகிவிடலாம். நீங்கள் upgrade
+    செய்தீர்கள், உங்கள் kernel ஒப்பீட்டளவில் மோசமாகிவிட்டது.</p>
+
+  <p>இதைத்தான் ஐந்து வருடங்களுக்கு முன்பே யாராவது சொல்லியிருக்க வேண்டும் என்று நினைக்கிறேன்.
+    கடந்த ஐந்து ஆண்டுகளின் கிட்டத்தட்ட ஒவ்வொரு சுவாரஸ்யமான systems paper-ம், குறைவான
+    கணக்குச் செய்வதைப் பற்றியல்லாமல் குறைவான bytes நகர்த்துவதைப் பற்றி இருப்பதற்குக்
+    காரணம் இதுதான் — FlashAttention, GQA, quantised caches, paged attention, எல்லாமே.
+    Memory-ஐப் பற்றிக் கவலைப்பட வேண்டும் என்று field முடிவெடுக்கவில்லை. Hardware அதற்காக
+    முடிவெடுத்தது.</p>
+
+  <p class="thanglish">
+    Ridge point ovvoru generation-lum merke poigudhu — arithmetic, bandwidth-ai vida vegama
+    malivaagudhu. Adhaan last five years-la ellaa paper-um bytes-ai kuraikkaradha pathi.
+  </p>
+
+  <h2>Tensor cores: precision என்பது ஒரு throughput knob</h2>
+
+  <p>ஒரு <strong>tensor core</strong> என்பது ஒரு சிறிய நிலையான அளவு matrix
+    multiply-accumulate-ஐ, ஒரு நேரத்தில் ஒரு multiply-add என்பதற்குப் பதிலாக, ஒரே
+    instruction-ஆகச் செய்யும் unit. அது மிக வேகமானது, எண்கள் குறுகக் குறுக மேலும்
+    வேகமானது. இதோ அதே matrix multiply, நான்கு முறை, dtype-ஐ மட்டும் மாற்றி:</p>
+
+<pre><code>Same operation: C = A @ B, 4096x4096x4096. Only the dtype changes.
+
+precision              bytes/el        peak   ridge  FLOP/byte  bound by
+------------------------------------------------------------------------
+FP32 (no tensor core)         4     67 TF/s      20        683   compute
+TF32 tensor core              4    495 TF/s     148        683   compute
+FP16 tensor core              2    990 TF/s     296       1365   compute
+FP8 tensor core               1   1979 TF/s     591       2731   compute <span class="ok">✓</span>
+
+Same maths, 137 GFLOPs either way.
+Bytes moved: 201.3 MB at FP32, 50.3 MB at FP8 -- 4x less traffic.
+Peak arithmetic: 67 TF/s at plain FP32 against 1979 TF/s at FP8
+-- 30x more, from the published ceilings.</code></pre>
+
+  <p>Precision-ஐக் குறைப்பது என்ன செய்கிறது என்று பாருங்கள். அது உங்களை roofline-ல்
+    <em>இரு முறை</em> நகர்த்துகிறது. Bytes பாதியாகின்றன, எனவே உங்கள் arithmetic intensity
+    இரட்டிக்கிறது, சாய்ந்த கூரையில் வலப்பக்கம் நகர்கிறீர்கள். <em>மேலும்</em> தட்டையான
+    கூரையே உயருகிறது, ஏனெனில் குறுகிய அகலங்களில் tensor cores ஒரு clock-க்கு அதிகம்
+    செய்கின்றன. ஒரே மாற்றத்திலிருந்து இரண்டு தனித்தனி வெற்றிகள்.</p>
+
+  <p>Quantisation கிட்டத்தட்ட முழுவதுமாக ஒரு memory சேமிப்பாகவே விற்கப்படுகிறது — model
+    card-ல் அடங்கிவிடும் என்று. இந்த hardware-ல் அது அதே அளவுக்கு ஒரு arithmetic
+    சேமிப்பும்கூட, அந்தப் பாதி அரிதாகவே சொல்லப்படுகிறது.
+    <a href="../quantization/">Quantisation பக்கம்</a>, precision குறைப்பு துல்லியத்தில்
+    உங்களுக்கு என்ன விலை வைக்கிறது, எந்த எண்களை நசுக்க அனுமதி உண்டு என்பதைப் பற்றியது;
+    இந்தப் பக்கம் திரும்பக் கிடைக்கும் throughput-ஐ மட்டுமே எண்ணுகிறது.</p>
+
+  <div class="note"><strong>அந்த 30× என்பது இரு வேறுபட்ட விஷயங்களுக்கு இடையிலானது, அதை நேர்மையாகச்
+    சொல்ல விரும்புகிறேன்.</strong> 67 TF/s என்பது CUDA cores-ல் சாதாரண FP32, tensor core
+    எதுவும் இல்லை; 1979 TF/s என்பது tensor cores-ல் FP8. அந்த விகிதத்தின் பெரும்பகுதி
+    "நீங்கள் tensor cores-ஐப் பயன்படுத்தத் தொடங்கினீர்கள்" என்பதுதான், "dtype-ஐக்
+    குறுக்கினீர்கள்" என்பதல்ல. Dtype மட்டும் ஒப்பிட்டால் ஒவ்வொரு பாதிப்பிற்கும் தூய 2×:
+    495 → 990 → 1979.</div>
+
+  <h2>Occupancy: ஒரு சிறிய kernel ஒரு பெரிய இயந்திரத்தை வீணாக்குகிறது</h2>
+
+  <p>உங்கள் வேலை உண்மையில் chip-ஐ நிரப்புகிறதா என்பதைப் பற்றி roofline ஒன்றும் சொல்வதில்லை.
+    ஒரு H100-ல் 132 SMs உள்ளன. ஒரு thread block சரியாக ஒரு SM-ல்தான் ஓடும். SMs-ஐ விடக்
+    குறைவான blocks-ஐ உங்கள் பிரச்சனை உருவாக்கினால், ridge-ன் எந்தப் பக்கத்தில்
+    இருந்தாலும் மீதி வெறுமனே உட்கார்ந்திருக்கும்.</p>
+
+  <p>மிக மிக எளிமையான model: சம விலை கொண்ட blocks round-robin-ஆகப் பகிரப்படுகின்றன, மிகவும்
+    பரபரப்பான SM முடிக்கும்போது kernel முடிகிறது.</p>
+
+<pre><code>     batch     blocks    waves    utilisation       SMs idle
+------------------------------------------------------------
+         1          1        1  <span class="hl">         0.8%            131</span>
+         8          8        1           6.1%            124
+        32         32        1          24.2%            100
+        64         64        1          48.5%             68
+       132        132        1         100.0%              0 <span class="ok">✓</span>
+       133        133        2  <span class="hl">        50.4%            131</span>
+       264        264        2         100.0%              0 <span class="ok">✓</span>
+       512        512        4          97.0%             16</code></pre>
+
+  <p>Batch 1-ல் நீங்கள் இயந்திரத்தில் 0.76%-ஐப் பயன்படுத்துகிறீர்கள், 132 SMs-ல் 131-க்கு
+    எந்த வேலையும் இல்லை. நீங்கள் மெதுவான GPU வாங்கவில்லை. வேகமான ஒன்றை வாங்கி, அதற்கு ஒரே
+    ஒரு வேலையைக் கொடுத்தீர்கள்.</p>
+
+  <p>Production-ல் உண்மையில் உங்களைக் கடிக்கப் போவது batch=133 வரிசைதான். ஒரு முழு wave-ஐ
+    ஒரே ஒரு block தாண்டியதும் utilisation பாதியாகிறது, ஏனெனில் இரண்டாவது wave கிட்டத்தட்ட
+    முழுவதும் காலியாக இருந்தாலும் நீங்கள் அதற்குக் காத்திருக்கிறீர்கள். SM எண்ணிக்கையின்
+    மடங்குகள் இல்லாத அளவுகள், வீணான நேரத்தின் ஒரு quantised வாலை விட்டுச்செல்கின்றன —
+    அதனால்தான் tuning வழிகாட்டிகள் நேர்த்தியாக வகுபடும் shapes-ஐப் பற்றியே
+    வெறிகொள்கின்றன.</p>
+
+  <div class="note"><strong>Batching-க்கான முழு வாதமும் இதுதான்.</strong> Batch-1 decode memory-bound
+    <em>மேலும்</em> இயந்திரத்தையும் வெறுமையாக விடுகிறது — ஒரே தீர்வுக்கு இரண்டு தனித்தனி
+    தோல்விகள். Batching intensity-ஐ உயர்த்துகிறது (அதே weights அதிக tokens-க்குச்
+    சேவை செய்கின்றன) மற்றும் SMs-ஐ நிரப்புகிறது. அது ஒரு request-க்கான latency-ல்
+    உங்களுக்கு விலை வைக்கிறது, அதனால்தான் continuous batching இருக்கிறது, அதனால்தான்
+    ஒவ்வொரு <a href="../serving/">serving stack</a>-லும் <code>max_num_seqs</code>
+    போன்ற ஒரு knob இருக்கிறது. வெளியேறும் மற்றொரு வழிக்கு
+    <a href="../speculative-decoding/">speculative decoding</a> பாருங்கள்: அதிக requests-க்குக்
+    காத்திராமல், ஒவ்வொரு weight-load-க்கும் அதிக பயனுள்ள வேலை.</div>
+
+  <h2>வெளியே விரிதல்: NVLink பக்கத்து வீடு, InfiniBand ஒரு லாரி</h2>
+
+  <p>Supply chain-ல் இன்னும் ஒரு நிலை கீழே. ஒரு server-க்குள், GPUs NVLink வழியாகப்
+    பேசுகின்றன. Servers-க்கு இடையே, InfiniBand வழியாக. வெளியிடப்பட்ட இடைவெளி
+    தோராயமாக 18×, அந்த ஒரு விகிதமே யாரும் எடுக்கும் ஒவ்வொரு distributed training
+    முடிவையும் வடிவமைக்கிறது.</p>
+
+  <p>ஒரு ring all-reduce — ஒவ்வொரு data-parallel step-லும் நடக்கும் gradient sync — ஒவ்வொரு
+    link வழியாகவும் 2(N−1)/N × S bytes நகர்த்துகிறது, முதலில் reduce-scatter, பிறகு
+    all-gather. அது bandwidth-optimal, collectives library உண்மையில் செய்வதும் அதுதான்.
+    எனவே:</p>
+
+<pre><code>Published link bandwidths (approximate, per GPU):
+  NVLink (in a node)   : 900 GB/s
+  InfiniBand NDR 400G  : 50 GB/s
+  Ratio                : 18x
+
+All-reduce of 7B BF16 gradients = 14.0 GB buffer.
+
+configuration                      bytes/GPU      time
+--------------------------------------------------------------
+8 GPUs, 1 node, over NVLink          24.5 GB     27.2 ms <span class="ok">✓</span>
+  + 2 nodes, over InfiniBand         1.75 GB     62.2 ms  <span class="hl">(56% on IB)</span>
+  + 4 nodes, over InfiniBand         2.62 GB     79.7 ms  <span class="hl">(66% on IB)</span>
+  + 16 nodes, over InfiniBand        3.28 GB     92.8 ms  <span class="hl">(71% on IB)</span></code></pre>
+
+  <p>இரண்டு nodes-ல், InfiniBand பகுதி NVLink பகுதி சுமக்கும் bytes-ல் 7.1%-ஐ மட்டுமே
+    சுமக்கிறது — இருந்தும் நேரத்தில் பெரும்பகுதியை எடுத்துக்கொள்கிறது. ஒரு node-க்குள்,
+    எட்டு GPUs நடைமுறையில் ஒரே இயந்திரம். Nodes-ஐக் கடந்தால், அவை ஒன்றுக்கொன்று பார்சல்
+    அனுப்பிக்கொள்கின்றன.</p>
+
+  <p>அதனால்தான் expert placement, all-to-all fan-out மற்றும் communication-ஐ compute-உடன்
+    ஒன்றின் மேல் ஒன்றாக நடத்துவது ஆகியவை implementation விவரங்கள் அல்ல, உண்மையான
+    ஆராய்ச்சிப் பிரச்சனைகள். <a href="../deepseek-v3/">DeepSeek-V3</a> என்பது, NVLink
+    எண் மேலும் பாதியாக வெட்டப்பட்ட hardware-ல், ஒரு குழு இதைப் பற்றிச் செய்தது. இந்தப்
+    பக்கம் அவர்கள் எதிர்த்து வேலை செய்த கட்டுப்பாடு; அந்தப் பக்கம் அதற்கான பதில்.</p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>मैंने <a href="../flash-attention/">FlashAttention</a> वाला पेज लिखा और कहा कि SRAM छोटा है
+    और HBM दूर है। मैंने <a href="../kv-cache/">KV cache</a> वाला पेज लिखा और कहा कि decode
+    memory-bound है। मैंने <a href="../deepseek-v3/">DeepSeek-V3</a> वाला पेज लिखा और कहा कि
+    interconnect ही असली अड़चन है। तीन पेज, एक ही मशीन की तरफ़ तीन बार हाथ हिलाना — और उस
+    मशीन को मैंने एक बार भी समझाया नहीं।</p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> GPU, register, shared memory, L1, L2, HBM, NVLink, InfiniBand,
+    streaming multiprocessor, warp, tensor core, roofline, arithmetic intensity, ridge point,
+    occupancy, all-reduce, compute-bound, memory-bound — ये English technical words मैंने वैसे
+    ही रखे हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <p>यही वह पेज है। यहाँ संक्षेप में बताने को कोई paper नहीं है — पर 2009 का एक paper है जो इस
+    सब को एक साथ बाँधता है, और मैंने पूरी चीज़ को ऐसे गणित के रूप में बनाया है जिसे आप चला
+    सकते हैं। दावा यह है: <strong>profile करने से पहले ही, एक अनुपात से आप बता सकते हैं कि
+    आपका कौन-सा operation धीमा रहेगा</strong>।</p>
+
+  <div class="note"><strong>इस पेज पर कुछ भी पढ़ने से पहले यह पढ़िए।</strong> यहाँ का हर hardware
+    आँकड़ा एक <em>published specification</em> है — vendor datasheet का आँकड़ा, गोल किया हुआ,
+    अनुमानित, और उस part के नाम के साथ जिससे वह आता है। कुछ भी मापा नहीं गया है। Peak आँकड़े
+    वे छतें हैं जिन तक कोई नहीं पहुँचता; असली kernels उनसे काफ़ी नीचे रहते हैं। यह पेज बताता
+    है कि <em>आप किस दीवार के सामने खड़े हैं</em>, यह नहीं कि आपका code कितनी तेज़ी से
+    चलेगा।</div>
+
+  <h2>Memory hierarchy एक supply chain है</h2>
+
+  <p>Database के बारे में आप पहले से ऐसे ही सोचते हैं। कुछ data process में है, कुछ Redis में,
+    कुछ उसी rack की एक disk पर, कुछ किसी दूसरे region में। आप कभी नहीं सोचते कि "यह query
+    इसलिए धीमी है क्योंकि CPU धीमा है"। आप सोचते हैं "मैंने अभी कितने round trips ख़रीद
+    लिए?" GPU का आकार भी यही है:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>स्तर</th><th>सीधा अर्थ</th><th>Supply chain</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Registers</strong></td><td>वे मान जो एक thread अभी हाथ में लिए हुए है</td><td>आपके हाथ में</td></tr>
+      <tr><td><strong>Shared memory / L1</strong></td><td>Programmer का सँभाला हुआ scratchpad, एक ही SM का निजी</td><td>पीछे वाली शेल्फ़</td></tr>
+      <tr><td><strong>L2 cache</strong></td><td>पूरे die में साझा, अपने आप चलता है, आपके नियंत्रण में नहीं</td><td>स्टोररूम</td></tr>
+      <tr><td><strong>HBM</strong></td><td>GPU की मुख्य memory। <code>.cuda()</code> चीज़ें यहीं रखता है</td><td>अहाते के पार गोदाम</td></tr>
+      <tr><td><strong>NVLink</strong></td><td>उसी server में दूसरे GPU तक की कड़ी</td><td>अगली इमारत</td></tr>
+      <tr><td><strong>InfiniBand</strong></td><td>दूसरे server में मौजूद GPU तक की कड़ी</td><td>बिलकुल अलग साइट</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>NVIDIA के तीन शब्द, एक बार परिभाषित। एक <strong>streaming multiprocessor (SM)</strong>
+    die पर मौजूद ~130 स्वतंत्र processors में से एक है; पूरा GPU आपको तभी मिलता है जब आपका
+    काम उन सबको भर दे। एक <strong>warp</strong> 32 threads हैं जो एक ही instruction को एक
+    साथ, एक ही कदम में चलाते हैं। <strong>Shared memory</strong> हर SM पर मौजूद एक
+    software-प्रबंधित scratchpad है — ऐसा cache नहीं जिसके hit होने की आप उम्मीद करें,
+    बल्कि एक buffer जिसमें आप ख़ुद load करते हैं। <strong>HBM</strong> package पर चढ़ी हुई
+    DRAM है: मार्केटिंग वाला 80 GB का आँकड़ा।</p>
+
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। यह रहा असली output:</strong></p>
+<pre><code>Accelerator: NVIDIA H100 SXM (published specification, approximate)
+All figures PUBLISHED SPECIFICATIONS, not measurements.
+
+level           capacity  bandwidth  latency* supply chain           FLOPs missed
+---------------------------------------------------------------------------------
+registers         256 KB  ~100 TB/s      1 ns on the bench                 990000
+shared mem/L1     228 KB   ~20 TB/s     30 ns shelf behind you           29700000
+L2 cache           50 MB   ~10 TB/s    200 ns stockroom                 198000000
+HBM3               80 GB  3.35 TB/s    500 ns warehouse in the yard  <span class="hl">   495000000</span>
+NVLink peer            -   900 GB/s   2000 ns the next building      <span class="hl">  1980000000</span>
+InfiniBand             -    50 GB/s   5000 ns another site           <span class="hl">  4950000000</span>
+
+* latency is an order-of-magnitude figure, NOT a vendor spec.</code></pre>
+
+  <p>आख़िरी column ही इस पूरे पेज का सार एक आँकड़े में है: peak FP16 throughput गुणा उस यात्रा
+    की latency — यानी वह गणित जो आप इंतज़ार के दौरान कर <em>सकते थे</em>। GPU की अपनी ही
+    main memory तक एक round trip के लिए आधा अरब floating point operations।</p>
+
+  <p>और capacities उलटी दिशा में चलती हैं: प्रति SM 228 KB shared memory, जबकि HBM 80 GB। यह
+    असमानता कोई छोटी बात नहीं — यही पूरी वजह है कि
+    <a href="../flash-attention/">FlashAttention</a> मौजूद है, और उसका tile size वही है जो
+    है।</p>
+
+  <div class="note"><strong>Chip गणित में धीमा नहीं है। वह भूखा है।</strong> GPU पर आप जो भी
+    optimisation कभी लगाएँगे, वह लगभग हमेशा कम चक्कर लगाने का, या उन्हें hot loop से दूर ले
+    जाने का तरीक़ा है। उनमें से लगभग कोई भी कम गणित करने के बारे में नहीं है।</div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <p>Williams, Waterman और Patterson ने इसे 2009 में छापा — <em>Roofline: An Insightful Visual
+    Performance Model for Multicore Architectures</em>, Communications of the ACM में। यह
+    CUDA के उभार से पहले का है, tensor cores से पहले का, इस पेज के हर accelerator से पहले
+    का, और फिर भी सबको समझाता है, क्योंकि यह सिर्फ़ दो बातें मानता है: गणित की एक छत, और
+    bandwidth की एक छत।</p>
+
+  <div class="formula">attainable FLOP/s = min( peak FLOP/s ,&nbsp; bandwidth × I )&nbsp;&nbsp;&nbsp; where I = FLOPs ÷ bytes moved</div>
+
+  <p>इसे pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>इकाई</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>I</code></td><td>FLOP/byte</td><td><strong>Arithmetic intensity.</strong> यह आपके <em>operation</em> का गुण है, chip का नहीं। खींचे गए हर byte से कितना काम निकलता है</td></tr>
+      <tr><td><code>bandwidth × I</code></td><td>FLOP/s</td><td>ढलवाँ छत। अगर आप प्रति सेकंड सिर्फ़ B bytes हिला सकते हैं और प्रति byte I flops करते हैं, वही आपकी छत है। कोई arithmetic unit मदद नहीं कर सकती</td></tr>
+      <tr><td><code>peak FLOP/s</code></td><td>FLOP/s</td><td>सपाट छत। Chip का published अधिकतम। कितने भी bytes खिलाइए, इससे ऊपर नहीं जा सकते</td></tr>
+      <tr><td><code>min(…)</code></td><td>FLOP/s</td><td>जो छत नीची है, वही आप टकराते हैं। और <em>कौन-सी</em> है, यह बताता है कि जाकर क्या ठीक करना है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>बस इतना ही। दो सीधी रेखाएँ और एक <code>min()</code>। न कोई curve fit करनी है, न कुछ मापना
+    है। Code में:</p>
+
+<pre><code>def roofline(intensity, peak_flops, bandwidth):
+    memory_bound_ceiling = bandwidth * intensity
+    attainable = min(peak_flops, memory_bound_ceiling)
+    limiter = "compute" if memory_bound_ceiling &gt;= peak_flops else "memory"
+    return attainable, limiter</code></pre>
+
+  <h2>छह operations, और हर एक किस दीवार से टकराता है</h2>
+
+  <p>यह रहा नतीजा। जो छह चीज़ें आप सचमुच चलाते हैं, उनके FLOPs और bytes मैंने गिने, एक को
+    दूसरे से भाग दिया, और दो published H100 आँकड़ों से तुलना की। कुछ भी profile नहीं हुआ,
+    कुछ भी GPU पर नहीं चला।</p>
+
+  <p>Byte की गिनती <em>आदर्श</em> स्थिति मानती है: हर input HBM से एक बार पढ़ा गया, हर output
+    एक बार लिखा गया, बाक़ी सब chip पर ही रहा। असली kernels इससे ज़्यादा हिलाते हैं, इसलिए ये
+    intensities आशावादी हैं — जिससे नीचे की बुरी ख़बर और बुरी होती है, बेहतर नहीं।</p>
+
+<pre><code>Ceiling  : 990 TFLOP/s dense FP16 tensor core (published peak)
+Bandwidth: 3.35 TB/s HBM3 (published peak)
+Ridge    : 295.5 FLOP/byte -- below this you are memory-bound
+
+operation                         FLOP/byte     attainable   bound by
+----------------------------------------------------------------------
+element-wise add, n=67108864          0.167         0.6 TF/s     memory
+mat-vec 4096x4096                     1.000         3.3 TF/s     memory
+mat-mul 4096x4096x4096             1365.333       990.0 TF/s    compute <span class="ok">✓</span>
+attention, seq=512, d_head=64       256.000       857.6 TF/s     memory
+attention, seq=8192, d_head=64     4096.000       990.0 TF/s    compute <span class="ok">✓</span>
+decode step, 7B params, batch=1       1.000         3.4 TF/s  <span class="hl">   memory</span></code></pre>
+
+  <p>छह में से चार memory-bound हैं। बड़ा वर्गाकार matrix multiply ही यहाँ इकलौता operation है
+    जो सचमुच उन arithmetic units का इस्तेमाल करता है जिनके आपने पैसे दिए, और यही वजह है कि
+    benchmark में GPU तेज़ दिखता है। एक element-wise add chip की arithmetic peak के
+    <strong>0.1%</strong> तक पहुँचता है, क्योंकि वह हर byte को ठीक एक बार छूता है — इसीलिए
+    kernel fusion किसी add के लिए micro-optimisation नहीं, बल्कि इकलौता उपलब्ध लीवर है।
+    Sequence बढ़ने के साथ attention रेखा पार कर जाता है: seq=512 memory-bound, seq=8192
+    compute-bound, वही kernel, वही code। और आख़िरी पंक्ति:</p>
+
+  <div class="note"><strong>एक single-token decode step 1.00 FLOP/byte पर बैठा है, ridge से लगभग
+    296× नीचे।</strong> हर weight HBM से खींचा जाता है और सिर्फ़ दो flops के काम आता है।
+    <a href="../kv-cache/">KV cache वाला पेज</a> cache की क़ीमत गिनकर, software की तरफ़ से
+    यही तर्क देता है कि decode memory-bound है। यह वही निष्कर्ष है जो hardware की तरफ़ से
+    आ रहा है, बिना किसी model को देखे। दो स्वतंत्र रास्ते, एक ही जवाब — आमतौर पर इसी से पता
+    चलता है कि कोई दावा संरचनात्मक है, कोई संयोग नहीं।</div>
+
+  <h2>Ridge point, और यह क्षेत्र लगातार और memory-bound क्यों होता जा रहा है</h2>
+
+  <p>दोनों छतें कहीं न कहीं मिलती हैं। वह मिलन-बिंदु है <strong>ridge point</strong>:</p>
+
+  <div class="formula">ridge = peak FLOP/s ÷ bandwidth&nbsp;&nbsp;&nbsp;(FLOP per byte)</div>
+
+  <p>हर chip के लिए, हर precision के लिए एक आँकड़ा। उससे नीचे memory-bound, ऊपर
+    compute-bound। यह उस हर kernel की क़िस्मत तय करता है जो आप कभी लिखेंगे, और इसे आप
+    datasheet देखकर काग़ज़ के टुकड़े पर निकाल सकते हैं।</p>
+
+  <p>देखिए यह क्या करता आ रहा है:</p>
+
+<pre><code>part                          HBM      FP16 peak ridge FLOP/byte
+--------------------------------------------------------------
+V100 SXM2 (2017)          0.90 TB/s        125 TF/s            139
+A100 SXM  (2020)          2.04 TB/s        312 TF/s            153
+H100 SXM  (2022)          3.35 TB/s        990 TF/s        <span class="hl">    296</span>
+
+Over those three parts:
+  arithmetic throughput grew 7.9x
+  memory bandwidth  grew 3.7x
+  so the ridge point grew 2.1x</code></pre>
+
+  <p>गणित लगभग दोगुनी रफ़्तार से सस्ता हुआ, bytes के मुक़ाबले। इसका मतलब यह कि compute-bound
+    बने रहने के लिए जितनी intensity चाहिए, वह हर पीढ़ी में <em>बढ़ती</em> जाती है। जो
+    operation V100 की arithmetic units को आराम से इस्तेमाल करता था, वह आपके code की एक भी
+    पंक्ति बदले बिना H100 पर memory-bound हो सकता है। आपने upgrade किया, और आपका kernel
+    तुलनात्मक रूप से और ख़राब हो गया।</p>
+
+  <p>यही वह बात है जो काश कोई मुझे पाँच साल पहले बता देता। यही समझाता है कि पिछले पाँच सालों
+    का लगभग हर दिलचस्प systems paper कम गणित करने के बजाय कम bytes हिलाने के बारे में क्यों
+    है — FlashAttention, GQA, quantised caches, paged attention, सब। इस क्षेत्र ने memory
+    की परवाह करने का फ़ैसला नहीं किया। Hardware ने उसके लिए फ़ैसला कर दिया।</p>
+
+  <h2>Tensor cores: precision एक throughput knob है</h2>
+
+  <p>एक <strong>tensor core</strong> वह unit है जो एक बार में एक multiply-add करने के बजाय एक
+    छोटा, तयशुदा आकार का matrix multiply-accumulate एक ही instruction में कर देती है। वह
+    कहीं तेज़ है, और संख्याएँ जितनी सँकरी होती जाती हैं उतनी और तेज़। यह रहा वही matrix
+    multiply, चार बार, सिर्फ़ dtype बदलकर:</p>
+
+<pre><code>Same operation: C = A @ B, 4096x4096x4096. Only the dtype changes.
+
+precision              bytes/el        peak   ridge  FLOP/byte  bound by
+------------------------------------------------------------------------
+FP32 (no tensor core)         4     67 TF/s      20        683   compute
+TF32 tensor core              4    495 TF/s     148        683   compute
+FP16 tensor core              2    990 TF/s     296       1365   compute
+FP8 tensor core               1   1979 TF/s     591       2731   compute <span class="ok">✓</span>
+
+Same maths, 137 GFLOPs either way.
+Bytes moved: 201.3 MB at FP32, 50.3 MB at FP8 -- 4x less traffic.
+Peak arithmetic: 67 TF/s at plain FP32 against 1979 TF/s at FP8
+-- 30x more, from the published ceilings.</code></pre>
+
+  <p>देखिए precision घटाने से क्या होता है। वह आपको roofline पर <em>दो बार</em> हिलाता है।
+    Bytes आधे हो जाते हैं, तो आपकी arithmetic intensity दोगुनी होती है और आप ढलवाँ छत पर
+    दाहिनी ओर सरक जाते हैं। <em>और</em> सपाट छत ख़ुद ऊपर उठ जाती है, क्योंकि सँकरी चौड़ाई पर
+    tensor cores प्रति clock ज़्यादा करते हैं। एक ही बदलाव से दो अलग फ़ायदे।</p>
+
+  <p>Quantisation लगभग पूरी तरह memory की बचत के रूप में बेचा जाता है — model card पर आ जाएगा।
+    इस hardware पर वह उतनी ही बड़ी arithmetic की बचत भी है, और वह आधा हिस्सा शायद ही कभी
+    बताया जाता है। <a href="../quantization/">Quantisation वाला पेज</a> इस बारे में है कि
+    precision गिराने की क़ीमत accuracy में क्या पड़ती है और किन संख्याओं को दबाने की इजाज़त
+    है; यह पेज सिर्फ़ वापस मिलने वाला throughput गिनता है।</p>
+
+  <div class="note"><strong>वह 30× दो अलग-अलग चीज़ों के बीच है, और मैं इस बारे में ईमानदार रहना
+    चाहता हूँ।</strong> 67 TF/s सादा FP32 है, CUDA cores पर, कोई tensor core शामिल नहीं;
+    1979 TF/s tensor cores पर FP8 है। उस अनुपात का ज़्यादातर हिस्सा "आपने tensor cores
+    इस्तेमाल करना शुरू किया" है, "आपने dtype सँकरा किया" नहीं। सिर्फ़ dtype की तुलना साफ़
+    2× प्रति आधा करने की है: 495 → 990 → 1979।</div>
+
+  <h2>Occupancy: छोटा kernel बड़ी मशीन बर्बाद करता है</h2>
+
+  <p>Roofline इस बारे में कुछ नहीं कहता कि आपका काम chip को सचमुच भरता है या नहीं। एक H100 में
+    132 SMs हैं। एक thread block ठीक एक SM पर चलता है। अगर आपकी समस्या SMs से कम blocks
+    बनाती है, तो बाक़ी खाली बैठे रहते हैं, चाहे आप ridge के किसी भी तरफ़ हों।</p>
+
+  <p>सबसे मोटा मॉडल: बराबर लागत वाले blocks round-robin बाँटे गए, kernel तब ख़त्म जब सबसे
+    व्यस्त SM ख़त्म करे।</p>
+
+<pre><code>     batch     blocks    waves    utilisation       SMs idle
+------------------------------------------------------------
+         1          1        1  <span class="hl">         0.8%            131</span>
+         8          8        1           6.1%            124
+        32         32        1          24.2%            100
+        64         64        1          48.5%             68
+       132        132        1         100.0%              0 <span class="ok">✓</span>
+       133        133        2  <span class="hl">        50.4%            131</span>
+       264        264        2         100.0%              0 <span class="ok">✓</span>
+       512        512        4          97.0%             16</code></pre>
+
+  <p>Batch 1 पर आप मशीन का 0.76% इस्तेमाल कर रहे हैं और 132 में से 131 SMs के पास कोई काम नहीं
+    है। आपने धीमा GPU नहीं ख़रीदा। आपने तेज़ GPU ख़रीदा और उसे एक ही काम थमा दिया।</p>
+
+  <p>Production में असल में जो पंक्ति आपको काटेगी वह batch=133 वाली है। पूरी wave से एक block
+    आगे बढ़ते ही utilisation आधा हो जाता है, क्योंकि दूसरी wave लगभग पूरी ख़ाली है फिर भी आप
+    उसका इंतज़ार करते हैं। जो आकार SM की गिनती के गुणज नहीं हैं, वे बेकार समय की एक
+    quantised पूँछ छोड़ जाते हैं, और इसीलिए tuning गाइड ऐसे shapes पर अटके रहते हैं जो
+    ठीक-ठीक भाग हो जाएँ।</p>
+
+  <div class="note"><strong>Batching का पूरा तर्क यही है।</strong> Batch-1 decode memory-bound है
+    <em>और</em> मशीन को ख़ाली छोड़ता है — दो अलग विफलताएँ, एक ही इलाज। Batching intensity
+    बढ़ाता है (वही weights ज़्यादा tokens के काम आते हैं) और SMs भरता है। इसकी क़ीमत
+    प्रति-request latency में चुकानी पड़ती है, इसीलिए continuous batching मौजूद है और
+    इसीलिए हर <a href="../serving/">serving stack</a> में <code>max_num_seqs</code> जैसा
+    कोई knob होता है। निकलने का दूसरा रास्ता देखने के लिए
+    <a href="../speculative-decoding/">speculative decoding</a> देखिए: ज़्यादा requests का
+    इंतज़ार किए बिना, हर weight-load से ज़्यादा उपयोगी काम।</div>
+
+  <h2>बाहर की ओर फैलाव: NVLink बग़ल में है, InfiniBand एक ट्रक है</h2>
+
+  <p>Supply chain में एक और स्तर नीचे। एक server के भीतर GPUs NVLink पर बात करते हैं। Servers
+    के बीच, InfiniBand पर। Published फ़ासला लगभग 18× का है, और वही एक अनुपात हर distributed
+    training फ़ैसले को आकार देता है।</p>
+
+  <p>एक ring all-reduce — हर data-parallel step का gradient sync — हर link से 2(N−1)/N × S bytes
+    गुज़ारता है, पहले reduce-scatter, फिर all-gather. यह bandwidth-optimal है और collectives
+    library असल में यही करती है। तो:</p>
+
+<pre><code>Published link bandwidths (approximate, per GPU):
+  NVLink (in a node)   : 900 GB/s
+  InfiniBand NDR 400G  : 50 GB/s
+  Ratio                : 18x
+
+All-reduce of 7B BF16 gradients = 14.0 GB buffer.
+
+configuration                      bytes/GPU      time
+--------------------------------------------------------------
+8 GPUs, 1 node, over NVLink          24.5 GB     27.2 ms <span class="ok">✓</span>
+  + 2 nodes, over InfiniBand         1.75 GB     62.2 ms  <span class="hl">(56% on IB)</span>
+  + 4 nodes, over InfiniBand         2.62 GB     79.7 ms  <span class="hl">(66% on IB)</span>
+  + 16 nodes, over InfiniBand        3.28 GB     92.8 ms  <span class="hl">(71% on IB)</span></code></pre>
+
+  <p>दो nodes पर InfiniBand वाला हिस्सा उतने bytes का सिर्फ़ 7.1% ढोता है जितने NVLink वाला
+    हिस्सा ढोता है — और फिर भी ज़्यादातर समय वही ले जाता है। एक node के भीतर आठ GPUs
+    व्यावहारिक रूप से एक ही मशीन हैं। Nodes के आर-पार वे एक-दूसरे को पार्सल भेज रहे हैं।</p>
+
+  <p>इसीलिए expert placement, all-to-all fan-out और communication को compute के साथ ओवरलैप
+    करना असली शोध-समस्याएँ हैं, implementation की बारीकियाँ नहीं।
+    <a href="../deepseek-v3/">DeepSeek-V3</a> वह है जो एक टीम ने इसके बारे में किया, ऐसे
+    hardware पर जहाँ NVLink का आँकड़ा एक बार और आधा कर दिया गया था। यह पेज वह अड़चन है
+    जिसके ख़िलाफ़ वे काम कर रहे थे; वह पेज उसका जवाब है।</p>
+
+</section>
+
+<hr>
+<h2>The code</h2>
+<p class="muted">Pure NumPy. No GPU required, no CUDA, nothing measured — every result is arithmetic against
+  published datasheet figures, so it runs identically on your laptop. Every function under 12 lines.</p>
+<p><a href="gpu_from_scratch.py" download><strong>Download the full script</strong></a> — about 60
+  lines of model plus eight runnable demos. Then:</p>
+<pre><code>python3 gpu_from_scratch.py</code></pre>
+<pre><code>import numpy as np
+
+# All figures are approximate, rounded, and taken from public vendor
+# documentation (NVIDIA H100 Tensor Core GPU Architecture whitepaper and the
+# H100 datasheet; NVLink and InfiniBand product pages). SXM form factor.
+# They are PEAK numbers: the ceiling, not an achieved measurement.
+H100 = {
+    "sm_count":    132,              # streaming multiprocessors on the die
+    "hbm_bytes":   80 * 1024**3,     # 80 GB of HBM3
+    "hbm_bw":      3.35e12,          # ~3.35 TB/s memory bandwidth
+    "l2_bytes":    50 * 1024**2,     # 50 MB L2, shared by all SMs
+    "smem_bytes":  228 * 1024,       # up to 228 KB shared memory per SM
+    "regs_bytes":  256 * 1024,       # 256 KB register file per SM
+    # peak dense throughput, FLOP/s, no sparsity
+    "fp32_novec":  67e12,            # plain FP32 CUDA cores, no tensor cores
+    "tf32_tensor": 495e12,           # TF32 on tensor cores
+    "fp16_tensor": 990e12,           # FP16/BF16 on tensor cores
+    "fp8_tensor":  1979e12,          # FP8 on tensor cores
+    "nvlink_bw":   900e9,            # ~900 GB/s NVLink per GPU, in a node
+    "ib_bw":       50e9,             # 400 Gb/s InfiniBand NDR = ~50 GB/s
+    "pcie_bw":     64e9,             # PCIe Gen5 x16, ~64 GB/s host&lt;-&gt;device
+}
+
+
+# STAGE 1 -- arithmetic intensity. The whole page is this one ratio.
+#     intensity = FLOPs performed / bytes moved from memory
+# Units: FLOP per byte. It is a property of the OPERATION, not of the chip.
+def arithmetic_intensity(flops, bytes_moved):
+    return flops / bytes_moved
+
+
+# STAGE 2 -- THE ROOFLINE. Williams, Waterman &amp; Patterson, 2009.
+#     attainable FLOP/s = min( peak FLOP/s,  bandwidth * intensity )
+# Two straight lines. The slanted one is memory: if you can only move B bytes
+# per second and you do I flops per byte, you can do at most B*I flops per
+# second, no matter how good your arithmetic units are. The flat one is
+# compute. The min of the two is the roof, and whichever term wins tells you
+# what is limiting you.
+def roofline(intensity, peak_flops, bandwidth):
+    memory_bound_ceiling = bandwidth * intensity
+    attainable = min(peak_flops, memory_bound_ceiling)
+    limiter = "compute" if memory_bound_ceiling &gt;= peak_flops else "memory"
+    return attainable, limiter
+
+
+# STAGE 3 -- the ridge point. Where the slanted roof meets the flat one.
+#     ridge = peak FLOP/s / bandwidth      (units: FLOP per byte)
+# Below this intensity you are memory-bound. Above it you are compute-bound.
+def ridge_point(peak_flops, bandwidth):
+    return peak_flops / bandwidth
+
+
+# STAGE 5 -- occupancy, crudely. How much of the machine does the work fill?
+# An SM is one of 132 independent processors on the die. A "warp" is a group
+# of 32 threads that execute in lockstep; a kernel is chopped into thread
+# blocks, and each block lands on exactly one SM. Fewer blocks than SMs and
+# the leftover SMs idle. We model the crudest version: n_blocks of equal
+# cost, dealt round-robin. The kernel finishes when the busiest SM finishes.
+def utilisation(n_blocks, n_sms):
+    if n_blocks == 0:
+        return 0.0
+    waves = int(np.ceil(n_blocks / n_sms))     # how many full passes needed
+    capacity = waves * n_sms                    # block-slots we paid for
+    return n_blocks / capacity                  # fraction actually used
+
+
+# STAGE 6 -- ring all-reduce cost. The gradient sync every data-parallel step.
+# It moves 2*(N-1)/N * S bytes through each link: reduce-scatter, then
+# all-gather. Bandwidth-optimal, and what NCCL actually does.
+def ring_allreduce_bytes(buffer_bytes, n_ranks):
+    if n_ranks &lt; 2:
+        return 0.0
+    return 2.0 * (n_ranks - 1) / n_ranks * buffer_bytes</code></pre>
+<h2>Now break it</h2>
+<p>This is the part that actually makes it stick. Each row below is a belief I have personally held and
+  been wrong about, and each one costs a number the script will print for you. Demo 7 runs all five
+  back to back.</p>
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Assume a faster chip fixes a memory-bound kernel: double <code>"fp16_tensor"</code> to <code>1980e12</code> and re-run demo 2</td>
+      <td>The decode row does not move. 3.35 TF/s before, 3.35 TF/s after — doubling the arithmetic buys exactly 0 extra TFLOP/s. Double <code>"hbm_bw"</code> instead and it goes to 6.70.</td>
+    </tr>
+    <tr>
+      <td>Serve at batch 1: call <code>utilisation(1, 132)</code></td>
+      <td>0.76%. You are renting 132 processors and using one. 131 SMs idle, every step, for the whole request.</td>
+    </tr>
+    <tr>
+      <td>Cast to 16-bit but leave one op on the 32-bit path: compare <code>op_matmul(4096, dtype_bytes=2)</code> against <code>dtype_bytes=4</code> with <code>"fp32_novec"</code> as the peak</td>
+      <td>Intensity halves, 1365 → 683 FLOP/byte, <em>and</em> the ceiling drops 990 → 67 TF/s. A 14.8× loss of headroom from one stray operation. Both directions at once.</td>
+    </tr>
+    <tr>
+      <td>Move data to the GPU inside the loop: multiply the tensor bytes in demo 7 by <code>iters</code> instead of hoisting</td>
+      <td>33.6 MB becomes 33.6 GB over PCIe — 0.52 s of pure copying at 64 GB/s, against 0.01 s for the same bytes over HBM. 1000× more traffic than the version that hoists.</td>
+    </tr>
+    <tr>
+      <td>Shard across nodes when it would fit on one card: set <code>nodes = 2</code> for a 14.0 GB model on an 80 GB part</td>
+      <td>1.75 GB per step over InfiniBand = 35.0 ms of interconnect that did not previously exist. Every step. Forever.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<div class="note"><strong>Then</strong> read the Roofline paper — it is six pages and mostly about CPUs, which is the
+  point. Read the model and the ridge-point discussion; skip the CPU-specific ceilings and the kernel
+  case studies, which are of their moment. After that, NVIDIA's own architecture whitepapers (the
+  <em>NVIDIA H100 Tensor Core GPU Architecture</em> whitepaper is the one for the numbers on this
+  page) are readable if you skip the marketing front matter and go to the specification tables. You'll
+  find the paper is just the comments you've already read.</div>
+<h2>On the maths anxiety</h2>
+<p>There isn't any here, and that is worth saying plainly. This page has one division. Arithmetic
+  intensity is FLOPs over bytes. The ridge point is peak over bandwidth. The roofline is a
+  <code>min()</code> of two numbers. If you can estimate how many multiply-adds a matrix multiply does
+  and how many bytes a tensor occupies, you have everything.</p>
+<p>What you do need is the counting discipline, and that is a habit rather than a skill. Before you
+  profile: how many bytes does this operation have to move, at minimum? How many flops does it do?
+  Divide. Compare to the ridge point of the card you are on. You now know which of the two possible
+  problems you have, and you have not started a profiler.</p>
+<p>The interview question here is almost never "derive the roofline". It is <em>"why is your batch-1
+  latency not improving on the newer GPU?"</em> or <em>"you doubled the FLOPs and got nothing, what
+  happened?"</em> The answer both times is a ratio you can compute in your head. Say the number, say
+  which roof you are under, and say what you would change. That is the whole answer.</p>
+<p>Where this page stops: it says nothing about warp scheduling, memory coalescing, bank conflicts,
+  instruction-level parallelism, or the actual register-pressure arithmetic that decides real
+  occupancy. Those matter when you are writing kernels. Almost none of them matter when you are
+  choosing a batch size, a dtype, or a parallelism strategy — which is what most of us are actually
+  doing.</p>
+<h2>Where to go next</h2>
+<p>This page gave you one instrument: a ratio and a ceiling. That is deliberately narrow, and it is
+  upstream of a lot. Three of these go deeper than I have; one is the original.</p>
+<ul class="paper-list">
+  <li class="paper">
+    <a class="paper-link" href="https://digitalassets.lib.berkeley.edu/techreports/ucb/text/EECS-2008-134.pdf">
+      <span class="paper-title">Roofline: An Insightful Visual Performance Model for Floating-Point Programs and Multicore Architectures</span>
+      <span class="paper-meta">Williams, Waterman &amp; Patterson, 2008 tech report; published in Communications of the ACM, 2009. PDF.</span>
+    </a>
+    <p class="paper-pitch">The original, and it has no arXiv id — it predates that habit. Read the model and the ridge-point
+      argument; the multicore kernels they benchmark are of their era, but the reasoning transfers without
+      a single change. Worth seeing how much of what we call "GPU intuition" was written down before the
+      hardware existed.</p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://horace.io/brrr_intro.html">
+      <span class="paper-title">Making Deep Learning Go Brrrr From First Principles</span>
+      <span class="paper-meta">Horace He. Prose, with PyTorch.</span>
+    </a>
+    <p class="paper-pitch">The best essay on this subject, and it adds the third bottleneck I left out entirely: overhead.
+      Compute, memory <em>and</em> the Python-side cost of launching kernels at all. If your model is
+      small and your framework is eager, overhead is the wall you are hitting and no roofline will show
+      it.</p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://docs.nvidia.com/deeplearning/performance/dl-performance-gpu-background/index.html">
+      <span class="paper-title">GPU Performance Background User's Guide</span>
+      <span class="paper-meta">NVIDIA. Documentation, with the vendor's own arithmetic.</span>
+    </a>
+    <p class="paper-pitch">NVIDIA making exactly the argument on this page, in their own notation and with their own numbers.
+      Useful precisely because it is the vendor: you can check my byte counts against theirs. The
+      companion page on matrix multiplication explains the tile-quantisation effects behind my batch=133
+      row properly.</p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://siboehm.com/articles/22/CUDA-MMM">
+      <span class="paper-title">How to Optimize a CUDA Matmul Kernel</span>
+      <span class="paper-meta">Simon Boehm. A worklog, in CUDA C, with numbers at every step.</span>
+    </a>
+    <p class="paper-pitch">Where this page stays at the napkin level, this one goes all the way down: coalescing, shared-memory
+      tiling, register blocking, warp tiling, each step measured. It is the concrete answer to "so how do
+      you actually get near that flat roof", and it will make the hierarchy table above feel much less
+      abstract.</p>
+  </li>
+</ul>
+<div class="note"><strong>Order I'd take them in:</strong> Horace He first, because it is the same model told better
+  and adds overhead; then the NVIDIA guide to check my arithmetic against the vendor's; then the
+  Roofline paper, which will feel obvious by then and should; then Simon Boehm's worklog only if you
+  are actually going to write a kernel.</div>
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+</main>
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+</body>
+</html>
