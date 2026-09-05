@@ -7,7 +7,7 @@
 <meta name="description" content="The Vision Transformer paper explained as code. Cut the image into tiles, flatten them, and the transformer from Attention Is All You Need does the rest. Runnable NumPy, six demos that prove it by breaking it.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -33,6 +33,14 @@
       — everything below runs from it. NumPy only.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
 
   <p>
     I'd shipped image classifiers: fine-tuned ResNets, exported to ONNX, argued
@@ -267,6 +275,521 @@ model runs on the wrong patches anyway: logits (10,)</code></pre>
 <pre><code>  p=8: patches (16, 192)
   p=5: <span class="ok">ValueError: cannot reshape array of size 3072 into shape (6,5,6,5,3)</span></code></pre>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் image classifiers ship செய்திருக்கிறேன்: ResNet-களை fine-tune செய்து,
+    ONNX-ஆக export செய்து, code review-ல் input normalisation பற்றி
+    வாதாடியிருக்கிறேன். பிறகு transformers vision-ஐ விழுங்கின, pixel-களுக்கு
+    ஏதோ ஒரு புதிய தந்திரம் இருக்கும் என்று நினைத்தேன். இல்லை. படத்தை tile-களாக
+    வெட்டுங்கள், ஒவ்வொன்றையும் ஒரு row-ஆக flatten செய்யுங்கள், அந்த row-களை
+    <a href="../attention/">attention page</a>-ன் அதே encoder-இடம் கொடுங்கள்.
+    சுவாரஸ்யமான engineering என்னவென்றால் — அந்த reshape எதைத் தூக்கி எறிகிறது,
+    இருந்தும் ஏன் ஜெயிக்கிறது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (patch, reshape, flatten,
+    CLS token, position embedding, inductive bias…) அப்படியே வைத்திருக்கிறேன்.
+    ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான்
+    பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>ஒரு படத்தை tokenise செய்வது</h2>
+
+  <p>இந்த pipeline உங்களுக்குத் தெரியும். ஒவ்வொரு language model-ம் இதில்தான் தொடங்குகிறது:</p>
+<pre><code>ids    = tokenizer("the cat ate food")   # [464, 3797, 8268, 2057]
+tokens = embedding_table[ids]            # (4, D)   ஒரு word = ஒரு row
+out    = transformer(tokens)             # (4, D)   அதே shape, context-உடன்</code></pre>
+
+  <p>இந்த paper அதே pipeline-தான், tokeniser மட்டும் வேறு. Word-கள் ஒரு vocabulary-லிருந்து வருகின்றன; tile-கள் ஒரு grid-லிருந்து வருகின்றன:</p>
+<pre><code>patches = patchify(image, p=16)          # (196, 768)  196 tiles, 16*16*3
+tokens  = patches @ E                    # (196, D)    matmul, lookup அல்ல
+tokens  = concat([cls, tokens]) + pos    # (197, D)    +1 row, +வரிசை
+out     = transformer(tokens)            # (197, D)    2017-லிருந்து மாற்றமில்லை</code></pre>
+  <p>
+    Text-லிருந்து இரண்டே வித்தியாசங்கள், அவைதான் இந்த paper-ல் உள்ள ஒரே
+    image-specific கருத்துகள். Vocabulary இல்லை: ஒரு tile என்பது 768 தொடர்ச்சியான
+    எண்கள், ஒரு id அல்ல — எனவே embedding என்பது ஒரு matmul, lookup அல்ல. மேலும்
+    இந்த tokeniser-க்கு விதிகளே இல்லை. அது ஒரு grid, அவ்வளவுதான்.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Patch</strong></td><td>படத்தின் ஒரு p×p×3 tile</td><td>ஒரு word</td></tr>
+      <tr><td><strong>Flatten</strong></td><td>அந்த tile-ஐ p·p·3 எண்கள் கொண்ட ஒரே row-ஆக்குவது</td><td>அந்த word-ன் bytes</td></tr>
+      <tr><td><strong>E</strong></td><td>ஒவ்வொரு row-ம் இதனால் பெருக்கப்படும் (p·p·3, D) matrix</td><td>Embedding table — vocab இல்லாததால் lookup-க்குப் பதில் matmul</td></tr>
+      <tr><td><strong>CLS token</strong></td><td>Sequence-ன் முன்னால் சேர்க்கப்படும் ஒரு கற்ற row</td><td>ஒரு sentinel. கடைசியில் நீங்கள் படிக்கும் row</td></tr>
+      <tr><td><strong>Position embedding</strong></td><td>Row-களுடன் கூட்டப்படும் ஒரு கற்ற (N+1, D) table</td><td>List-ல் உள்ள index. இது இல்லாவிட்டால் list ஒரு set</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>CNN-ஐ ஏன் இது வென்றது — எப்போது வெல்லவில்லை</h2>
+
+  <p>ஒரு convolution என்பது sliding window மேல் ஓடும் ஒரு <code>for</code> loop:</p>
+<pre><code>for y, x in every_pixel:
+    out[y, x] = kernel · img[y-1:y+2, x-1:x+2]   # 3x3 அண்டை பகுதி மட்டும்,
+                                                 # எல்லா (y, x)-லும் அதே kernel</code></pre>
+  <p>
+    அந்த loop-க்குள் இரண்டு அனுமானங்கள் சுடப்பட்டிருக்கின்றன: அருகில் உள்ள
+    pixel-கள் தூரத்தில் உள்ளவற்றை விட முக்கியம், மேலும் மூலையில் உள்ள பூனையும்
+    நடுவில் உள்ள பூனையும் ஒன்றுதான். CNN-க்கு இவை இரண்டும் அதன் அமைப்பிலிருந்தே
+    இலவசமாகக் கிடைக்கின்றன. ViT-க்கு இரண்டுமே இல்லை: tile 0-ம் tile 195-ம்
+    attention weights மூலம் மட்டுமே தொடர்பு கொள்கின்றன, அதையும் அது கற்க வேண்டும்;
+    "அருகில் உள்ள pixel-கள் முக்கியம்" என்பதையும் data-விலிருந்து கண்டுபிடிக்க
+    வேண்டும். Paper-ன் சொற்றொடர்: <em>much less image-specific inductive bias</em>.
+    குறைவான அனுமானங்கள் என்பது ஒரு பேரம்: data குறைவாக இருக்கும்போது மோசம், ஆனால்
+    அந்த அனுமானங்களையே கற்கும் அளவு data இருந்தால் அதற்கும் மேல். ImageNet-1k
+    மட்டும் என்றால் ViT, அதே அளவு ResNet-க்குக் கீழேயே இருக்கிறது. ImageNet-21k
+    (14M படங்கள்) அல்லது JFT-300M-ல் pretrain செய்தால் அது ஜெயிக்கிறது; மிகப்பெரிய
+    ViT-H/14, paper-ன் தலைப்பு table-ல் ImageNet-ல் 88.55% எனத் தலைமை வகிக்கிறது.
+    Interview கேள்வி "CNN-ஐ விட ViT-க்கு ஏன் அதிக data தேவை?" — பதில் அந்த
+    inductive bias வாக்கியம்தான்.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">z<sub>0</sub> = [x<sub>class</sub>; x<sub>p</sub><sup>1</sup>E; x<sub>p</sub><sup>2</sup>E; …; x<sub>p</sub><sup>N</sup>E] + E<sub>pos</sub></div>
+
+  <p>Equation 1. இதை இடமிருந்து வலமாக shape-களாகப் படியுங்கள் — 224×224 படத்தில், patch 16, ViT-Base-க்கு:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>x</code></td><td>(224, 224, 3)</td><td>படம். Height, width, channel</td></tr>
+      <tr><td><code>x<sub>p</sub></code></td><td>(196, 768)</td><td><strong>அந்த reshape.</strong> N = 224·224 / 16² = 196 tiles, ஒவ்வொன்றும் 16·16·3 = 768 எண்கள்</td></tr>
+      <tr><td><code>E</code></td><td>(768, 768)</td><td>Patch embedding. ViT-Base, D = 768 எடுத்ததால் மட்டுமே இது சதுரம்</td></tr>
+      <tr><td><code>x<sub>p</sub>E</code></td><td>(196, 768)</td><td>196 tokens. இங்கிருந்து இது ஒரு வாக்கியம்</td></tr>
+      <tr><td><code>x<sub>class</sub></code></td><td>(1, 768)</td><td>கற்ற CLS row, முன்னால் சேர்க்கப்படுகிறது → (197, 768)</td></tr>
+      <tr><td><code>+ E<sub>pos</sub></code></td><td>(197, 768)</td><td>கற்றது, 1D, ஒரு slot-க்கு ஒரு vector. கூட்டப்படுகிறது, concat அல்ல</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Equations 2, 3 என்பவை encoder block — Base-க்கு 12 அடுக்கு, Large-க்கு 24,
+    Huge-க்கு 32; Equation 4 சொல்வது, கடைசி LayerNorm-க்குப் பிறகு row 0-ஐப்
+    படியுங்கள். இரண்டுமே attention page-ல் ஏற்கனவே இருக்கின்றன. 2017-லிருந்து ஒரே
+    மாற்றம்: LayerNorm ஒவ்வொரு sublayer-க்கும் <em>முன்</em> நகர்கிறது (pre-norm),
+    MLP GELU-ஐப் பயன்படுத்துகிறது. Fine-tune நேரத்தில் paper பெரிய படத்தைக்
+    கொடுக்கிறது, patch size-ஐ அப்படியே வைத்திருப்பதால் tokens அதிகமாகின்றன, கற்ற
+    position table-ஐ புதிய grid-க்கு 2D-interpolate செய்கிறது; கையால் ஒரு 2D
+    அனுமானம் நுழையும் ஒரே இடம் அதுதான் என்று அவர்களே குறிப்பிடுகிறார்கள்.
+  </p>
+
+  <h2>அந்த reshape, ஒவ்வொரு shape-ஐயும் அச்சிட்டு</h2>
+
+  <p>
+    Script ஒரு 32×32×3 பொம்மைப் படத்தையும் 8×8 patch-களையும் பயன்படுத்துகிறது,
+    எண்கள் படிக்கக்கூடியதாக இருக்க: 192 எண்கள் கொண்ட 16 tiles. மூன்று படிகள்.
+    <strong>Cut</strong> — ஒவ்வொரு spatial axis-ஐயும் (எத்தனை tiles, ஒரு tile-ல்
+    எத்தனை pixels) என்று பிரியுங்கள். <strong>Group</strong> — "எந்த tile" என்ற
+    இரு axis-களை ஒன்றாகவும், "எந்த pixel" என்ற இரு axis-களை ஒன்றாகவும் கொண்டு
+    வாருங்கள்; இது ஒரு transpose. <strong>Flatten</strong> — ஒரு tile-க்கு ஒரு row.
+    Demo 1 இதை ஒவ்வொரு வரியாகச் செய்கிறது, நீங்கள் ஒவ்வொரு படியிலும் breakpoint
+    வைக்கலாம்.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+<pre><code>  image    (32, 32, 3)       (H, W, C)
+  cut      (4, 8, 4, 8, 3)   (H/p, p, W/p, p, C)
+  grouped  (4, 4, 8, 8, 3)   (H/p, W/p, p, p, C)
+  patches  (16, 192)         (N, p*p*C)          &lt;- the sentence
+  tokens   (16, 64)          (N, D)              patches @ E
+  + cls    (17, 64)          (N+1, D)            BERT-style
+  + pos    (17, 64)          (N+1, D)            added
+  block    (17, 64)          (N+1, D)            shape unchanged
+  attn     (17, 17)          (N+1, N+1)          all patches see all
+  cls out  (64,)             (D,)                the row we read
+  logits   (10,)             (n_classes,)
+
+unpatchify(patchify(img)) == img? <span class="ok">True</span></code></pre>
+  <p>
+    3072 எண்கள் உள்ளே, 3072 வெளியே, 16 row-களாக மறு-குழுவாக்கப்பட்டு.
+    <code>patches @ E</code> வரை எதுவும் கணக்கிடப்படவில்லை. <code>(16, 64)</code>
+    முதல் shape-கள் attention page-ன் <code>(n_tokens, d_model)</code>-தான், மேலும்
+    17×17 attention matrix அர்த்தம் — ஒவ்வொரு tile-ம் ஒவ்வொரு tile-ஐயும் பார்க்கிறது,
+    கூட CLS-ஐயும். கீழே உள்ள round-trip நான் எழுதும் test: அது தோற்றால், shape-கள்
+    என்ன சொன்னாலும் reshape தவறு.
+  </p>
+
+  <p class="thanglish">
+    Moonu padi: cut, group, flatten. Reshape-um transpose-um dhaan, kanakku illa.
+    Round-trip test fail aanaa, shapes correct-aa irundhaalum reshape thappu.
+  </p>
+
+  <h2>Position: tile-களின் ஒரு மூட்டை</h2>
+
+  <p>
+    Attention ஒரு set operation. Attention page அதை "cat ate food" எதிராக
+    "food ate cat" வைத்து நிரூபித்தது; இங்கே அது துண்டுகள் மாற்றப்பட்ட ஒரு
+    jigsaw. 16 tile-களைக் கலைத்து ஒரு புதிய படம் ஆக்குங்கள், இரண்டையும் ஓட்டி,
+    position table-ஐ off செய்தும் on செய்தும் CLS row-ஐ ஒப்பிடுங்கள்:
+  </p>
+
+<pre><code>tile permutation: [ 1 12  7 10 14  4  5  8  0  9  2 13 11  6  3 15]
+shuffled image == original? False
+
+position embeddings OFF: CLS max abs diff = 1.44e-15  allclose? <span class="hl">True</span>   ← குருடு
+position embeddings ON : CLS max abs diff = 0.0495    allclose? <span class="ok">False</span>  ← தெரியும்</code></pre>
+  <p>
+    அந்த 1.44e-15 பூஜ்யம் அல்ல, அதை பூஜ்யம் என்று நான் நடிக்கப் போவதில்லை.
+    Shuffle செய்வது attention கூட்டல் நடக்கும் வரிசையை மாற்றுகிறது, வேறு வரிசையில்
+    float64 வேறு விதமாக round செய்கிறது. நீங்கள் எழுதும் எந்த test-க்கும் பதினைந்து
+    தசம இடங்கள் என்பது "ஒன்றுதான்"; position-ஐ on செய்தால் வரும் 0.0495 அதைவிட
+    பதிமூன்று மடங்கு அளவுகள் பெரியது. அந்த <code>+ self.pos</code>-தான் ஒரு tile
+    எங்கே இருந்தது என்பதை model-க்குச் சொல்லும் ஒரே விஷயம். Paper அந்த table-ஐ
+    வேண்டுமென்றே மக்காக வைத்திருக்கிறது: கற்றது, 1D, ஒரு slot-க்கு ஒரு vector,
+    list index போல. 2D-aware வடிவங்களை முயற்சித்து எந்த லாபமும் இல்லை என்று
+    சொல்கிறார்கள் — ஏனெனில் சாதாரண table-ஏ grid-ஐத் தானாகக் கற்றுக்கொள்கிறது;
+    paper-ன் inspection பகுதியில் அந்தப் படம் இருக்கிறது, அங்கே கற்ற position
+    vector-களுக்கு இடையேயான ஒற்றுமை row-களாகவும் column-களாகவும் உருவாகிறது.
+  </p>
+
+  <p>
+    அதே shuffle, கடைசியில் எந்த row-ஐப் படிப்பது என்பதையும் தீர்த்து வைக்கிறது.
+    BERT-style என்றால் row 0, ஆனால் மூன்று வெளிப்படையான தேர்வுகள் இருக்கின்றன:
+  </p>
+
+<pre><code>max abs diff under the shuffle, position embeddings OFF:
+  z[0]        CLS token       1.44e-15
+  z[1:].mean  mean-pool       6.66e-16
+  z[6]        patch token 6   <span class="hl">1.47</span>
+  (token 6 now holds tile 4, not tile 5)</code></pre>
+  <p>
+    CLS-ம் patch row-களின் mean-ம் இரண்டுமே முழு set மேல் நடக்கும் read-கள்,
+    எனவே இரண்டுமே தப்பிக்கின்றன. ஒரு தனி patch row என்பது ஒரு position-ல் நடக்கும்
+    read, எனவே அது நகர்கிறது. Paper-ன் appendix, CLS-க்குப் பதில் mean-pooling
+    முயற்சித்து, learning rate-ஐ மறு-tune செய்தால் அதுவும் சமமாக வேலை செய்கிறது
+    என்று கண்டது; CLS token என்பது ஒரு BERT பழக்கம், கட்டாயம் அல்ல.
+  </p>
+
+  <p class="thanglish">
+    Position embedding illainaa, tiles-a shuffle pannaalum CLS row adhe dhaan —
+    model-kku layout theriyaadhu. CLS-um mean-pool-um set-oda read, adhanaala safe.
+  </p>
+
+  <h2>ஏன் 16×16: அந்த n² கணக்கு</h2>
+
+  <p>
+    Patch size-தான் இந்த paper சேர்க்கும் ஒரே dial, அதுவே எல்லாவற்றையும்
+    தீர்மானிக்கிறது. Tokens n = (224/p)², ஒவ்வொரு attention layer-ம் ஒரு head-க்கு
+    ஒரு n×n score matrix கட்டுகிறது. 224×224 படத்துக்கான கணக்கை script அச்சிடுகிறது:
+  </p>
+
+<pre><code>   patch  per token  tokens n          n x n   vs 16x16
+    1x1           3     50176  <span class="hl">2,517,630,976</span>  65536.00x
+    4x4          48      3136      9,834,496    256.00x
+    8x8         192       784        614,656     16.00x
+   16x16        768       196         <span class="ok">38,416</span>      1.00x
+   32x32       3072        49          2,401      0.06x</code></pre>
+  <p>
+    Patch-ஐ பாதியாக்குங்கள், tokens நான்கு மடங்கு, attention matrix பதினாறு மடங்கு.
+    ஒரு token-க்கு ஒரு pixel என்றால் ஒரு layer-ல் ஒரு head-க்கு 2.5 பில்லியன்
+    scores — அதனால்தான் யாரும் அதைச் செய்வதில்லை. 16×16 தருவது 196 tokens: ஒரு
+    பத்தி, ஒரு புத்தகம் அல்ல. இந்த table-லிருந்து இரண்டு விஷயங்கள் விழுகின்றன.
+    16·16·3 = 768 என்பது சரியாக ViT-Base-ன் D, எனவே அதன் embedding matrix தற்செயலாகச்
+    சதுரம். மேலும் model-களின் பெயர்கள்: ViT-L/16 என்றால் Large, patch 16; ViT-H/14
+    patch 14-ஐப் பயன்படுத்தி அதிக செலவில் அதிக tokens பெறுகிறது.
+  </p>
+
+  <div class="note">
+    <strong>தலைப்பே ஒரு shape.</strong> "16×16 words" என்பது tile, அவற்றில் 196
+    என்பது வாக்கியம். ஒரு transformer-ன் ஒவ்வொரு செலவும் அந்த வாக்கிய நீளத்தின்
+    வர்க்கத்துக்கு ஏற்பவே வளர்கிறது.
+  </div>
+
+  <h2>தவறான reshape சத்தமே போடாது</h2>
+
+  <p>
+    இதுதான் நீங்கள் உண்மையிலேயே ship செய்யப் போகும் bug. Cut-ஐயும் transpose-ஐயும்
+    தவிர்த்துவிட்டு நேராக <code>img.reshape(16, 192)</code> செய்யுங்கள். NumPy
+    படத்தை row வரிசையாகப் படிக்கிறது, எனவே ஒவ்வொரு "patch"-ம் 8×8 சதுரம் அல்ல,
+    முழு அகலம் கொண்ட இரண்டு பட்டைகள். Shape ஒன்றுதான். எதுவும் error தராது.
+  </p>
+
+<pre><code>shapes: (16, 192) (16, 192)  equal? True
+
+patch 5, first 8 values (R G B R G B R G):
+  right: [0.258 0.258 0.    0.29  0.258 0.    0.323 0.258]
+  wrong: <span class="hl">[0.    0.323 1.    0.032 0.323 1.    0.065 0.323]</span>
+
+what is 'patch 5', really?
+  right == img[8:16, 8:16]  an 8x8 square?  <span class="ok">True</span>
+  wrong == img[10:12, :]    a 2x32 strip?   True
+
+model runs on the wrong patches anyway: logits (10,)</code></pre>
+  <p>
+    பொம்மைப் படத்தில் சிவப்பு இடமிருந்து வலமாக ஏறுகிறது, பச்சை மேலிருந்து கீழாக.
+    சரியான row pixel (8, 8)-ல் தொடங்குகிறது, எனவே சிவப்பும் பச்சையும் இரண்டும்
+    0.258. தவறான row pixel (10, 0)-ல் தொடங்குகிறது: சிவப்பு 0, பச்சை 0.323, நீலம்
+    தவறான checkerboard கட்டத்தில். ஒரே shape, வேறு படம், நம்பும்படியான பத்து
+    logits. அது train கூட ஆகும்; accuracy மட்டும் அமைதியாக மோசமாக இருக்கும்,
+    நீங்கள் learning rate-ஐக் குற்றம் சொல்வீர்கள். இதன் PyTorch வடிவம் — channel
+    axis-ஐ முதலில் நகர்த்தாமல் ஒரு (C, H, W) tensor-ல் இதே செய்முறையை ஓட்டுவது.
+    உங்களுக்கு வேண்டிய தோல்வி சத்தமானது: 32-ஐ 5 வகுக்காது, cut நடக்காது, NumPy
+    மறுக்கிறது. உண்மையான pipeline-கள் patchify செய்வதற்கு முன் 224-க்கு resize
+    செய்வது சரியாக இதே காரணத்துக்காகத்தான்.
+  </p>
+<pre><code>  p=8: patches (16, 192)
+  p=5: <span class="ok">ValueError: cannot reshape array of size 3072 into shape (6,5,6,5,3)</span></code></pre>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने image classifiers ship किए हैं: ResNets fine-tune किए, ONNX में export
+    किया, code review में input normalisation पर बहस की। फिर transformers ने
+    vision को निगल लिया और मैंने मान लिया कि pixels के लिए कोई नई तरकीब होगी।
+    नहीं है। image को tiles में काटो, हर tile को एक row में flatten करो, और वे
+    rows उसी encoder को दे दो जो
+    <a href="../attention/">attention page</a> पर है। असली engineering यह है कि
+    वह reshape क्या फेंक देता है, और फिर भी क्यों जीतता है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (patch, reshape, flatten,
+    CLS token, position embedding, inductive bias…) मैंने वैसे ही रखे हैं।
+    क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>एक image को tokenise करना</h2>
+
+  <p>यह pipeline आप जानते हैं। हर language model यहीं से शुरू होता है:</p>
+<pre><code>ids    = tokenizer("the cat ate food")   # [464, 3797, 8268, 2057]
+tokens = embedding_table[ids]            # (4, D)   हर word का एक row
+out    = transformer(tokens)             # (4, D)   वही shape, अब context में</code></pre>
+
+  <p>यह paper वही pipeline है, बस tokeniser अलग है। Words एक vocabulary से आते हैं; tiles एक grid से:</p>
+<pre><code>patches = patchify(image, p=16)          # (196, 768)  196 tiles, 16*16*3
+tokens  = patches @ E                    # (196, D)    matmul, lookup नहीं
+tokens  = concat([cls, tokens]) + pos    # (197, D)    +1 row, +क्रम
+out     = transformer(tokens)            # (197, D)    2017 से अपरिवर्तित</code></pre>
+  <p>
+    Text से सिर्फ़ दो फ़र्क़, और यही इस paper के इकलौते image-specific विचार हैं।
+    कोई vocabulary नहीं: एक tile 768 सतत संख्याएँ हैं, कोई id नहीं — इसलिए
+    embedding एक matmul है, lookup नहीं। और इस tokeniser का कोई नियम नहीं है।
+    वह बस एक grid है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Patch</strong></td><td>image का एक p×p×3 tile</td><td>एक word</td></tr>
+      <tr><td><strong>Flatten</strong></td><td>वही tile p·p·3 संख्याओं की एक row के रूप में</td><td>उस word के bytes</td></tr>
+      <tr><td><strong>E</strong></td><td>एक (p·p·3, D) matrix जिससे हर row गुणा होती है</td><td>Embedding table — vocab न होने से lookup की जगह matmul</td></tr>
+      <tr><td><strong>CLS token</strong></td><td>Sequence के आगे जोड़ी गई एक सीखी हुई row</td><td>एक sentinel। वही row जो अंत में पढ़ी जाती है</td></tr>
+      <tr><td><strong>Position embedding</strong></td><td>Rows में जोड़ी जाने वाली सीखी हुई (N+1, D) table</td><td>List में index। इसके बिना list एक set है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>इसने CNN को क्यों हराया — और कब नहीं</h2>
+
+  <p>एक convolution sliding window पर चलता <code>for</code> loop है:</p>
+<pre><code>for y, x in every_pixel:
+    out[y, x] = kernel · img[y-1:y+2, x-1:x+2]   # सिर्फ़ 3x3 पड़ोस,
+                                                 # हर (y, x) पर वही kernel</code></pre>
+  <p>
+    उस loop में दो मान्यताएँ पकी हुई हैं: पास के pixels दूर वालों से ज़्यादा
+    मायने रखते हैं, और कोने वाली बिल्ली वही बिल्ली है जो बीच में है। CNN को ये
+    दोनों अपनी बनावट से मुफ़्त मिलती हैं। ViT को एक भी नहीं: tile 0 और tile 195
+    सिर्फ़ उन attention weights से जुड़े हैं जो उसे सीखने पड़ते हैं, और "पास के
+    pixels मायने रखते हैं" यह भी उसे data से खोजना पड़ता है। Paper का वाक्यांश है
+    <em>much less image-specific inductive bias</em>। कम मान्यताएँ एक सौदा हैं:
+    data कम हो तो ख़राब, और जब data इतना हो कि मान्यताएँ ख़ुद सीखी जा सकें तो उससे
+    भी बेहतर। अकेले ImageNet-1k पर ViT उसी आकार के ResNet से नीचे रहता है।
+    ImageNet-21k (14M images) या JFT-300M पर pretrain करने पर वह जीतता है; सबसे
+    बड़ा ViT-H/14 paper की मुख्य table में ImageNet पर 88.55% के साथ सबसे ऊपर है।
+    Interview का सवाल है "ViT को CNN से ज़्यादा data क्यों चाहिए?", और जवाब वही
+    inductive bias वाला वाक्य है।
+  </p>
+
+  <h2>वह एक formula</h2>
+
+  <div class="formula">z<sub>0</sub> = [x<sub>class</sub>; x<sub>p</sub><sup>1</sup>E; x<sub>p</sub><sup>2</sup>E; …; x<sub>p</sub><sup>N</sup>E] + E<sub>pos</sub></div>
+
+  <p>Equation 1। इसे बाएँ से दाएँ shapes की तरह पढ़िए — 224×224 image, patch 16, ViT-Base के लिए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>x</code></td><td>(224, 224, 3)</td><td>Image। Height, width, channel</td></tr>
+      <tr><td><code>x<sub>p</sub></code></td><td>(196, 768)</td><td><strong>वही reshape।</strong> N = 224·224 / 16² = 196 tiles, हर एक में 16·16·3 = 768 संख्याएँ</td></tr>
+      <tr><td><code>E</code></td><td>(768, 768)</td><td>Patch embedding। वर्गाकार सिर्फ़ इसलिए कि ViT-Base ने D = 768 चुना</td></tr>
+      <tr><td><code>x<sub>p</sub>E</code></td><td>(196, 768)</td><td>196 tokens। यहाँ से आगे यह एक वाक्य है</td></tr>
+      <tr><td><code>x<sub>class</sub></code></td><td>(1, 768)</td><td>सीखी हुई CLS row, आगे जोड़ी गई → (197, 768)</td></tr>
+      <tr><td><code>+ E<sub>pos</sub></code></td><td>(197, 768)</td><td>सीखी हुई, 1D, हर slot के लिए एक vector। जोड़ी जाती है, concat नहीं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Equations 2 और 3 encoder block हैं — Base में 12 गहरा, Large में 24, Huge में
+    32; Equation 4 कहता है कि आख़िरी LayerNorm के बाद row 0 पढ़ो। दोनों attention
+    page पर पहले से हैं। 2017 से एक ही बदलाव: LayerNorm हर sublayer से
+    <em>पहले</em> चला गया (pre-norm), और MLP GELU इस्तेमाल करता है। Fine-tune के
+    समय paper बड़ी image देता है, patch size वही रखता है इसलिए tokens ज़्यादा हो
+    जाते हैं, और सीखी हुई position table को नए grid पर 2D-interpolate करता है; वे
+    ख़ुद लिखते हैं कि हाथ से 2D मान्यता डालने की यही इकलौती जगह है।
+  </p>
+
+  <h2>वह reshape, हर shape छपी हुई</h2>
+
+  <p>
+    Script एक 32×32×3 खिलौना image और 8×8 patches लेता है ताकि संख्याएँ पढ़ी जा
+    सकें: 192 संख्याओं वाले 16 tiles। तीन क़दम। <strong>Cut</strong> — हर spatial
+    axis को (कितने tiles, हर tile में कितने pixels) में बाँटो।
+    <strong>Group</strong> — "कौन सा tile" वाले दो axes साथ लाओ और "अंदर कौन सा
+    pixel" वाले दो axes साथ; यही transpose है। <strong>Flatten</strong> — हर tile
+    की एक row। Demo 1 इसे एक-एक line करके करता है ताकि आप हर क़दम पर breakpoint
+    लगा सकें।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+<pre><code>  image    (32, 32, 3)       (H, W, C)
+  cut      (4, 8, 4, 8, 3)   (H/p, p, W/p, p, C)
+  grouped  (4, 4, 8, 8, 3)   (H/p, W/p, p, p, C)
+  patches  (16, 192)         (N, p*p*C)          &lt;- the sentence
+  tokens   (16, 64)          (N, D)              patches @ E
+  + cls    (17, 64)          (N+1, D)            BERT-style
+  + pos    (17, 64)          (N+1, D)            added
+  block    (17, 64)          (N+1, D)            shape unchanged
+  attn     (17, 17)          (N+1, N+1)          all patches see all
+  cls out  (64,)             (D,)                the row we read
+  logits   (10,)             (n_classes,)
+
+unpatchify(patchify(img)) == img? <span class="ok">True</span></code></pre>
+  <p>
+    3072 संख्याएँ अंदर, 3072 बाहर, 16 rows में फिर से समूहबद्ध। <code>patches @ E</code>
+    तक कुछ भी गणना नहीं होती। <code>(16, 64)</code> से आगे shapes वही हैं जो
+    attention page के <code>(n_tokens, d_model)</code> हैं, और 17×17 attention
+    matrix का मतलब है हर tile हर tile को देखता है, साथ में CLS भी। नीचे वाला
+    round-trip वही test है जो मैं लिखता: अगर वह fail हुआ तो reshape ग़लत है, shapes
+    चाहे जो कहें।
+  </p>
+
+  <h2>Position: tiles की एक बोरी</h2>
+
+  <p>
+    Attention एक set operation है। Attention page ने इसे "cat ate food" बनाम
+    "food ate cat" से साबित किया; यहाँ यह टुकड़े बदली हुई jigsaw है। 16 tiles को
+    फेंटकर नई image बनाइए, दोनों चलाइए, और position table off तथा on करके CLS row
+    की तुलना कीजिए:
+  </p>
+
+<pre><code>tile permutation: [ 1 12  7 10 14  4  5  8  0  9  2 13 11  6  3 15]
+shuffled image == original? False
+
+position embeddings OFF: CLS max abs diff = 1.44e-15  allclose? <span class="hl">True</span>   ← अंधा
+position embeddings ON : CLS max abs diff = 0.0495    allclose? <span class="ok">False</span>  ← दिखता है</code></pre>
+  <p>
+    वह 1.44e-15 शून्य नहीं है, और मैं यह नहीं कहूँगा कि है। Shuffle से attention का
+    जोड़ किस क्रम में होता है वह बदल जाता है, और float64 अलग क्रम में अलग round
+    करता है। पंद्रह दशमलव स्थान किसी भी test के लिए "एक जैसा" है; position on करने
+    पर मिला 0.0495 उससे तेरह गुना परिमाण बड़ा है। वह <code>+ self.pos</code> ही
+    इकलौती चीज़ है जो model को बताती है कि tile कहाँ था। Paper इस table को
+    जानबूझकर बुद्धू रखता है: सीखी हुई, 1D, हर slot के लिए एक vector, list index की
+    तरह। उन्होंने 2D-aware versions आज़माए और कोई फ़ायदा नहीं मिला, क्योंकि सादा
+    table ख़ुद ही grid सीख लेता है; paper के inspection हिस्से में वह तस्वीर है,
+    जहाँ सीखे हुए position vectors की आपसी समानता rows और columns बना देती है।
+  </p>
+
+  <p>
+    वही shuffle यह भी तय कर देता है कि अंत में कौन सी row पढ़नी है। BERT-style में
+    row 0, पर तीन स्पष्ट उम्मीदवार हैं:
+  </p>
+
+<pre><code>max abs diff under the shuffle, position embeddings OFF:
+  z[0]        CLS token       1.44e-15
+  z[1:].mean  mean-pool       6.66e-16
+  z[6]        patch token 6   <span class="hl">1.47</span>
+  (token 6 now holds tile 4, not tile 5)</code></pre>
+  <p>
+    CLS और patch rows का mean, दोनों पूरे set पर किए गए reads हैं, इसलिए दोनों बच
+    जाते हैं। अकेली patch row एक position पर किया गया read है, इसलिए वह हिल जाती
+    है। Paper के appendix ने CLS की जगह mean-pooling आज़माया और पाया कि learning
+    rate दोबारा tune करने पर वह भी उतना ही अच्छा चलता है; CLS token एक BERT आदत
+    है, ज़रूरत नहीं।
+  </p>
+
+  <h2>16×16 ही क्यों: n² का बिल</h2>
+
+  <p>
+    Patch size ही इकलौता dial है जो यह paper जोड़ता है, और वही सब कुछ तय करता है।
+    Tokens n = (224/p)², और हर attention layer हर head के लिए एक n×n score matrix
+    बनाता है। Script 224×224 image का बिल छापता है:
+  </p>
+
+<pre><code>   patch  per token  tokens n          n x n   vs 16x16
+    1x1           3     50176  <span class="hl">2,517,630,976</span>  65536.00x
+    4x4          48      3136      9,834,496    256.00x
+    8x8         192       784        614,656     16.00x
+   16x16        768       196         <span class="ok">38,416</span>      1.00x
+   32x32       3072        49          2,401      0.06x</code></pre>
+  <p>
+    Patch आधा करो, tokens चार गुना, attention matrix सोलह गुना। हर token पर एक
+    pixel का मतलब होगा प्रति head प्रति layer 2.5 अरब scores — इसीलिए कोई ऐसा नहीं
+    करता। 16×16 से 196 tokens मिलते हैं: एक पैराग्राफ़, पूरी किताब नहीं। इस table
+    से दो बातें निकलती हैं। 16·16·3 = 768 ठीक ViT-Base का D है, इसलिए उसका
+    embedding matrix संयोग से वर्गाकार है। और models के नाम: ViT-L/16 यानी Large
+    with patch 16; ViT-H/14 patch 14 लेता है, ज़्यादा ख़र्च पर ज़्यादा tokens।
+  </p>
+
+  <div class="note">
+    <strong>शीर्षक ही एक shape है।</strong> "16×16 words" वह tile है, और उनमें से
+    196 वह वाक्य। एक transformer की हर लागत उसी वाक्य की लंबाई के वर्ग के साथ
+    बढ़ती है।
+  </div>
+
+  <h2>ग़लत reshape चुपचाप होता है</h2>
+
+  <p>
+    यही वह bug है जो आप सचमुच ship करेंगे। Cut और transpose छोड़कर सीधे
+    <code>img.reshape(16, 192)</code> कर दीजिए। NumPy image को row दर row पढ़ता
+    है, इसलिए हर "patch" 8×8 वर्ग नहीं, पूरी चौड़ाई की दो पट्टियाँ बनता है। Shape
+    बिलकुल वही रहता है। कुछ भी throw नहीं होता।
+  </p>
+
+<pre><code>shapes: (16, 192) (16, 192)  equal? True
+
+patch 5, first 8 values (R G B R G B R G):
+  right: [0.258 0.258 0.    0.29  0.258 0.    0.323 0.258]
+  wrong: <span class="hl">[0.    0.323 1.    0.032 0.323 1.    0.065 0.323]</span>
+
+what is 'patch 5', really?
+  right == img[8:16, 8:16]  an 8x8 square?  <span class="ok">True</span>
+  wrong == img[10:12, :]    a 2x32 strip?   True
+
+model runs on the wrong patches anyway: logits (10,)</code></pre>
+  <p>
+    खिलौना image में लाल बाएँ से दाएँ चढ़ता है, हरा ऊपर से नीचे। सही row pixel
+    (8, 8) से शुरू होती है, इसलिए लाल और हरा दोनों 0.258 पढ़ते हैं। ग़लत row pixel
+    (10, 0) से शुरू होती है: लाल 0, हरा 0.323, और नीला ग़लत checkerboard खाने पर।
+    वही shape, अलग तस्वीर, दस भरोसेमंद दिखने वाले logits। यह train भी हो जाएगा;
+    accuracy बस चुपचाप ख़राब रहेगी और आप learning rate को दोष देंगे। इसका PyTorch
+    रूप है — channel axis पहले हटाए बिना यही नुस्ख़ा किसी (C, H, W) tensor पर
+    चलाना। जो failure आपको चाहिए वह शोर वाला है: 32 में 5 का भाग नहीं जाता, cut
+    हो ही नहीं सकता, NumPy मना कर देता है। असली pipelines patchify से पहले 224 पर
+    resize इसी वजह से करती हैं।
+  </p>
+<pre><code>  p=8: patches (16, 192)
+  p=5: <span class="ok">ValueError: cannot reshape array of size 3072 into shape (6,5,6,5,3)</span></code></pre>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -444,6 +967,37 @@ class ViT:
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

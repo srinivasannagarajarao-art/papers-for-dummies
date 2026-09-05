@@ -7,7 +7,7 @@
 <meta name="description" content="The DDPM paper explained as code: a for loop that adds noise, a closed-form jump to any step, and a small model that learns the one-step undo. Runnable NumPy plus a tiny CPU PyTorch trainer, with a section on where Stable Diffusion fits.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -37,6 +37,14 @@
       CPU PyTorch model for the training step.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
 
   <p>
     I'd run Stable Diffusion on my own GPU, swapped samplers by name, argued
@@ -268,6 +276,522 @@ x_T built by the closed-form jump, 20000 draws from ONE x_0 each:
     slider (classifier-free guidance) is a third paper; the loop is unchanged.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் Stable Diffusion-ஐ என் சொந்த GPU-வில் ஓட்டியிருக்கிறேன், sampler-களைப்
+    பெயர் வைத்து மாற்றியிருக்கிறேன், guidance scale பற்றி வாதிட்டிருக்கிறேன்.
+    பிறகு அவை எல்லாவற்றுக்கும் மூலமான paper-ஐத் திறந்தேன் — equation 3-லேயே
+    நின்றுவிட்டேன். மூன்று வகை KL term-கள் கொண்ட ஒரு variational bound. அந்த
+    bound வெறும் சாரம் (scaffolding) என்று யாரும் சொல்லவில்லை. உண்மையான
+    முறை இதுதான்: ஒரு <code>for</code> loop-ஆல் data-வைக் கெடுக்கவும், ஒரு
+    படி undo செய்யக் கற்றுக்கொள்ளவும், loop-ஐத் திருப்பி ஓட்டவும்.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (noise, schedule, beta,
+    alpha-bar, forward process, reverse step, DDIM, latent diffusion…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>ஒரு for loop-ஐ undo செய்யக் கற்றுக்கொள்ளுங்கள்</h2>
+
+  <p>இது உங்களுக்குத் தெரியும் — கொஞ்சம் கொஞ்சமாக ஒன்றைக் கெடுக்கும் loop:</p>
+
+<pre><code>x = x0
+for t in range(1, T + 1):                          # paper-ல் T = 1000
+    x = sqrt(1 - beta[t]) * x + sqrt(beta[t]) * randn()   # சுருக்கு, noise சேர்
+# x இப்போது static. x0-வின் தடமே இல்லை.</code></pre>
+
+  <p>
+    இரண்டு உண்மைகள் இதை ஒரு generative model ஆக்குகின்றன. முதலாவது, loop-ஐ
+    நீங்கள் ஓட்டவே வேண்டியதில்லை: Gaussian-கள் கூடிச் சேர்வதால், ஒரே வரியில்
+    எந்த step <em>t</em>-க்கும் தாவலாம். இரண்டாவது, கற்றுக்கொள்ளப்படுவது ஒரே
+    ஒரு விஷயம் மட்டும் — ஒரு step undo:
+  </p>
+
+<pre><code>x_t = sqrt(alpha_bar[t]) * x0 + sqrt(1 - alpha_bar[t]) * eps   # step t-க்கு தாவல்
+
+eps_hat = model(x_t, t)          # கற்பது இதுமட்டும்: "எந்த noise சேர்ந்தது?"
+
+x = randn()                      # static-லிருந்து தொடங்கு
+for t in range(T, 0, -1):        # அதே loop, தலைகீழாக
+    x = undo(x, t, model(x, t))  # கணித்த noise-ஐக் கழி, கொஞ்சம் திரும்பச் சேர்</code></pre>
+
+  <p>
+    இதுதான் அந்த paper. எந்த நிலைக்கும் random access தரும் ஒரு corruption
+    function, மற்றும் ஒரே ஒரு நிலைக்கு <code>ctrl-z</code>-ஆக இருக்கும் ஒரு model.
+  </p>
+
+  <p class="thanglish">
+    Data-va oru for loop kondu kedukkuroam. Andha loop-la endha step-kkum
+    ore line-la thaavalaam. Model kaththukkarathu onnu dhaan: oru step undo.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>β<sub>t</sub></strong></td><td>step t எவ்வளவு noise சேர்க்கிறது</td><td>ஒரு loop iteration-இன் corruption rate</td></tr>
+      <tr><td><strong>ᾱ<sub>t</sub></strong></td><td>x<sub>0</sub>-வில் எவ்வளவு step t வரை தாக்குப்பிடிக்கிறது</td><td>ஒருமுறை precompute செய்யப்பட்ட prefix product, prefix-sum table போல</td></tr>
+      <tr><td><strong>q(x<sub>t</sub> | x<sub>0</sub>)</strong></td><td>Forward தாவல்</td><td>log-ஐ மறுபடி ஓட்டாமல் எந்த commit-க்கும் <code>git checkout</code></td></tr>
+      <tr><td><strong>ε<sub>θ</sub>(x<sub>t</sub>, t)</strong></td><td>Model: எந்த noise சேர்க்கப்பட்டது?</td><td>loop-ல் எவ்வளவு ஆழத்தில் இருக்கிறோம் என்று சொல்லப்பட்ட ஒரு step undo</td></tr>
+      <tr><td><strong>p<sub>θ</sub>(x<sub>t−1</sub> | x<sub>t</sub>)</strong></td><td>ஒரு reverse step</td><td>loop body, தலைகீழாக ஓடுகிறது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">L<sub>simple</sub> = E<sub>t, x<sub>0</sub>, ε</sub> ‖ ε − ε<sub>θ</sub>( √ᾱ<sub>t</sub> x<sub>0</sub> + √(1−ᾱ<sub>t</sub>) ε,  t ) ‖<sup>2</sup></div>
+
+  <p>உள்ளிருந்து வெளியே, pipeline stage-களாகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>t ~ Uniform{1..T}</code></td><td>ஒரு sample-க்கு ஒரு int</td><td>loop-ல் ஒரு random ஆழத்தைத் தேர்ந்தெடு</td></tr>
+      <tr><td><code>ε ~ N(0, I)</code></td><td>(n, d)</td><td>சேர்க்கப்போகும் noise-ஐ எடு. இதுவே விடைத்தாளும் கூட</td></tr>
+      <tr><td><code>√ᾱ<sub>t</sub> x<sub>0</sub> + √(1−ᾱ<sub>t</sub>) ε</code></td><td>(n, d)</td><td><strong>அந்தத் தாவல்.</strong> ஒரே வரியில் x<sub>t</sub>, loop இல்லை</td></tr>
+      <tr><td><code>ε<sub>θ</sub>(x<sub>t</sub>, t)</code></td><td>(n, d)</td><td>ε பற்றி model-இன் ஊகம்</td></tr>
+      <tr><td><code>‖ε − ε<sub>θ</sub>‖<sup>2</sup></code></td><td>scalar</td><td>சாதாரண MSE. மீதியை Adam பார்த்துக்கொள்ளும்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    என் script-ல் d = 2, paper-இன் CIFAR-10 run-களில் 32×32×3. இது ஒரு
+    regression: GAN ஒரு சண்டை போலப் பயிற்சி பெற்றால், இது ஒரு classifier
+    போலப் பயிற்சி பெறுகிறது. §3-இன் variational bound இந்த MSE அதன் ஒரு
+    <em>weighted</em> வடிவம் என்று காட்டுகிறது; §3.4 அந்த weight-களைத்
+    தூக்கி எறிகிறது, ஏனெனில் அவை இல்லாமல் sample-கள் மேம்பட்டன. அதுதான்
+    paper-இன் முக்கியமான நடைமுறைக் கண்டுபிடிப்பு. Equation 14.
+  </p>
+
+  <h2>Schedule: மூன்று array-கள், கற்பது எதுவும் இல்லை</h2>
+  <p>
+    β<sub>t</sub> என்பது T = 1000 step-களில் 0.0001-லிருந்து 0.02 வரை
+    நேர்கோட்டில் செல்கிறது (paper-இன் §4). α<sub>t</sub> = 1 − β<sub>t</sub>.
+    ᾱ<sub>t</sub> என்பது alpha-க்களின் ஓடும் பெருக்கல்: step t-ல் அசல்
+    signal எவ்வளவு இன்னும் நிற்கிறது. ஒருமுறை precompute, t-ஆல் index.
+  </p>
+
+  <p><strong>ஓடும் code-லிருந்து:</strong></p>
+
+<pre><code>how much of x_0 survives to step t  (alpha_bar_t):
+  t =    0   alpha_bar = 1.000000   sqrt(alpha_bar) = 1.0000
+  t =  250   alpha_bar = 0.524085   sqrt(alpha_bar) = 0.7239
+  t =  500   alpha_bar = 0.078587   sqrt(alpha_bar) = 0.2803
+  t = 1000   alpha_bar = 0.000040   sqrt(alpha_bar) = 0.0064
+
+x_T built by the closed-form jump, 20000 draws from ONE x_0 each:
+  x_0            mean of x_T        std of x_T
+  [1. 0.]        [ 0.015 -0.009]    [1.002 1.   ]
+  [-1.  0.]      [-0.005 -0.004]    [1. 1.]
+  [3. 3.]        [0.018 0.02 ]      [1.001 1.005]  <span class="ok">✓ even from off the ring</span></code></pre>
+
+  <p>
+    அந்த இரண்டாவது அட்டவணைதான் ஒப்பந்தம். நீங்கள் எந்த x<sub>0</sub>-லிருந்து
+    தொடங்கினாலும் x<sub>T</sub> என்பது N(0, 1) — எனவே data-வைப் பார்க்காமலேயே
+    sampling N(0, 1)-லிருந்து <em>தொடங்க</em> முடியும். இதைக் கெடுத்துப்
+    பாருங்கள் (<code>make_schedule(5)</code>, கீழே உள்ள அட்டவணையில்) —
+    sampling தவறான இடத்தில் தொடங்கும்.
+  </p>
+
+  <h2>குறுக்குவழி: எந்த step-ஆனாலும் ஒரே வரியில்</h2>
+  <p>
+    இரண்டு சார்பற்ற Gaussian-களைக் கூட்டினால் <em>variance</em>-கள் கூடும்.
+    t shrink-and-noise step-களைத் தொடராக்கினால், அவை √ᾱ<sub>t</sub> x<sub>0</sub>-ஐ
+    மையமாகக் கொண்ட, 1 − ᾱ<sub>t</sub> variance உள்ள ஒரே Gaussian ஆகச்
+    சுருங்குகின்றன. Equation 4. அதனால்தான் training loop-ஐ ஒருபோதும்
+    ஓட்டுவதில்லை: ஒரு t-ஐத் தேர்ந்தெடு, தாவு.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்பாதீர்கள். loop-ம் தாவலும் அருகருகே:</strong></p>
+
+<pre><code>x_0 = (1, 0). Compare the x-coordinate of x_t, 20000 draws each.
+
+     t   loop  mean   std  |  jump  mean   std  |  theory sqrt(ab)  sqrt(1-ab)
+    10    0.999 0.043  |   0.999 0.043  |       0.999     0.044
+   100    0.946 0.321  |   0.948 0.320  |       0.947     0.321
+   500    0.286 0.972  |   0.285 0.969  |       0.280     0.960
+  1000    0.013 0.994  |   0.018 0.997  |       0.006     1.000  <span class="ok">✓</span></code></pre>
+
+  <p>
+    வர்க்கமூலங்கள்தான் மக்கள் தவறவிடும் பகுதி. ᾱ<sub>t</sub>-ம்
+    1 − ᾱ<sub>t</sub>-ம் variance-கள்; ஒரு sample-இன் மேல் வரும் coefficient
+    என்பது standard deviation. <code>np.sqrt</code>-ஐ மறந்துவிட்டால்:
+  </p>
+
+<pre><code>     t   correct  mean   std  |  no-sqrt  mean   std  |  theory  mean   std
+   100      0.947  0.320  |      0.897  <span class="hl">0.103</span>  |        0.947 0.321
+   300      0.626  0.781  |      0.394  0.607  |        0.630 0.777</code></pre>
+
+  <p class="thanglish">
+    Alpha-bar-um 1 minus alpha-bar-um variance. Sample mela varra coefficient
+    standard deviation. Adhanaala sqrt kandippa venum — illena noise pathi dhaan.
+  </p>
+
+  <h2>Training: image-ஐ அல்ல, noise-ஐக் கணியுங்கள்</h2>
+  <p>
+    Paper-இன் Algorithm 1 நான்கே வரிகள். என் <code>train</code> loop அந்த
+    நான்கு வரிகள்தான் — ஒவ்வொன்றிலும் paper-இன் வரி எண் comment-ஆக உள்ளது.
+    x<sub>0</sub>, t, ε எடு; x<sub>t</sub>-க்குத் தாவு; model-இடம் ε கேள்; MSE.
+    இங்கே model ஒரு 3-layer MLP, paper-ல் ஒரு U-Net. வேலை ஒன்றுதான்.
+  </p>
+
+<pre><code>baseline -- always predict zero noise -- scores 1.0000. Beat that.
+
+  step   500   loss 0.2552
+  step  1000   loss 0.2279
+  step  3000   loss 0.2000
+  step  4000   loss 0.1924
+
+  trained 4000 steps on CPU in 4.6s
+  held-out loss: 0.1918  <span class="ok">✓</span></code></pre>
+
+  <p>
+    Model-க்கு <em>t</em> ஒரு input-ஆகத் தரப்படுகிறது — transformer position-க்குப்
+    பயன்படுத்தும் அதே sine/cosine embedding வழியாக
+    (<a href="../attention/">attention பக்கம்</a>). அது தேவை: ஒரே
+    x<sub>t</sub> என்பது கொஞ்சம் noise சேர்ந்த ring புள்ளியாகவோ அல்லது
+    பெரும்பாலும் noise-ஆகவோ இருக்கலாம்; எவ்வளவு நீக்க வேண்டும் என்பது
+    அதைப் பொறுத்தது. t-ஐ எடுத்துவிடுங்கள்:
+  </p>
+
+<pre><code>  held-out loss, all t:         with t 0.1918   without t 0.2358
+  held-out loss, t &lt;= 50 only:  with t 0.8107   without t <span class="hl">1.1272  ← zero-விட மோசம்</span></code></pre>
+
+  <div class="note">
+    <strong>உங்களிடம் கேட்கப்படும் கேள்வி: model என்ன கணிக்கிறது?</strong>
+    Noise, image அல்ல. Paper-இன் ablation அட்டவணை, posterior mean-ஐக்
+    கணிப்பதை ε கணிப்பதோடு ஒப்பிடுகிறது; simple loss-ல் ε வெல்கிறது. பிற்பாடு
+    வந்த வேலைகள் x<sub>0</sub>-வையும் கணிக்கின்றன, ஆனால் எது என்பதை
+    sampler-க்குச் சொல்லியாக வேண்டும்.
+  </div>
+
+  <h2>Sampling: loop, தலைகீழாக</h2>
+  <p>
+    Algorithm 2. N(0, I)-லிருந்து தொடங்கு. t = T-லிருந்து 1 வரை: model-இடம்
+    ε̂ கேள், அதில் β<sub>t</sub> / √(1−ᾱ<sub>t</sub>) அளவைக் கழி,
+    √α<sub>t</sub>-ஆல் வகு, பிறகு β<sub>t</sub> variance கொண்ட புதிய noise
+    சேர் — கடைசி step-ல் மட்டும் சேர்க்காதே. batch ஒரு உருண்டையிலிருந்து
+    ring-ஆக இறுகுவதைப் பாருங்கள்:
+  </p>
+
+<pre><code>the batch, mid-flight:
+    t = 1000   mean radius 1.250   radius spread 0.659
+    t =  500   mean radius 1.230   radius spread 0.636
+    t =  100   mean radius 1.004   radius spread 0.318
+    t =    1   mean radius 0.991   radius spread 0.123
+
+  real data (ring)                 mean radius 1.001   radius spread 0.100
+  generated, 1000 DDPM steps       mean radius 0.991   radius spread 0.123  <span class="ok">✓</span></code></pre>
+
+  <p>
+    Sampling நேரத்தில் model ring-ஐப் பார்ப்பதே இல்லை; அது "என்ன noise
+    சேர்ந்தது" என்பதை மட்டுமே கற்றது — அதை ஆயிரம் முறை undo செய்தால்
+    ring தானாக விழுகிறது. "புதிய noise-ஐத் திரும்பச் சேர்" என்ற step ஒரு
+    bug போலத் தெரியும், ஆனால் இல்லை. அதை நீக்கிப் பாருங்கள்:
+  </p>
+
+<pre><code>  real data (ring)                 mean radius 1.001   radius spread 0.100
+  DDPM, with noise (correct)       mean radius 0.979   radius spread 0.129
+  DDPM, noise term removed         mean radius <span class="hl">0.705</span>   radius spread <span class="hl">0.031</span>
+  DDIM, 50 steps, eta = 0          mean radius 0.967   radius spread 0.135  <span class="ok">✓</span></code></pre>
+
+  <p>
+    Noise இல்லாமல் sample-கள் மையத்தை நோக்கிச் சுருங்கி, தங்கள் விரிவை
+    இழக்கின்றன. கடைசி வரிதான் "ஆயிரம் call" பிரச்சனைக்கான தீர்வு:
+    <a href="https://arxiv.org/abs/2010.02502">DDIM</a> (Song et al., 2020)
+    இதுவும் deterministic-தான், ஆனால் திருத்தப்பட்ட coefficient-களுடன் —
+    ε̂-லிருந்து x<sub>0</sub>-ஐ ஊகி, அந்த ஊகத்தை மிக முந்தைய ஒரு step-க்கு
+    மறுபடி noise ஏற்று. அதே model, 50 call-கள். ஒரு Stable Diffusion
+    dropdown-ல் இருக்கும் ஒவ்வொரு வேகமான sampler-ம் இதிலிருந்து வந்ததுதான்.
+  </p>
+
+  <h2>Stable Diffusion எங்கே பொருந்துகிறது</h2>
+  <p>
+    <a href="https://arxiv.org/abs/2112.10752">Latent diffusion</a> (Rombach
+    et al., 2022) என்பது இதே algorithm-தான் — இரண்டு மாற்றங்கள், ஒரு விளைவு.
+  </p>
+  <p>
+    <strong>Latent space-ல் ஓட்டுங்கள்.</strong> முதலில், 512×512×3 image-ஐ
+    64×64×4 latent-ஆகச் சுருக்கும் ஒரு லேசாக regularise செய்யப்பட்ட
+    <a href="../vae/">VAE</a>-ஐப் பயிற்றுவியுங்கள் — 48 மடங்கு குறைவான
+    எண்கள். Algorithm 1-ஐயும் 2-ஐயும் pixel-கள் மேல் அல்ல, latent-கள் மேல்
+    ஓட்டுங்கள்; கடைசியில் ஒரே ஒரு முறை decode செய்யுங்கள்.
+  </p>
+  <p>
+    <strong>Text-ஐ வைத்து condition செய்யுங்கள்.</strong> ஒரு text encoder
+    (வெளியான model-ல் CLIP-இனுடையது) prompt-ஐ token vector-களாக மாற்றுகிறது.
+    U-Net-க்கு cross-attention layer-கள் வருகின்றன: query image feature-களிலிருந்து,
+    key-ம் value-ம் text token-களிலிருந்து. மீண்டும் அதே
+    <a href="../attention/">dictionary lookup</a> — image, prompt-இடம் தான்
+    என்ன கொண்டிருக்க வேண்டும் என்று கேட்கிறது.
+  </p>
+  <p>
+    <strong>அந்த விளைவுதான்</strong> ஒரு gaming card-ல் இது ஓடுவதற்குக் காரணம்:
+    loop 786k pixel-களுக்குப் பதிலாக 16k latent மதிப்புகள் மேல் ஓடுகிறது.
+    guidance-scale slider (classifier-free guidance) என்பது வேறொரு paper;
+    loop மாறவே இல்லை.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने Stable Diffusion अपने GPU पर चलाया है, sampler नाम देखकर बदले हैं,
+    guidance scale पर बहस की है। फिर मैंने वह paper खोला जिससे यह सब निकला है
+    और equation 3 पर अटक गया — तीन तरह के KL term वाला एक variational bound।
+    किसी ने नहीं बताया कि वह bound सिर्फ़ scaffolding है। तरीक़ा यह है:
+    एक <code>for</code> loop से data बिगाड़ो, एक step का undo सीखो, और loop
+    को उल्टा चला दो।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (noise, schedule, beta,
+    alpha-bar, forward process, reverse step, DDIM, latent diffusion…) मैंने
+    वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>एक for loop को undo करना सीखिए</h2>
+
+  <p>यह आप जानते हैं — एक loop जो थोड़ा-थोड़ा करके कुछ बिगाड़ता है:</p>
+
+<pre><code>x = x0
+for t in range(1, T + 1):                          # paper में T = 1000
+    x = sqrt(1 - beta[t]) * x + sqrt(beta[t]) * randn()   # सिकोड़ो, noise डालो
+# अब x static है। x0 का कोई निशान नहीं बचा।</code></pre>
+
+  <p>
+    दो बातें इसे generative model बना देती हैं। पहली, loop चलाने की ज़रूरत ही
+    नहीं: Gaussian आपस में जुड़ जाते हैं, इसलिए एक लाइन में किसी भी step
+    <em>t</em> तक छलाँग लगाई जा सकती है। दूसरी, सीखी सिर्फ़ एक चीज़ जाती है —
+    एक step का undo:
+  </p>
+
+<pre><code>x_t = sqrt(alpha_bar[t]) * x0 + sqrt(1 - alpha_bar[t]) * eps   # step t तक छलाँग
+
+eps_hat = model(x_t, t)          # सीखी हुई एकमात्र चीज़: "कौन-सा noise डला था?"
+
+x = randn()                      # static से शुरू करो
+for t in range(T, 0, -1):        # वही loop, उल्टा
+    x = undo(x, t, model(x, t))  # अनुमानित noise घटाओ, थोड़ा वापस डालो</code></pre>
+
+  <p>
+    यही पूरा paper है। एक corruption function जिसमें किसी भी stage तक random
+    access है, और एक model जो एक stage के लिए <code>ctrl-z</code> है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer वाली उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>β<sub>t</sub></strong></td><td>step t कितना noise जोड़ता है</td><td>एक loop iteration की corruption rate</td></tr>
+      <tr><td><strong>ᾱ<sub>t</sub></strong></td><td>x<sub>0</sub> का कितना हिस्सा step t तक बचता है</td><td>एक बार precompute किया prefix product, prefix-sum table जैसा</td></tr>
+      <tr><td><strong>q(x<sub>t</sub> | x<sub>0</sub>)</strong></td><td>Forward छलाँग</td><td>log दोबारा चलाए बिना किसी भी commit पर <code>git checkout</code></td></tr>
+      <tr><td><strong>ε<sub>θ</sub>(x<sub>t</sub>, t)</strong></td><td>Model: कौन-सा noise डाला गया था?</td><td>एक step का undo, जिसे बताया गया है कि वह loop में कितना गहरा है</td></tr>
+      <tr><td><strong>p<sub>θ</sub>(x<sub>t−1</sub> | x<sub>t</sub>)</strong></td><td>एक reverse step</td><td>loop body, उल्टा चलता हुआ</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">L<sub>simple</sub> = E<sub>t, x<sub>0</sub>, ε</sub> ‖ ε − ε<sub>θ</sub>( √ᾱ<sub>t</sub> x<sub>0</sub> + √(1−ᾱ<sub>t</sub>) ε,  t ) ‖<sup>2</sup></div>
+
+  <p>इसे अंदर से बाहर की ओर, pipeline stage की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>t ~ Uniform{1..T}</code></td><td>हर sample के लिए एक int</td><td>loop में एक random गहराई चुनो</td></tr>
+      <tr><td><code>ε ~ N(0, I)</code></td><td>(n, d)</td><td>जो noise डालने वाले हो उसे निकालो। यही answer key भी है</td></tr>
+      <tr><td><code>√ᾱ<sub>t</sub> x<sub>0</sub> + √(1−ᾱ<sub>t</sub>) ε</code></td><td>(n, d)</td><td><strong>वह छलाँग।</strong> एक लाइन में x<sub>t</sub>, कोई loop नहीं</td></tr>
+      <tr><td><code>ε<sub>θ</sub>(x<sub>t</sub>, t)</code></td><td>(n, d)</td><td>ε पर model का अनुमान</td></tr>
+      <tr><td><code>‖ε − ε<sub>θ</sub>‖<sup>2</sup></code></td><td>scalar</td><td>सीधा MSE। बाक़ी Adam सँभाल लेगा</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    मेरी script में d = 2 है, paper के CIFAR-10 run में 32×32×3। यह एक
+    regression है: GAN एक लड़ाई की तरह train होता है, यह classifier की तरह।
+    §3 का variational bound दिखाता है कि यही MSE उसका एक <em>weighted</em>
+    रूप है; §3.4 फिर weight हटा देता है, क्योंकि उनके बिना sample बेहतर आए।
+    यही paper की असली व्यावहारिक खोज है। Equation 14।
+  </p>
+
+  <h2>Schedule: तीन array, सीखा कुछ नहीं</h2>
+  <p>
+    β<sub>t</sub> T = 1000 step में 0.0001 से 0.02 तक सीधी रेखा में जाता है
+    (paper का §4)। α<sub>t</sub> = 1 − β<sub>t</sub>। ᾱ<sub>t</sub> alpha का
+    चलता हुआ गुणनफल है: step t पर मूल signal कितना बचा है। एक बार precompute,
+    फिर t से index।
+  </p>
+
+  <p><strong>चलते हुए code से:</strong></p>
+
+<pre><code>how much of x_0 survives to step t  (alpha_bar_t):
+  t =    0   alpha_bar = 1.000000   sqrt(alpha_bar) = 1.0000
+  t =  250   alpha_bar = 0.524085   sqrt(alpha_bar) = 0.7239
+  t =  500   alpha_bar = 0.078587   sqrt(alpha_bar) = 0.2803
+  t = 1000   alpha_bar = 0.000040   sqrt(alpha_bar) = 0.0064
+
+x_T built by the closed-form jump, 20000 draws from ONE x_0 each:
+  x_0            mean of x_T        std of x_T
+  [1. 0.]        [ 0.015 -0.009]    [1.002 1.   ]
+  [-1.  0.]      [-0.005 -0.004]    [1. 1.]
+  [3. 3.]        [0.018 0.02 ]      [1.001 1.005]  <span class="ok">✓ even from off the ring</span></code></pre>
+
+  <p>
+    वह दूसरी table ही असली अनुबंध है। आप किसी भी x<sub>0</sub> से शुरू करें,
+    x<sub>T</sub> N(0, 1) ही होता है — इसलिए sampling data देखे बिना
+    N(0, 1) से <em>शुरू</em> हो सकती है। इसे तोड़िए
+    (<code>make_schedule(5)</code>, नीचे वाली table में) और sampling ग़लत
+    जगह से शुरू होगी।
+  </p>
+
+  <h2>शॉर्टकट: कोई भी step, एक लाइन में</h2>
+  <p>
+    दो स्वतंत्र Gaussian जोड़िए तो <em>variance</em> जुड़ते हैं। t
+    shrink-and-noise step को जोड़िए तो वे सिमटकर एक ही Gaussian बन जाते हैं,
+    जिसका केंद्र √ᾱ<sub>t</sub> x<sub>0</sub> और variance 1 − ᾱ<sub>t</sub> है।
+    Equation 4। इसीलिए training कभी loop नहीं चलाती: एक t चुनो, छलाँग लगाओ।
+  </p>
+
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। loop और छलाँग, आमने-सामने:</strong></p>
+
+<pre><code>x_0 = (1, 0). Compare the x-coordinate of x_t, 20000 draws each.
+
+     t   loop  mean   std  |  jump  mean   std  |  theory sqrt(ab)  sqrt(1-ab)
+    10    0.999 0.043  |   0.999 0.043  |       0.999     0.044
+   100    0.946 0.321  |   0.948 0.320  |       0.947     0.321
+   500    0.286 0.972  |   0.285 0.969  |       0.280     0.960
+  1000    0.013 0.994  |   0.018 0.997  |       0.006     1.000  <span class="ok">✓</span></code></pre>
+
+  <p>
+    वर्गमूल ही वह हिस्सा है जहाँ लोग ग़लती करते हैं। ᾱ<sub>t</sub> और
+    1 − ᾱ<sub>t</sub> variance हैं; sample पर लगने वाला coefficient standard
+    deviation है। <code>np.sqrt</code> भूल जाइए:
+  </p>
+
+<pre><code>     t   correct  mean   std  |  no-sqrt  mean   std  |  theory  mean   std
+   100      0.947  0.320  |      0.897  <span class="hl">0.103</span>  |        0.947 0.321
+   300      0.626  0.781  |      0.394  0.607  |        0.630 0.777</code></pre>
+
+  <h2>Training: image नहीं, noise का अनुमान लगाइए</h2>
+  <p>
+    paper का Algorithm 1 चार लाइनों का है, और मेरा <code>train</code> loop
+    वही चार लाइनें हैं — हर एक पर paper की लाइन संख्या comment में। x<sub>0</sub>,
+    t और ε निकालो, x<sub>t</sub> तक छलाँग लगाओ, model से ε पूछो, MSE।
+    यहाँ model एक 3-layer MLP है और paper में U-Net। काम वही है।
+  </p>
+
+<pre><code>baseline -- always predict zero noise -- scores 1.0000. Beat that.
+
+  step   500   loss 0.2552
+  step  1000   loss 0.2279
+  step  3000   loss 0.2000
+  step  4000   loss 0.1924
+
+  trained 4000 steps on CPU in 4.6s
+  held-out loss: 0.1918  <span class="ok">✓</span></code></pre>
+
+  <p>
+    Model को <em>t</em> एक input के रूप में मिलता है, उसी sine/cosine embedding
+    से जो transformer position के लिए इस्तेमाल करता है
+    (<a href="../attention/">attention वाला पन्ना</a>)। उसे इसकी ज़रूरत है:
+    वही x<sub>t</sub> या तो थोड़े noise वाला ring point हो सकता है या लगभग
+    पूरा noise, और कितना हटाना है यह इसी पर निर्भर है। t हटा दीजिए:
+  </p>
+
+<pre><code>  held-out loss, all t:         with t 0.1918   without t 0.2358
+  held-out loss, t &lt;= 50 only:  with t 0.8107   without t <span class="hl">1.1272  ← zero से भी बुरा</span></code></pre>
+
+  <div class="note">
+    <strong>वह सवाल जो आपसे पूछा जाएगा: model क्या predict करता है?</strong>
+    Noise, image नहीं। paper की ablation table posterior mean के अनुमान की
+    तुलना ε के अनुमान से करती है; simple loss के साथ ε जीतता है। बाद का काम
+    x<sub>0</sub> का भी अनुमान लगाता है, पर sampler को बताना होगा कि कौन-सा।
+  </div>
+
+  <h2>Sampling: वही loop, उल्टा</h2>
+  <p>
+    Algorithm 2। N(0, I) से शुरू करो। t = T से 1 तक: model से ε̂ माँगो,
+    उसमें से β<sub>t</sub> / √(1−ᾱ<sub>t</sub>) घटाओ, √α<sub>t</sub> से भाग
+    दो, फिर β<sub>t</sub> variance वाला ताज़ा noise जोड़ो — आख़िरी step पर
+    नहीं। देखिए batch एक धब्बे से सिकुड़कर ring पर कैसे बैठता है:
+  </p>
+
+<pre><code>the batch, mid-flight:
+    t = 1000   mean radius 1.250   radius spread 0.659
+    t =  500   mean radius 1.230   radius spread 0.636
+    t =  100   mean radius 1.004   radius spread 0.318
+    t =    1   mean radius 0.991   radius spread 0.123
+
+  real data (ring)                 mean radius 1.001   radius spread 0.100
+  generated, 1000 DDPM steps       mean radius 0.991   radius spread 0.123  <span class="ok">✓</span></code></pre>
+
+  <p>
+    Sampling के समय model ring कभी देखता ही नहीं; उसने सिर्फ़ "कौन-सा noise
+    डाला गया था" सीखा है, और उसे हज़ार बार undo करने से ring अपने-आप निकल
+    आता है। "ताज़ा noise वापस जोड़ो" वाला step bug जैसा दिखता है, है नहीं।
+    उसे हटाकर देखिए:
+  </p>
+
+<pre><code>  real data (ring)                 mean radius 1.001   radius spread 0.100
+  DDPM, with noise (correct)       mean radius 0.979   radius spread 0.129
+  DDPM, noise term removed         mean radius <span class="hl">0.705</span>   radius spread <span class="hl">0.031</span>
+  DDIM, 50 steps, eta = 0          mean radius 0.967   radius spread 0.135  <span class="ok">✓</span></code></pre>
+
+  <p>
+    noise के बिना sample केंद्र की ओर सिकुड़ जाते हैं और अपना फैलाव खो देते
+    हैं। आख़िरी पंक्ति हज़ार-call वाली समस्या का हल है:
+    <a href="https://arxiv.org/abs/2010.02502">DDIM</a> (Song et al., 2020)
+    भी deterministic है, पर सही किए गए coefficient के साथ — ε̂ से
+    x<sub>0</sub> का अनुमान लगाओ, फिर उस अनुमान को कहीं पहले के step तक
+    दोबारा noise करो। वही model, 50 call। Stable Diffusion के dropdown में
+    दिखने वाला हर तेज़ sampler इसी से निकला है।
+  </p>
+
+  <h2>Stable Diffusion कहाँ बैठता है</h2>
+  <p>
+    <a href="https://arxiv.org/abs/2112.10752">Latent diffusion</a> (Rombach
+    et al., 2022) यही algorithm है, दो बदलाव और एक नतीजे के साथ।
+  </p>
+  <p>
+    <strong>इसे latent space में चलाइए।</strong> पहले एक हल्का regularised
+    <a href="../vae/">VAE</a> train कीजिए जो 512×512×3 image को 64×64×4
+    latent में दबा दे — 48 गुना कम संख्याएँ। Algorithm 1 और 2 pixel पर नहीं,
+    latent पर चलाइए, और आख़िर में एक बार decode कीजिए।
+  </p>
+  <p>
+    <strong>Text पर condition कीजिए।</strong> एक text encoder (release हुए
+    model में CLIP का) prompt को token vector में बदलता है। U-Net को
+    cross-attention layer मिलती हैं: query image features से, key और value
+    text token से। वही <a href="../attention/">dictionary lookup</a> दोबारा,
+    जिसमें image prompt से पूछती है कि उसमें क्या होना चाहिए।
+  </p>
+  <p>
+    <strong>वह नतीजा</strong> ही वजह है कि यह एक gaming card पर चल जाता है:
+    loop 786k pixel के बजाय 16k latent values पर चलता है। guidance-scale
+    slider (classifier-free guidance) एक तीसरा paper है; loop वही का वही है।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -445,6 +969,37 @@ def sample(model, n, sched, add_noise=True, log_at=(), x_init=None):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

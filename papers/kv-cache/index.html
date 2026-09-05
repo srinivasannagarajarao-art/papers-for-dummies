@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV caching and the generation loop — for programmers</title>
+<meta name="description" content="Why LLM inference is affordable: the causal mask makes keys and values immutable, so you memoise them. Runnable NumPy, printed MAC counts, cache-size arithmetic, and five ways to break it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>KV caching and the generation loop</h1>
+    <p class="paper-meta">Folklore, and the papers that fixed it</p>
+    <p class="lede">
+      Why inference is affordable. It's a direct consequence of the causal mask,
+      and nobody explains it properly.
+    </p>
+    <p>
+      <a href="kv_cache_from_scratch.py" download>Download kv_cache_from_scratch.py</a>
+      — everything below runs from it. NumPy only, random weights, under a second.
+    </p>
+  </div>
+
+  <p>
+    This one isn't a paper. It's the engineering consequence of one line in
+    <a href="../attention/">Attention Is All You Need</a>, and it lives in
+    folklore: everyone who has served a model knows it, nobody writes it up.
+    I shipped an inference stack before I could have told you, on a whiteboard,
+    <em>why</em> the cache is allowed to exist. The papers here are the ones
+    that later went and optimised it.
+  </p>
+
+  <p>
+    The whole thing is one observation. Generating token <em>n</em> means
+    running attention over all <em>n</em> tokens. Do that naively for a whole
+    sequence and you pay roughly <em>n</em><sup>3</sup>. But the causal mask
+    guarantees that token <em>i</em>'s key and value never change once
+    computed. So you cache them. The loop becomes <em>n</em><sup>2</sup>, and
+    each step is one new row instead of a full matrix.
+  </p>
+
+  <h2>The KV cache is memoisation</h2>
+
+  <p>You've written this a hundred times:</p>
+
+<pre><code>@lru_cache
+def expensive(x):        # safe to cache, because it is PURE:
+    return f(x)          # same x always gives the same answer</code></pre>
+
+  <p>
+    And you know the rule: you may only memoise a pure function. Cache
+    something whose answer depends on hidden mutable state and you get the
+    worst class of bug — right answer on Tuesday, wrong answer under load.
+  </p>
+
+  <p>
+    A decoder's per-token key and value are that pure function. Token
+    <em>i</em>'s <code>k</code> and <code>v</code> are computed from token
+    <em>i</em>'s embedding and position, and from nothing else that arrives
+    later. So:
+  </p>
+
+<pre><code>cache = {"K": [], "V": []}
+
+def decode_step(token, pos, cache):
+    q, k, v = project(embed(token) + pos_enc(pos))   # q is per-step, throwaway
+    cache["K"].append(k)                             # append ONE row
+    cache["V"].append(v)
+    scores  = q @ stack(cache["K"]).T                # (1, n), not (n, n)
+    return softmax(scores) @ stack(cache["V"])</code></pre>
+
+  <p>
+    That's it. That's the KV cache. The interesting part is not the code, it's
+    the <em>licence</em> to write it — and the licence comes from the mask.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Prefill</strong></td><td>Run the whole prompt through once, filling the cache</td><td>Warming the cache on startup</td></tr>
+      <tr><td><strong>Decode</strong></td><td>One token in, one token out, cache grows by a row</td><td>The steady-state request loop</td></tr>
+      <tr><td><strong>KV cache</strong></td><td>Every layer's keys and values for every token so far</td><td>The memo table</td></tr>
+      <tr><td><strong>Causal mask</strong></td><td>Row i may only read columns ≤ i</td><td>The proof that the function is pure</td></tr>
+      <tr><td><strong>Eviction</strong></td><td>Dropping cache entries when you run out of room</td><td>LRU on a bounded cache</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <p>
+    Not an attention formula — you already have that. The formula that decides
+    what you can actually serve:
+  </p>
+
+  <div class="formula">bytes = 2 × layers × kv_heads × head_dim × seq_len × dtype_bytes × batch</div>
+
+  <p>Read it as terms you control:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Typical</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><code>2</code></td><td>2</td><td>K and V. Never Q — Q is used once and thrown away</td></tr>
+      <tr><td><code>layers</code></td><td>32</td><td>Every layer keeps its own cache. They are not shared</td></tr>
+      <tr><td><code>kv_heads</code></td><td>32 → 8 → 1</td><td>The only term the architecture papers attack. MHA → GQA → MQA</td></tr>
+      <tr><td><code>head_dim</code></td><td>128</td><td>d<sub>model</sub> / n<sub>heads</sub></td></tr>
+      <tr><td><code>seq_len</code></td><td>4k…128k</td><td>Grows every single decode step. This is the one that hurts</td></tr>
+      <tr><td><code>dtype_bytes</code></td><td>2</td><td>fp16 or bf16. Quantising the cache to 8 bits halves it</td></tr>
+      <tr><td><code>batch</code></td><td>1…256</td><td>Every concurrent request pays the whole thing again</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Two loops, and a 34× gap</h2>
+
+  <p>
+    The script runs both loops over a toy decoder and counts
+    multiply-accumulates analytically, so the number doesn't depend on how fast
+    your laptop is. Per token, per layer: <code>4·d·d</code> for the four
+    projections, <code>2·d·n</code> for attention over <em>n</em> cached keys,
+    <code>2·d·ff</code> for the feed-forward.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>toy model: 2 layers, 4 heads, d_model=32, seq=64
+
+  naive  loop total MACs:   62,566,400
+  cached loop total MACs:    1,839,104
+  ratio                 :         34.0x
+
+  per-step cost (MACs), naive grows, cached is flat:
+    step |        naive |      cached
+       1 |       24,704 |      24,704
+       8 |      204,800 |      25,600
+      16 |      425,984 |      26,624
+      32 |      917,504 |      28,672
+      48 |    1,474,560 |      30,720
+      64 |    2,097,152 |   <span class="ok">  32,768</span> <span class="ok">✓</span>
+</code></pre>
+
+  <p>
+    Look at the two columns. The naive step cost multiplies by 85 between step
+    1 and step 64. The cached step cost grows by a third — and that residue is
+    real, not rounding. Attention still has to scan every cached key. What went
+    flat is the projections and the feed-forward, which is most of the work.
+  </p>
+
+  <div class="note">
+    <strong>Be careful with the big-O in interviews.</strong> The
+    <em>n</em><sup>3</sup> → <em>n</em><sup>2</sup> claim is about the
+    <em>attention</em> part of a decode loop. Caching does nothing at all to
+    the feed-forward cost per token: you still run the FFN once per generated
+    token either way. What caching removes is re-running the prefix.
+  </div>
+
+  <h2>Same tokens, to float precision</h2>
+
+  <p>
+    A cache that changes the answer is not a cache, it's an approximation. So
+    the script generates the same 12 tokens both ways and diffs the logits.
+  </p>
+
+<pre><code>  naive  tokens: [3, 17, 42, 8, 16, 16, 16, 16, 44, 44, 16, 16, 16, 16, 44, 16]
+  cached tokens: [3, 17, 42, 8, 16, 16, 16, 16, 44, 44, 16, 16, 16, 16, 44, 16]
+  same token sequence? <span class="ok">True</span>
+  max |naive logits - cached logits| = <span class="ok">1.887e-15 ✓</span>
+</code></pre>
+
+  <p>
+    1.9 × 10<sup>−15</sup> is float64 noise from doing the additions in a
+    different order. The weights are random and untrained, so the model happily
+    loops on token 16 — that's fine, this page is about compute and memory, not
+    learning. What matters is that both loops loop <em>identically</em>.
+  </p>
+
+  <h2>The mask is the proof</h2>
+
+  <p>
+    Here is the part nobody writes down. Why is it legal to keep those rows?
+    Because with a causal mask, appending a token cannot change any earlier
+    attention row. Row <em>i</em> has <code>−∞</code> in every column past
+    <em>i</em>, so the new column contributes exactly nothing to its softmax
+    denominator.
+  </p>
+
+  <p><strong>Same layer, same head, before and after appending a 5th token:</strong></p>
+
+<pre><code>  WITH causal mask -- layer 0, head 0 attention weights
+    before appending a 5th token (4x4):
+      [1. 0. 0. 0.]
+      [0.671 0.329 0.    0.   ]
+      [0.53  0.235 0.235 0.   ]
+      [0.553 0.162 0.159 0.126]
+    after  appending a 5th token, first 4 rows (4x5):
+      [1. 0. 0. 0. 0.]
+      [0.671 0.329 0.    0.    0.   ]
+      [0.53  0.235 0.235 0.    0.   ]
+      [0.553 0.162 0.159 0.126 0.   ]
+    max change in the first 4 rows: <span class="ok">0.000e+00 ✓</span>
+</code></pre>
+
+  <p>
+    Exactly zero. Not "small". Now delete the mask — turn the decoder into a
+    BERT-style bidirectional encoder — and run the identical experiment:
+  </p>
+
+<pre><code>  NO mask -- layer 0, head 0 attention weights
+    before appending a 5th token (4x4):
+      [0.386 0.182 0.305 0.127]
+      [0.417 0.204 0.261 0.117]
+      [0.47  0.209 0.208 0.113]
+      [0.553 0.162 0.159 0.126]
+    after  appending a 5th token, first 4 rows (4x5):
+      [0.362 0.17  0.285 0.119 0.064]
+      [0.394 0.193 0.247 0.111 0.054]
+      [0.448 0.199 0.198 0.107 0.048]
+      [0.506 0.149 0.146 0.115 0.084]
+    max change in the first 4 rows: <span class="hl">4.631e-02</span>
+
+  now the consequence for a cache:
+    unmasked model, cached vs recomputed logits, max abs diff: <span class="hl">0.4017</span>
+    argmax token: recomputed=44  cached=<span class="hl">16</span>
+</code></pre>
+
+  <p>
+    Every earlier row moved, because softmax renormalises over the new column.
+    The cached rows are now stale, the logits are off by 0.40, and the model
+    picks a different token. Same code, one boolean flipped.
+  </p>
+
+  <div class="note">
+    <strong>This is why BERT has no KV cache and GPT does.</strong> It was never
+    a choice about performance. Bidirectional attention makes K and V depend on
+    the future, so there is nothing pure to memoise. The mask is the invariant
+    the cache is built on — and once you have it, you don't even need the
+    <code>−∞</code> matrix at decode time, because the cache only ever holds
+    the past.
+  </div>
+
+  <h2>The cache outgrows the model</h2>
+
+  <p>
+    Now the arithmetic that decides your hardware bill. A Llama-2-7B-shaped
+    model: 32 layers, 32 heads, head_dim 128, fp16.
+  </p>
+
+<pre><code>  bytes = 2 * layers * kv_heads * head_dim * seq_len * dtype_bytes
+
+  weights (fp16, 6.74B params):  12.55 GiB
+  cache per token: 524,288 bytes = 512 KiB
+
+      seq_len |   batch 1 |  batch 32 | batch 32 vs weights
+        1,024 |   0.50 GiB |   16.0 GiB |    1.3x the weights
+        4,096 |   2.00 GiB |   64.0 GiB |    5.1x the weights
+       32,768 |  16.00 GiB |  512.0 GiB |   40.8x the weights
+      131,072 |  64.00 GiB | <span class="hl">2048.0 GiB</span> |  163.2x the weights
+</code></pre>
+
+  <p>
+    Half a megabyte per token. One 128k-token conversation is 64 GiB of cache
+    on its own — five times the weights, and it doesn't fit on an 80 GB card
+    alongside the model. Batch 32 at a mundane 4k context already outweighs the
+    checkpoint. When someone says a model "needs an A100", they're usually
+    quoting the weights, which is the small number.
+  </p>
+
+  <h2>MQA and GQA: shrink one term</h2>
+
+  <p>
+    Look at the formula again. <code>layers</code> and <code>head_dim</code>
+    are the model. <code>seq_len</code> and <code>batch</code> are your users.
+    That leaves <code>kv_heads</code>, and that is exactly where the papers
+    went.
+  </p>
+
+  <p>
+    <a href="https://arxiv.org/abs/1911.02150">Multi-Query Attention</a>
+    (Shazeer, 2019): keep all 32 query heads, but give them <em>one</em> shared
+    key/value head. <a href="https://arxiv.org/abs/2305.13245">Grouped-Query
+    Attention</a> (Ainslie et al., 2023) is the middle ground: 8 KV heads, four
+    query heads sharing each. Q is never touched, in either — because Q is
+    never stored.
+  </p>
+
+<pre><code>      variant           kv_heads |  4k, b32 | 32k, b32 | reduction
+      multi-head (2017)       32 |   64.0GiB |  512.0GiB |      1x
+      GQA, 8 groups            8 |   16.0GiB |  128.0GiB |      4x
+      MQA, 1 kv head           1 |    2.0GiB |   16.0GiB |     32x
+
+  same table as bytes per token, batch 1:
+      multi-head   524,288 bytes/token
+      GQA-8        131,072 bytes/token
+      MQA           <span class="ok">16,384 bytes/token ✓</span>
+</code></pre>
+
+  <p>
+    The reduction is exactly <code>n_heads / n_kv_heads</code>. No subtlety.
+    MQA takes 32× off and the GQA paper's ablations show it losing quality;
+    GQA-8 takes 4× off and lands close to multi-head. That is why
+    <a href="../llama/">Llama-2 70B</a> uses GQA-8, and why almost every model
+    released since has too. It's a memory decision that happens to be
+    architectural.
+  </p>
+
+  <h2>Prefill is compute-bound, decode is memory-bound</h2>
+
+  <p>
+    Take a 512-token prompt. Process it in one batched pass, or as 512
+    sequential decode steps. Same total arithmetic — and completely different
+    machines.
+  </p>
+
+<pre><code>  Llama-2-7B-shaped, 512-token prompt (approximate, attn + FFN):
+    prefill, one batched pass : 3,332,961,730,560 MACs, weights read 1x
+    512 sequential decode steps: 3,332,961,730,560 MACs, weights read <span class="hl">512x</span>
+    one decode step           :    6,576,668,672 MACs
+
+  arithmetic intensity (MACs per byte moved off memory):
+    prefill : <span class="ok">   242.5 MACs/byte ✓</span>
+    decode  :      0.48 MACs/byte
+</code></pre>
+
+  <p>
+    A modern accelerator needs somewhere around 100–300 MACs per byte of memory
+    traffic to keep its arithmetic units busy. Prefill clears that. Decode
+    misses it by more than two orders of magnitude: each step drags all 12.55
+    GiB of weights across the memory bus to do six billion MACs, which the chip
+    finishes while it's still waiting.
+  </p>
+
+  <p>
+    Two consequences you will be asked about. <strong>Batching helps
+    throughput, not latency</strong> — the weights are in flight anyway, so 32
+    concurrent requests ride along for nearly free, and each user's token still
+    arrives at the same time. And <strong>buying more FLOPs doesn't speed up
+    decode</strong>; memory bandwidth and cache size do. Every trick in serving
+    — continuous batching, speculative decoding, quantisation, GQA — is aimed
+    at that one imbalance.
+  </p>
+
+  <h2>Where PagedAttention comes in</h2>
+
+  <p>
+    One more problem the formula hides. You don't know how long a reply will
+    be, so the naive implementation reserves a contiguous slab for the maximum
+    length, per request. Most of it is never used, and what's left is
+    fragmented — you have the free bytes, just not in one piece.
+  </p>
+
+  <p>
+    <a href="https://arxiv.org/abs/2309.06180">PagedAttention</a> (Kwon et al.,
+    2023, the paper behind vLLM) does the obvious thing once you name it: treat
+    the cache like virtual memory. Fixed-size pages, a block table per
+    sequence, allocate on demand, and share pages between sequences with a
+    common prefix. Nothing about attention changes; the storage layout does.
+    That's what made high-throughput serving practical, and it is the reason
+    "KV cache" is a phrase you now hear in ops meetings.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no training — a two-layer decoder with random weights,
+  because the point is compute and memory, not learning. Runs in about a
+  quarter of a second.
+</p>
+<p>
+  <a href="kv_cache_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 481 lines plus 7 runnable demos. Then:
+</p>
+<pre><code>python3 kv_cache_from_scratch.py</code></pre>
+
+<pre><code>def forward_full(model, cfg, ids, use_mask=True):
+    """Run the whole prefix through every layer. Returns (n, vocab) logits."""
+    n = len(ids)
+    x = model["emb"][ids] + model["pos"][:n]
+    mask = np.tril(np.ones((n, n), dtype=bool)) if use_mask else None
+    for L in model["layers"]:
+        h = layernorm(x)
+        Q = split_heads(h @ L["Wq"], cfg)      # recomputed every step
+        K = split_heads(h @ L["Wk"], cfg)      # recomputed every step -- waste
+        V = split_heads(h @ L["Wv"], cfg)      # recomputed every step -- waste
+        scores = Q @ K.transpose(0, 2, 1) / np.sqrt(cfg.head_dim)
+        if mask is not None:
+            scores = np.where(mask, scores, -np.inf)
+        x = x + merge_heads(softmax(scores) @ V) @ L["Wo"]
+        h = layernorm(x)
+        x = x + np.maximum(h @ L["W1"], 0) @ L["W2"]
+    return layernorm(x) @ model["head"]
+
+
+def new_cache(cfg):
+    """Per layer: K and V, each (n_heads, seq_so_far, head_dim). Never Q."""
+    return [{"K": np.zeros((cfg.n_heads, 0, cfg.head_dim)),
+             "V": np.zeros((cfg.n_heads, 0, cfg.head_dim))}
+            for _ in range(cfg.n_layers)]
+
+
+def decode_step_cached(model, cfg, token_id, pos, cache, append=True):
+    """One token in, one row of logits out. `pos` indexes the position table."""
+    if pos &gt;= cfg.max_ctx:
+        raise IndexError(f"position {pos} past context window {cfg.max_ctx}")
+    x = model["emb"][[token_id]] + model["pos"][[pos]]     # (1, d_model)
+    for L, c in zip(model["layers"], cache):
+        h = layernorm(x)
+        q = split_heads(h @ L["Wq"], cfg)      # (H, 1, hd) -- NOT cached
+        k = split_heads(h @ L["Wk"], cfg)      # (H, 1, hd) -- appended
+        v = split_heads(h @ L["Wv"], cfg)      # (H, 1, hd) -- appended
+        if append:
+            c["K"] = np.concatenate([c["K"], k], axis=1)
+            c["V"] = np.concatenate([c["V"], v], axis=1)
+        # No mask needed: the cache only ever holds the past. The mask has
+        # become a data-structure invariant instead of a matrix of -inf.
+        scores = q @ c["K"].transpose(0, 2, 1) / np.sqrt(cfg.head_dim)
+        x = x + merge_heads(softmax(scores) @ c["V"]) @ L["Wo"]
+        h = layernorm(x)
+        x = x + np.maximum(h @ L["W1"], 0) @ L["W2"]
+    return (layernorm(x) @ model["head"])[0]               # (vocab,)
+
+
+def macs_per_token(cfg, n_ctx):
+    d, ff = cfg.d_model, cfg.d_ff
+    return cfg.n_layers * (4 * d * d + 2 * d * n_ctx + 2 * d * ff)
+
+
+def macs_cached_step(cfg, n_cached):
+    """One new token attending over n_cached keys. Flat in the projections."""
+    return macs_per_token(cfg, n_cached)
+
+
+def macs_naive_step(cfg, n_ctx):
+    """Recompute all n_ctx tokens from scratch. Linear in n_ctx, per step."""
+    return n_ctx * macs_per_token(cfg, n_ctx)
+
+
+def kv_cache_bytes(layers, kv_heads, head_dim, seq_len, dtype_bytes=2,
+                   batch=1):
+    return 2 * layers * kv_heads * head_dim * seq_len * dtype_bytes * batch</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — and every row below is a bug that has shipped to production
+  somewhere, in a real serving stack, written by someone competent.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Pass <code>use_mask=False</code> to <code>forward_full</code> in demo 3</td>
+      <td>Earlier attention rows shift by 4.631e−02, cached logits drift 0.4017, and the argmax flips from token 44 to 16. The cache was never valid without the mask.</td>
+    </tr>
+    <tr>
+      <td>Run <code>generate_cached(..., append=False)</code> — skip <code>c["K"] = np.concatenate(...)</code></td>
+      <td>The model attends only to the prompt and freezes: it generates token 16 eight times, 1 distinct token instead of 2. It never sees what it just wrote.</td>
+    </tr>
+    <tr>
+      <td>Also cache <code>q</code> and reuse it next step</td>
+      <td>Nothing to reuse — <code>||q||</code> is 5.414, 5.678, 5.368, 6.161, a new value every step, read exactly once. K and V get read again at every future step; Q does not. That asymmetry is the whole reason the cache holds two tensors, not three.</td>
+    </tr>
+    <tr>
+      <td>Generate past <code>cfg.max_ctx</code> with no eviction</td>
+      <td><code>IndexError: position 128 past context window 128</code>. In a real stack with a wrapping position table you get no error at all — just positions silently colliding and output turning to mush.</td>
+    </tr>
+    <tr>
+      <td>Hand sequence B's warm cache to sequence A: <code>generate_cached(..., cache=warm)</code></td>
+      <td>Prompt <code>[3, 17, 42, 8]</code> generates <code>[44, 44, 44, 16, 16, 44, 44, 23]</code> instead of <code>[16, 16, 16, 16, 44, 44, 16, 16]</code> — it is attending to the other user's tokens. This is the classic serving bug, and it leaks context between requests.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers — but narrowly. In the transformer
+  paper, only the masked-attention part of the model section; that mask is the
+  entire licence for everything above. In the GQA paper, the method section and
+  the ablation table comparing MHA, GQA and MQA. In the vLLM paper, the section
+  on the block table and memory sharing. Skip every throughput benchmark: the
+  hardware has moved, the idea hasn't.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is almost no maths here, and that's the point. You need matrix shapes,
+  and you need to notice that softmax normalises over a row — which is the one
+  fact that makes the <code>−∞</code> columns contribute nothing. That's the
+  entire proof of correctness for the KV cache.
+</p>
+<p>
+  Everything else on this page is <em>counting</em>. Multiply-accumulates per
+  token. Bytes per token. Bytes per byte moved. It's the same arithmetic you
+  already do when you size a Redis instance or work out whether a query fits in
+  the page cache — and it is genuinely more useful, day to day, than being able
+  to derive backprop.
+</p>
+<p>
+  What this page skips: the actual attention kernel. I compute the full
+  <code>(1, n)</code> score row in NumPy and materialise it. Real
+  implementations use FlashAttention-style tiling so the scores never hit
+  memory at all, which is a separate and orthogonal optimisation — that one is
+  about the <em>working set</em>, this one is about the <em>history</em>. I
+  also skip quantised caches, sliding-window and streaming attention, and
+  cross-attention caches in encoder-decoder models.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the mask as a purity proof, plus the arithmetic
+  that follows. These three go where I stopped.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1706.03762">
+      <span class="paper-title">Attention Is All You Need</span>
+      <span class="paper-meta">Vaswani et al., 2017. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      The paper never mentions a KV cache — it's about training, where you see
+      the whole sequence at once. Read the masked-attention paragraphs in the
+      model section anyway, because that mask is the only reason inference is
+      cheap. Everything on this page is a consequence the authors didn't need
+      to state.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://blog.vllm.ai/2023/06/20/vllm.html">
+      <span class="paper-title">vLLM: easy, fast and cheap LLM serving with PagedAttention</span>
+      <span class="paper-meta">Kwon et al. The authors' own blog post. Diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      The fragmentation problem I described in one paragraph, drawn properly:
+      the block table, pages shared between sequences with a common prefix, and
+      the memory waste it removes. Read this before the arXiv version — it's
+      the same idea with pictures.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2023-01-10-inference-optimization/">
+      <span class="paper-title">Large Transformer Model Inference Optimization</span>
+      <span class="paper-meta">Lilian Weng. Survey, with the maths.</span>
+    </a>
+    <p class="paper-pitch">
+      The map of everything I called "orthogonal": quantisation, pruning,
+      sparsity, distillation, MQA, FlashAttention. Go here when you want to
+      know which lever to pull next, and why decode being memory-bound is what
+      makes each of them worth pulling.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jax-ml.github.io/scaling-book/inference/">
+      <span class="paper-title">How to Scale Your Model: inference</span>
+      <span class="paper-meta">Google DeepMind. Roofline arithmetic, worked.</span>
+    </a>
+    <p class="paper-pitch">
+      My arithmetic-intensity numbers, done properly and on real accelerators —
+      where the compute-bound/memory-bound crossover actually sits, and how
+      that decides your batch size and your sharding. This is the rigorous
+      version of my last section.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> this page → the vLLM blog post (the
+  memory problem made visual) → the scaling book's inference chapter (the
+  arithmetic, done right) → Weng's survey as a reference you come back to. And
+  read <a href="../attention/">attention</a> first if the mask isn't yet
+  obvious to you, then <a href="../gpt/">GPT</a> for the generation loop this
+  page is optimising.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

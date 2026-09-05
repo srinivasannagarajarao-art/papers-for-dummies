@@ -7,7 +7,7 @@
 <meta name="description" content="The LLaMA paper explained as a diff against the 2017 transformer: four config changes and seven times the data. Runnable NumPy, six demos with printed numbers you can break.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -35,6 +35,14 @@
       — everything below runs from it. NumPy only.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
 
   <p>
     I'm an AI Engineer. I've served LLaMA-family models in production, quantised
@@ -303,6 +311,611 @@ tokens per parameter:
     and 65B, public data only; 65B took 21 days on 2048 A100s.
   </div>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. LLaMA-family models-ஐ production-ல் serve
+    செய்திருக்கிறேன், quantise செய்திருக்கிறேன், load balancer-க்குப் பின்னால்
+    வைத்திருக்கிறேன் — இருந்தும் ஒன்றுக்கு <em>உள்ளே</em> என்ன இருக்கிறது
+    என்று சொல்ல முடியாது. புதிதாக ஒரு mechanism இருக்கும் என்று நினைத்தேன்.
+    இல்லை. LLaMA என்பது 2017-ஆம் ஆண்டு transformer-தான் — நான்கு config
+    மாற்றங்கள், மற்றும் நிறைய data. Interview கேள்வி ஒருபோதும் "LLaMA எப்படி
+    வேலை செய்கிறது" அல்ல — "original transformer-லிருந்து என்ன வேறுபாடு, ஏன்"
+    என்பதுதான். இது அந்த விடை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (RMSNorm, LayerNorm,
+    SwiGLU, RoPE, pre-norm, post-norm, residual stream, token…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>LLaMA என்பது 2017 transformer-க்கு எதிரான ஒரு pull request</h2>
+
+  <p>
+    Diff எப்படி இருக்கும் என்று உங்களுக்குத் தெரியும். முழு architecture-ம்
+    ஒரே diff-ஆக, decoder-only transformer-க்கு எதிராக — அதாவது
+    <a href="../gpt/">GPT வடிவம்</a>, causal mask எல்லாம் சேர்த்து:
+  </p>
+
+<pre><code>-norm:        layernorm, after the residual add
++norm:        rmsnorm, before each sublayer
+-activation:  relu, hidden = 4d
++activation:  swiglu, hidden = 2/3 * 4d rounded up to a multiple of 256
+-position:    sinusoid, added to the embeddings once at the bottom
++position:    rope, rotate Q and K inside every attention layer
+-bias:        true
++bias:        false
+ tokens:      1T to 1.4T, public data only     # hunk அல்ல. உண்மையான மாற்றம்.</code></pre>
+
+  <p>
+    நான்கு hunks. Attention-ஐ யாரும் தொடவில்லை — அது
+    <a href="../attention/">attention பக்கத்தில்</a> உள்ள அதே lookup-தான்.
+    மூன்று hunks கட்டுரையின் architecture பகுதியில் பெயரிடப்பட்டுள்ளன;
+    நான்காவது (bias இல்லை) வெளியிடப்பட்ட code-ல் மட்டுமே இருக்கிறது. Hunk
+    அல்லாத அந்த ஒரு வரிதான் உண்மையில் முக்கியமானது.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>RMSNorm</strong></td><td>ஒவ்வொரு token-ன் vector-ஐ அதன் root-mean-square 1 ஆகும்படி அளவிடு. Mean கழிப்பது இல்லை.</td><td>String compare-க்கு முன் lower-case ஆக்குவது. சுத்தம், logic அல்ல.</td></tr>
+      <tr><td><strong>Pre-norm</strong></td><td>Norm branch-ல் இருக்கிறது, trunk-ல் அல்ல: <code>x + f(norm(x))</code></td><td>Request-ன் normalise செய்யப்பட்ட நகலைப் படிக்கும் middleware — request-ஐ ஒருபோதும் திருத்தாது.</td></tr>
+      <tr><td><strong>SwiGLU</strong></td><td>பெருக்கல் gate கொண்ட FFN: ஒரு branch மற்றொன்றை அளவிடுகிறது.</td><td>Bool அல்ல, float ஆக இருக்கும் feature flag.</td></tr>
+      <tr><td><strong>RoPE</strong></td><td>Dot product-க்கு முன் Q மற்றும் K-ஐ அவற்றின் position-ஐப் பொறுத்துச் சுழற்று.</td><td>Timestamp-ஐ hash-க்குள் மடித்து வைப்பது — சம offset-கள் சமமாகப் பொருந்தும்.</td></tr>
+      <tr><td><strong>1T tokens</strong></td><td>Compute-optimal புள்ளியைத் தாண்டி 7× பயிற்சி.</td><td>Precompute. Build நேரத்தில் செலவழி, ஒவ்வொரு request-ம் மலிவாகும்.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="thanglish">
+    LLaMA-la puthu mechanism ondrum illa. 2017 transformer mela naalu config
+    maatram: RMSNorm, pre-norm, SwiGLU, RoPE — plus 7 madangu data.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">h = x + Attn(RMSNorm(x))<br>y = h + W<sub>down</sub>(SiLU(W<sub>gate</sub> RMSNorm(h)) ⊙ W<sub>up</sub> RMSNorm(h))</div>
+
+  <p>ஒரு block. 7B-க்கு 32, 65B-க்கு 80 அடுக்குங்கள். Pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>RMSNorm(x)</code></td><td>(n, d)</td><td>ஒவ்வொரு token-ஐயும் ஒரே அளவுக்குக் கொண்டு வருகிறது. Trunk-ஐப் படிக்கிறது, எழுதுவதில்லை.</td></tr>
+      <tr><td><code>Attn(·)</code></td><td>(n, d)</td><td><a href="../attention/">Attention</a>-லிருந்து வரும் அதே lookup; உள்ளே Q, K-க்கு RoPE பயன்படுத்தப்படுகிறது</td></tr>
+      <tr><td><code>x + …</code></td><td>(n, d)</td><td><strong>Skip link.</strong> கூட்டுகிறது. ஒருபோதும் மறுஅளவீடு செய்வதில்லை. இதுதான் pre-norm hunk.</td></tr>
+      <tr><td><code>W<sub>gate</sub>z, W<sub>up</sub>z</code></td><td>(n, h), h = 11008</td><td>ஒரே normalise செய்யப்பட்ட input-லிருந்து இரண்டு branches</td></tr>
+      <tr><td><code>SiLU(·) ⊙ ·</code></td><td>(n, h)</td><td><strong>Gate.</strong> ஒரு branch மற்றொன்றை elementwise ஆக அளவிடுகிறது</td></tr>
+      <tr><td><code>W<sub>down</sub></code></td><td>(n, d)</td><td>Trunk அகலத்துக்குத் திரும்பி, trunk-உடன் கூட்டப்படுகிறது. உள்ளே வரும் shape-ம் வெளியே வரும் shape-ம் ஒன்றே, எனவே அடுக்கலாம்</td></tr>
+      <tr><td>block 32-க்குப் பிறகு</td><td>(n, 32000)</td><td>இறுதியாக ஒரு RMSNorm, பிறகு output head. எங்கும் bias இல்லை</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>RMSNorm: LayerNorm, mean இல்லாமல்</h2>
+  <p>
+    LayerNorm mean-ஐக் கழிக்கிறது, standard deviation-ஆல் வகுக்கிறது, பிறகு
+    கற்றுக்கொள்ளப்பட்ட scale γ மற்றும் shift β. RMSNorm
+    (<a href="https://arxiv.org/abs/1910.07467">Zhang and Sennrich, 2019</a>)
+    mean-ஐயும் shift-ஐயும் தவிர்க்கிறது: root-mean-square-ஆல் வகு, γ-ஆல்
+    பெருக்கு. வேலை ஒன்றுதான் — matmul-ஐ அடையும் முன் ஒவ்வொரு token-ஐயும் ஒரே
+    அளவுக்குக் கொண்டு வருவது — ஆனால் vector மீது குறைவான passes, மேலும்
+    அவர்களால் அளக்க முடிந்த அளவுக்கு எந்தத் தரக் குறைவும் இல்லை.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>x           = [1. 2. 3. 4.]   mean 2.5000
+layer_norm  = [-1.3416 -0.4472  0.4472  1.3416]   mean 0.0000
+rms_norm    = [0.3651 0.7303 1.0954 1.4606]   mean 0.9129
+same numbers? <span class="hl">False</span>   ← mean இன்னும் உள்ளே இருக்கிறது
+
+x centred   = [-1.5 -0.5  0.5  1.5]   mean 0.0000
+layer_norm  = [-1.3416 -0.4472  0.4472  1.3416]
+rms_norm    = [-1.3416 -0.4472  0.4472  1.3416]
+same numbers? <span class="ok">True</span>    ← centre செய்தால் ஒரே மாதிரி</code></pre>
+
+  <p>
+    Centre செய்யப்பட்ட vector-ல் இரண்டும் ஒரே function; உண்மையான activations
+    centre செய்யப்பட்டவை அல்ல, எனவே outputs சரியாக mean அளவுக்கு வேறுபடுகின்றன.
+    நீங்கள் பெறுவது என்ன — என் implementation-லிருந்து எண்ணியது, vector மீது
+    ஏழு passes-க்குப் பதிலாக நான்கு:
+  </p>
+
+<pre><code>elementwise ops per token per norm at d=4096:
+  layer_norm 28,672   rms_norm 16,384   saved 12,288
+  x 2 norms per layer x 32 layers = 786,432 ops saved per token
+
+rms_norm(zeros, eps=0)    = [<span class="hl">nan nan nan nan</span>]
+rms_norm(zeros, eps=1e-5) = [0. 0. 0. 0.] <span class="ok">✓</span></code></pre>
+
+  <p>
+    4096 × 11008 matmul-உடன் ஒப்பிட்டால் இது ஒன்றுமில்லை, ஆனால் இது ஒவ்வொரு
+    token-க்கும், ஒவ்வொரு layer-க்கும், இலவசமாகக் கிடைக்கிறது. மேலும்
+    <code>eps</code> அலங்காரம் அல்ல: 0/0 என்பது NaN, மேலும் residual stream-ல்
+    ஒரு NaN இருந்தால் அதற்கு மேலுள்ள ஒவ்வொரு layer-ஐயும் நச்சாக்கிவிடும்.
+  </p>
+
+  <h2>Pre-norm: norm branch-ல் போகிறது, trunk-ல் அல்ல</h2>
+  <p>
+    2017: <code>x = norm(x + f(x))</code>. Norm trunk-ல் அமர்ந்திருக்கிறது;
+    அடுத்த block பார்ப்பதற்கு முன் ஒவ்வொரு block-ன் output-ம் மீண்டும்
+    normalise செய்யப்படுகிறது. LLaMA: <code>x = x + f(norm(x))</code>. Norm
+    branch-ல் அமர்ந்திருக்கிறது; trunk என்பது embedding-லிருந்து output வரை
+    ஒரு நேரடிக் கம்பி, ஒவ்வொரு block-ம் அதனுடன் <em>கூட்டுவது</em> மட்டுமே
+    செய்கிறது. Pre-norm "activations-ஐ வரம்புக்குள் வைத்திருக்கிறது" என்று
+    நீங்கள் படிப்பீர்கள். Demo 3-ஐ ஓட்டுங்கள். அது வைப்பதில்லை — post-norm-தான்
+    வைக்கிறது. Pre-norm வரம்புக்குள் வைப்பது வேறொன்று:
+  </p>
+
+<pre><code>d=64, sqrt(d)=8.0. residual-stream norm per token:
+                     layer 1   layer 5   layer 10  layer 20   bump at 0 -&gt; out
+  pre-norm  (LLaMA)      10.8      18.9      27.7      40.7   x <span class="ok">1.77</span>
+  post-norm (2017)          8         8         8         8   x 9.71
+  no norm at all           12  6.23e+05       <span class="hl">inf</span>       nan   x nan</code></pre>
+
+  <p>
+    Post-norm trunk-ஐ சரியாக √d = 8-ல் பிடித்து வைக்கிறது. Pre-norm அது
+    வளர அனுமதிக்கிறது, யாரும் கவலைப்படுவதில்லை, ஏனெனில் எந்த sublayer-ம்
+    <code>x</code>-ஐப் படிப்பதில்லை, <code>rms_norm(x)</code>-ஐ மட்டுமே
+    படிக்கிறது. Norm-ஐ நீக்கினால் trunk layer 10-க்கு முன்பே overflow ஆகிறது —
+    அதனால்தான் அங்கே ஒரு norm இருக்கிறது.
+  </p>
+  <p>
+    கடைசி column-தான் முக்கியமானது. அது ஒரு finite-difference gradient:
+    input-ஐ ஒரு சிறிய δ அளவு அசைத்து, output எவ்வளவு நகர்கிறது என்று அளந்து,
+    வகுக்கவும் — கையால் எழுதிய backward pass-ஐ unit-test செய்யப் பயன்படுத்தும்
+    அதே தந்திரம். Layer 0-ல் நடக்கும் ஒரு மாற்றம் மேல் முனையால் எவ்வளவு
+    பெருக்கப்படுகிறது என்பதை இது காட்டுகிறது; அதுவே மேல் முனையில் உள்ள ஒரு
+    gradient layer 0-க்கு இறங்கும் வழியில் எவ்வளவு பெருக்கப்படுகிறது என்பதும்
+    ஆகும். இப்போது ஆழமாகப் போகலாம்:
+  </p>
+
+<pre><code>same bump at layer 0, deeper and deeper stacks:
+                      5 deep   10 deep   20 deep   32 deep
+  pre-norm  (LLaMA)  x   1.47  x   1.58  x   1.77  x   <span class="ok">1.68</span>
+  post-norm (2017)   x   1.69  x   2.74  x   9.71  x   <span class="hl">40.6</span>   ← கூட்டுப்பெருக்கம்</code></pre>
+
+  <div class="note">
+    <strong>Post-norm ஒவ்வொரு layer-ன் காரணிகளையும் stack-ல் கீழிறங்கப்
+    பெருக்குகிறது; pre-norm அவற்றைக் கூட்டுகிறது.</strong> ஆழத்துடன் வளரும்
+    gradient விகிதம் என்றால், அந்தப் பயிற்சி ஓட்டத்துக்கு warmup, சிறிய
+    learning rate, மற்றும் அதிர்ஷ்டம் தேவை. அதுதான் stability வாதம், GPT-2
+    முதல் PaLM மற்றும் LLaMA வரை எல்லாம் pre-norm ஆக இருப்பதற்கான காரணமும்
+    அதுதான். <a href="https://arxiv.org/abs/2002.04745">Xiong et al., 2020</a>
+    நிரூபணத்தைத் தருகிறது;
+    <a href="https://arxiv.org/abs/2004.08249">Liu et al., 2020</a> இதை
+    amplification effect என்று அழைக்கிறது. சரியான விகிதங்கள் init scale-ஐப்
+    பொறுத்தவை; ஆனால் கூட்டுப்பெருக்கம் மாறாது.
+  </div>
+
+  <p class="thanglish">
+    Pre-norm activations-ai bound panradhu illa — post-norm dhaan. Pre-norm
+    bound panradhu gradient ratio: post-norm depth-oda perukkidhu, pre-norm koottudhu.
+  </p>
+
+  <h2>SwiGLU: FFN-ல் ஒரு gate, குறுகிய hidden layer-ஆல் விலை கொடுக்கப்படுகிறது</h2>
+  <p>
+    2017-ன் FFN என்பது <code>relu(x @ W1) @ W2</code>, hidden அகலம் 4d. SwiGLU
+    (<a href="https://arxiv.org/abs/2002.05202">Shazeer, 2020</a>) அதை
+    <code>(silu(x @ W_gate) * (x @ W_up)) @ W_down</code> ஆக மாற்றுகிறது.
+    இரண்டு branches ஒரே input-ஐப் பார்க்கின்றன; ஒன்று SiLU வழியாக அழுத்தப்பட்டு
+    மற்றொன்றை elementwise ஆகப் பெருக்குகிறது. ஒரு gate. இரண்டுக்குப் பதிலாக
+    மூன்று matrices, எனவே parameter எண்ணிக்கையை ஒரே அளவில் வைக்க hidden அகலம்
+    மூன்றில் இரண்டாகக் குறைக்கப்பட்டு, பிறகு 256-ன் மடங்காக மேல்நோக்கி
+    வட்டமிடப்படுகிறது — GPU-க்கள் அதை விரும்புகின்றன. அதனால்தான் 11008, 10923 அல்ல.
+  </p>
+
+<pre><code>d = 4096
+  vanilla ReLU FFN:  hidden = 4d   = 16384   params = 2*d*h = 134,217,728
+  LLaMA SwiGLU FFN:  hidden = 2/3*4d = 11008   params = 3*d*h = 135,266,304
+  ratio SwiGLU / ReLU = <span class="ok">1.008</span>
+
+BREAK: SwiGLU with hidden = 4d = 16384:   params = 201,326,592   (<span class="hl">+50.0%</span>)</code></pre>
+
+  <p>
+    1%-க்குள். அதுதான் கட்டுரையின் கருத்து: ஒப்பீடு parameter-matched, எனவே
+    எந்த benchmark ஆதாயமும் gate-லிருந்து வருகிறது, கூடுதல் capacity-லிருந்து
+    அல்ல. Hidden-ஐ 4d-ல் விட்டுவிட்டால் FFN-ஐ பாதி அளவு வளர்த்திருப்பீர்கள்,
+    எதையும் நிரூபிக்காமல். Demo 2 ஒரு சிறிய forward pass-ஐயும் ஓட்டுகிறது:
+    ReLU hidden units-ல் 49.0%-ஐ முற்றிலும் அணைக்கிறது, SwiGLU 0.0% — ஒரு
+    switch-க்கும் ஒரு dimmer-க்கும் உள்ள வேறுபாடு. Dimmer ஏன் உதவுகிறது?
+    யாருக்கும் தெரியாது. Shazeer-ன் கட்டுரையே சொல்கிறது: "we attribute their
+    success, as all else, to divine benevolence". ஏதோ ஒரு derivation இருக்கிறது
+    என்று interviewer சொன்னால் நம்ப வேண்டாம்.
+  </p>
+
+  <h2>RoPE: Q மற்றும் K-ஐச் சுழற்று, V-ஐ விட்டுவிடு</h2>
+  <p>
+    2017 ஒரு position vector-ஐ embeddings-உடன் ஒரே ஒரு முறை, கீழே சேர்த்தது.
+    LLaMA அங்கே எதையும் சேர்ப்பதில்லை. ஒவ்வொரு attention layer-க்கு உள்ளேயும்
+    ஒவ்வொரு query மற்றும் key-ஐ அதன் position-க்கு விகிதாசாரமான கோணத்தில்
+    சுழற்றுகிறது (<a href="https://arxiv.org/abs/2104.09864">Su et al.,
+    2021</a>). இரண்டையும் ஒரே விதிப்படிச் சுழற்றினால், dot product இடைவெளியை
+    மட்டுமே சார்ந்திருக்கும்:
+  </p>
+
+<pre><code>q at 3 . k at 1  (offset 2) = 1.7986
+q at 7 . k at 5  (offset 2) = <span class="ok">1.7986</span>   ← same offset, same score
+q at 3 . k at 0  (offset 3) = 1.7523   ← different offset
+
+where it is applied, straight from attn_sublayer's source:
+  return attention(rope(Q, pos), rope(K, pos), V) @ p["Wo"]  # rope: Q, K. Not V</code></pre>
+
+  <p>
+    இது Q மற்றும் K மீது போகிறது, ஏனெனில் dot செய்யப்படுவது அந்த இரண்டுதான். V
+    என்பது ஒரு பொருத்தம் கிடைத்தபிறகு ஒப்படைக்கப்படும் உள்ளடக்கம்; அதைச்
+    சுழற்றினால் உள்ளடக்கம் token எங்கே உட்கார்ந்திருக்கிறது என்பதைச்
+    சார்ந்திருக்கும். Pairs, frequencies, ஏன் இது extrapolate செய்கிறது:
+    <a href="../rope/">RoPE பக்கம்</a>. இங்கே முக்கியம் <em>இது எங்கே
+    அழைக்கப்படுகிறது</em> என்பதுதான்.
+  </p>
+
+  <h2>6.7B parameters, 1T tokens: கணக்கு</h2>
+  <p>
+    ஒவ்வொரு LLaMA-1 அளவும், கட்டுரையின் Table 2-லிருந்து வரும் நான்கு
+    எண்களைக் கொண்ட ஒரே சூத்திரம். Attention என்பது 4d² (நான்கு d × d
+    matrices — இன்னும் GQA இல்லை, அது LLaMA 2-ல் 70B-ல் வருகிறது), FFN 3dh,
+    ஒரு layer-க்கு இரண்டு norms, ஒரு embedding table, tie செய்யப்படாத ஒரு
+    output head:
+  </p>
+
+<pre><code>size    dim  layers     ffn      count_params   paper
+  7B   4096      32   11008     6,738,415,616    6.7B <span class="ok">✓</span>
+ 13B   5120      40   13824    13,015,864,320   13.0B
+ 33B   6656      60   17920    32,528,943,616   32.5B
+ 65B   8192      80   22016    65,285,660,672   65.2B
+
+BREAK: put every bias term back (bias=True):
+  6,740,037,632 vs 6,738,415,616: +1,622,016 = <span class="hl">+0.024%</span></code></pre>
+
+  <p>
+    கட்டுரையின் ஒவ்வொரு வரிசையுடனும் வட்டமிடலுக்குள் பொருந்துகிறது. FFN
+    என்பது attention-ஐ விட <em>இரண்டு மடங்கு</em> — அதனால்தான்
+    <a href="../moe/">mixture-of-experts</a> FFN-க்குப் பிறகு வருகிறது.
+    Bias-களை நீக்கியது ஒரு எளிமைத் தேர்வு, சேமிப்புக்காக அல்ல: 0.024%.
+    கட்டுரை அதைக் குறிப்பிடவே இல்லை. இப்போது tokens. Chinchilla
+    (<a href="https://arxiv.org/abs/2203.15556">Hoffmann et al., 2022</a>)
+    ஒரு கேள்விக்கு விடை சொன்னது: நிர்ணயிக்கப்பட்ட ஒரு பயிற்சி budget-க்கு,
+    எந்த model அளவும் எத்தனை tokens-ம் loss-ஐக் குறைக்கும்? ஒரு parameter-க்கு
+    சுமார் 20 tokens, எனவே ஒரு 7B model 135B tokens-ஐப் பார்க்க "வேண்டும்".
+    LLaMA-7B ஒரு trillion பார்த்தது.
+  </p>
+
+<pre><code>LLaMA-7B parameters                 6.74e+09
+Chinchilla-optimal tokens, 20/param 1.35e+11  (135B)
+LLaMA-7B actually trained on        1e+12  (1T)   <span class="hl">7.4x more</span>
+
+inference compute ~ 2 * N per token:
+  LLaMA-7B     1.35e+10 FLOPs/token
+  GPT-3 175B   3.5e+11 FLOPs/token   26x more
+
+tokens per parameter:
+  GPT-3 175B 300B / 175.0B =   1.7
+  LLaMA-7B   1.0T /  6.7B = <span class="ok">148.4</span>
+  LLaMA-13B  1.0T / 13.0B =  76.8</code></pre>
+
+  <p>
+    இந்த வாதம் நீங்கள் ஏற்கனவே மனதுக்குள் ஓட்டும் ஒரு cost model-தான். பயிற்சி
+    ஒரு முறை மட்டும் செலுத்தப்படுகிறது. Inference ஒவ்வொரு token-க்கும்,
+    எப்போதும், செலுத்தப்படுகிறது, மேலும் அது parameter எண்ணிக்கையுடன்
+    வளர்கிறது: 7B ஒரு token-க்கு 175B-ஐ விட 26× குறைவாகச் செலவாகிறது. நூறு
+    கோடி requests-ஐ serve செய்யும்போது, ஒரு சிறிய model-ஐப் பயிற்றுவிக்க
+    அதிகம் செலவழிப்பதே, குறைவாகச் செலவழித்து ஒரு பெரிய model-ஐ serve
+    செய்வதை விட மேல். கட்டுரையின் பயிற்சி வளைவுகள் காட்டுகின்றன: ஒரு
+    trillion tokens-லும் 7B-ன் loss இன்னும் குறைந்து கொண்டேதான் இருக்கிறது —
+    135B-ல் இருந்ததை விட மெதுவாக, ஆனால் குறைகிறது. அதுதான், அந்த நான்கு
+    hunks அல்ல, கட்டுரையில் LLaMA-13B பெரும்பாலான benchmarks-ல் GPT-3 175B-ஐ
+    வென்றதற்குக் காரணம்: GPT-3 ஒரு parameter-க்கு 1.7 tokens பார்த்தது,
+    LLaMA-13B 77 பார்த்தது.
+  </p>
+
+  <div class="note">
+    <strong>"LLaMA ஏன் compute-optimal-ஐத் தாண்டிப் பயிற்சி செய்தது" என்று
+    கேட்கப்பட்டால்:</strong> Chinchilla பயிற்சிக் கட்டணத்தை optimise
+    செய்கிறது; LLaMA serving கட்டணத்தை optimise செய்கிறது. தலைப்பில் உள்ள
+    "efficient" என்பதன் அர்த்தம் அதுதான். 7B மற்றும் 13B-க்கு 1T tokens, 33B
+    மற்றும் 65B-க்கு 1.4T, public data மட்டுமே; 65B 2048 A100-களில் 21 நாட்கள்
+    எடுத்தது.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने LLaMA-family models को production में serve
+    किया है, उन्हें quantise किया है, load balancer के पीछे रखा है — फिर भी
+    मैं आपको यह नहीं बता पाता कि उनके <em>अंदर</em> क्या है। मैंने मान लिया था
+    कि कोई नया mechanism होगा। नहीं है। LLaMA वही 2017 वाला transformer है —
+    चार config बदलाव और कहीं ज़्यादा data। Interview का सवाल कभी "LLaMA कैसे
+    काम करता है" नहीं होता — होता है "original transformer से क्या अलग है, और
+    क्यों"। यह उसी का जवाब है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (RMSNorm, LayerNorm,
+    SwiGLU, RoPE, pre-norm, post-norm, residual stream, token…) मैंने वैसे ही
+    रखे हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>LLaMA 2017 वाले transformer के ख़िलाफ़ एक pull request है</h2>
+
+  <p>
+    Diff कैसा दिखता है, यह आप जानते हैं। पूरा architecture एक ही diff में,
+    decoder-only transformer के मुक़ाबले — यानी <a href="../gpt/">GPT वाली
+    शक्ल</a>, causal mask समेत:
+  </p>
+
+<pre><code>-norm:        layernorm, after the residual add
++norm:        rmsnorm, before each sublayer
+-activation:  relu, hidden = 4d
++activation:  swiglu, hidden = 2/3 * 4d rounded up to a multiple of 256
+-position:    sinusoid, added to the embeddings once at the bottom
++position:    rope, rotate Q and K inside every attention layer
+-bias:        true
++bias:        false
+ tokens:      1T to 1.4T, public data only     # hunk नहीं. असली बदलाव यही.</code></pre>
+
+  <p>
+    चार hunks. Attention को छुआ तक नहीं गया — वह वही lookup है जो
+    <a href="../attention/">attention वाले पन्ने</a> पर है। तीन hunks paper के
+    architecture वाले हिस्से में नाम से बताए गए हैं; चौथा (कोई bias नहीं)
+    सिर्फ़ release किए गए code में है। और जो line hunk है ही नहीं, असल में वही
+    सबसे ज़्यादा मायने रखती है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer वाली मिसाल</th></tr></thead>
+    <tbody>
+      <tr><td><strong>RMSNorm</strong></td><td>हर token के vector को इतना rescale करो कि उसका root-mean-square 1 हो जाए। Mean घटाना नहीं।</td><td>String compare से पहले lower-case करना। सफ़ाई है, logic नहीं।</td></tr>
+      <tr><td><strong>Pre-norm</strong></td><td>Norm branch पर बैठता है, trunk पर नहीं: <code>x + f(norm(x))</code></td><td>ऐसा middleware जो request की normalise की हुई नक़ल पढ़ता है और request को कभी नहीं बदलता।</td></tr>
+      <tr><td><strong>SwiGLU</strong></td><td>गुणा वाले gate के साथ FFN: एक branch दूसरी को scale करती है।</td><td>ऐसा feature flag जो bool नहीं, float है।</td></tr>
+      <tr><td><strong>RoPE</strong></td><td>Dot product से पहले Q और K को उनकी position के हिसाब से घुमाओ।</td><td>Timestamp को hash में मोड़ देना, ताकि बराबर offset बराबर मिलें।</td></tr>
+      <tr><td><strong>1T tokens</strong></td><td>Compute-optimal बिंदु से 7× आगे तक training।</td><td>Precompute. Build के वक़्त ख़र्च करो, हर request सस्ती हो जाएगी।</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक formula</h2>
+
+  <div class="formula">h = x + Attn(RMSNorm(x))<br>y = h + W<sub>down</sub>(SiLU(W<sub>gate</sub> RMSNorm(h)) ⊙ W<sub>up</sub> RMSNorm(h))</div>
+
+  <p>एक block. 7B के लिए 32 और 65B के लिए 80 बार stack करो। इसे pipeline stages की तरह पढ़ें:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>क़दम</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>RMSNorm(x)</code></td><td>(n, d)</td><td>हर token को एक ही scale पर लाता है। Trunk को पढ़ता है, लिखता नहीं।</td></tr>
+      <tr><td><code>Attn(·)</code></td><td>(n, d)</td><td><a href="../attention/">Attention</a> वाला वही lookup, अंदर Q और K पर RoPE लगा हुआ</td></tr>
+      <tr><td><code>x + …</code></td><td>(n, d)</td><td><strong>Skip link.</strong> जोड़ता है। कभी rescale नहीं करता। यही pre-norm वाला hunk है।</td></tr>
+      <tr><td><code>W<sub>gate</sub>z, W<sub>up</sub>z</code></td><td>(n, h), h = 11008</td><td>एक ही normalise किए हुए input से निकलती दो branches</td></tr>
+      <tr><td><code>SiLU(·) ⊙ ·</code></td><td>(n, h)</td><td><strong>Gate.</strong> एक branch दूसरी को elementwise scale करती है</td></tr>
+      <tr><td><code>W<sub>down</sub></code></td><td>(n, d)</td><td>वापस trunk की चौड़ाई पर, और trunk में जुड़ जाता है। अंदर का shape बाहर के shape के बराबर, इसलिए stack होता है</td></tr>
+      <tr><td>block 32 के बाद</td><td>(n, 32000)</td><td>आख़िर में एक RMSNorm, फिर output head. कहीं कोई bias नहीं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>RMSNorm: LayerNorm में से mean हटा दीजिए</h2>
+  <p>
+    LayerNorm mean घटाता है, standard deviation से भाग देता है, फिर एक सीखा
+    हुआ scale γ और shift β लगाता है। RMSNorm
+    (<a href="https://arxiv.org/abs/1910.07467">Zhang and Sennrich, 2019</a>)
+    mean और shift दोनों छोड़ देता है: root-mean-square से भाग दो, γ से गुणा
+    करो। काम वही है — matmul तक पहुँचने से पहले हर token को एक ही scale पर
+    लाना — बस vector पर कम passes लगते हैं, और गुणवत्ता में ऐसी कोई कमी नहीं
+    जो वे नाप पाते।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>x           = [1. 2. 3. 4.]   mean 2.5000
+layer_norm  = [-1.3416 -0.4472  0.4472  1.3416]   mean 0.0000
+rms_norm    = [0.3651 0.7303 1.0954 1.4606]   mean 0.9129
+same numbers? <span class="hl">False</span>   ← mean अब भी अंदर है
+
+x centred   = [-1.5 -0.5  0.5  1.5]   mean 0.0000
+layer_norm  = [-1.3416 -0.4472  0.4472  1.3416]
+rms_norm    = [-1.3416 -0.4472  0.4472  1.3416]
+same numbers? <span class="ok">True</span>    ← centre करते ही एक जैसे</code></pre>
+
+  <p>
+    Centre किए हुए vector पर दोनों एक ही function हैं; असली activations centre
+    नहीं होतीं, इसलिए outputs में ठीक mean जितना फ़र्क़ आता है। बदले में क्या
+    मिलता है, मेरे implementation से गिनकर — vector पर सात passes के बजाय चार:
+  </p>
+
+<pre><code>elementwise ops per token per norm at d=4096:
+  layer_norm 28,672   rms_norm 16,384   saved 12,288
+  x 2 norms per layer x 32 layers = 786,432 ops saved per token
+
+rms_norm(zeros, eps=0)    = [<span class="hl">nan nan nan nan</span>]
+rms_norm(zeros, eps=1e-5) = [0. 0. 0. 0.] <span class="ok">✓</span></code></pre>
+
+  <p>
+    4096 × 11008 के matmul के आगे यह कुछ भी नहीं, पर यह हर token पर, हर layer
+    पर, मुफ़्त में मिलता है। और <code>eps</code> सजावट नहीं है: 0/0 NaN होता
+    है, और residual stream में एक NaN उसके ऊपर की हर layer को ज़हरीला कर देता है।
+  </p>
+
+  <h2>Pre-norm: norm branch पर जाता है, trunk पर नहीं</h2>
+  <p>
+    2017: <code>x = norm(x + f(x))</code>. Norm trunk पर बैठा है; अगला block
+    देखे उससे पहले हर block का output दोबारा normalise होता है। LLaMA:
+    <code>x = x + f(norm(x))</code>. Norm branch पर बैठा है; trunk embedding से
+    output तक एक सीधा तार है, और हर block उसमें सिर्फ़ <em>जोड़ता</em> है। आप
+    पढ़ेंगे कि pre-norm "activations को बँधा हुआ रखता है"। Demo 3 चलाइए। वह
+    नहीं रखता — post-norm रखता है। Pre-norm जो बँधा रखता है वह कुछ और है:
+  </p>
+
+<pre><code>d=64, sqrt(d)=8.0. residual-stream norm per token:
+                     layer 1   layer 5   layer 10  layer 20   bump at 0 -&gt; out
+  pre-norm  (LLaMA)      10.8      18.9      27.7      40.7   x <span class="ok">1.77</span>
+  post-norm (2017)          8         8         8         8   x 9.71
+  no norm at all           12  6.23e+05       <span class="hl">inf</span>       nan   x nan</code></pre>
+
+  <p>
+    Post-norm trunk को ठीक √d = 8 पर बाँध देता है। Pre-norm उसे बढ़ने देता है,
+    और किसी को फ़र्क़ नहीं पड़ता, क्योंकि कोई sublayer कभी <code>x</code> नहीं
+    पढ़ता, सिर्फ़ <code>rms_norm(x)</code> पढ़ता है। Norm हटा दीजिए तो trunk
+    layer 10 से पहले ही overflow कर जाता है — इसीलिए वहाँ norm है ही।
+  </p>
+  <p>
+    असली बात आख़िरी column है। वह एक finite-difference gradient है: input को
+    ज़रा सा δ हिलाओ, output कितना खिसका यह नापो, और भाग दो — वही तरकीब जो आप
+    हाथ से लिखे backward pass का unit-test करने में लगाते। यह बताता है कि
+    layer 0 पर हुआ बदलाव ऊपर तक कितना बढ़ा दिया जाता है, और यही वह मात्रा भी
+    है जितनी ऊपर का gradient layer 0 तक उतरते हुए बढ़ता है। अब और गहरे चलिए:
+  </p>
+
+<pre><code>same bump at layer 0, deeper and deeper stacks:
+                      5 deep   10 deep   20 deep   32 deep
+  pre-norm  (LLaMA)  x   1.47  x   1.58  x   1.77  x   <span class="ok">1.68</span>
+  post-norm (2017)   x   1.69  x   2.74  x   9.71  x   <span class="hl">40.6</span>   ← गुणा होता है</code></pre>
+
+  <div class="note">
+    <strong>Post-norm हर layer के factors को stack में नीचे तक गुणा करता है;
+    pre-norm उन्हें जोड़ता है।</strong> Gradient का अनुपात अगर गहराई के साथ
+    बढ़े, तो उस training run को warmup, छोटा learning rate और क़िस्मत — तीनों
+    चाहिए। यही stability वाला तर्क है, और यही वजह है कि GPT-2 के बाद से PaLM
+    और LLaMA सब pre-norm हैं।
+    <a href="https://arxiv.org/abs/2002.04745">Xiong et al., 2020</a> में
+    प्रमाण है; <a href="https://arxiv.org/abs/2004.08249">Liu et al., 2020</a>
+    इसे amplification effect कहते हैं। सटीक अनुपात init scale पर निर्भर हैं;
+    गुणा होते जाना नहीं।
+  </div>
+
+  <h2>SwiGLU: FFN में एक gate, जिसकी क़ीमत पतली hidden layer से चुकाई गई</h2>
+  <p>
+    2017 का FFN है <code>relu(x @ W1) @ W2</code>, hidden चौड़ाई 4d. SwiGLU
+    (<a href="https://arxiv.org/abs/2002.05202">Shazeer, 2020</a>) उसकी जगह
+    <code>(silu(x @ W_gate) * (x @ W_up)) @ W_down</code> रखता है। दोनों
+    branches एक ही input देखती हैं; एक को SiLU से दबाया जाता है और वह दूसरी को
+    elementwise गुणा कर देती है। यही gate है। दो के बजाय तीन matrices, तो
+    parameter की गिनती बराबर रखने के लिए hidden चौड़ाई दो-तिहाई कर दी जाती है,
+    फिर 256 के गुणक तक ऊपर round कर दी जाती है क्योंकि GPUs को यह भाता है।
+    इसीलिए 11008, 10923 नहीं।
+  </p>
+
+<pre><code>d = 4096
+  vanilla ReLU FFN:  hidden = 4d   = 16384   params = 2*d*h = 134,217,728
+  LLaMA SwiGLU FFN:  hidden = 2/3*4d = 11008   params = 3*d*h = 135,266,304
+  ratio SwiGLU / ReLU = <span class="ok">1.008</span>
+
+BREAK: SwiGLU with hidden = 4d = 16384:   params = 201,326,592   (<span class="hl">+50.0%</span>)</code></pre>
+
+  <p>
+    1% के अंदर। paper की बात यही है: तुलना parameter-matched है, इसलिए benchmark
+    पर जो भी फ़ायदा दिखे वह gate का है, ज़्यादा capacity का नहीं। Hidden को 4d
+    पर छोड़ दीजिए तो आपने FFN डेढ़ गुना कर दिया और साबित कुछ नहीं किया। Demo 2
+    एक छोटा forward pass भी चलाता है: ReLU 49.0% hidden units को पूरी तरह बंद
+    कर देता है, SwiGLU 0.0% — switch बनाम dimmer। Dimmer से फ़ायदा क्यों होता
+    है? किसी को नहीं पता। Shazeer का paper ख़ुद कहता है: "we attribute their
+    success, as all else, to divine benevolence". कोई interviewer कहे कि इसकी
+    derivation है, तो मत मानिए।
+  </p>
+
+  <h2>RoPE: Q और K को घुमाओ, V को छोड़ दो</h2>
+  <p>
+    2017 ने position vector को embeddings में एक ही बार, सबसे नीचे जोड़ा था।
+    LLaMA वहाँ कुछ नहीं जोड़ता। हर attention layer के अंदर वह हर query और key
+    को उसकी position के अनुपात में एक कोण से घुमाता है
+    (<a href="https://arxiv.org/abs/2104.09864">Su et al., 2021</a>). दोनों को
+    एक ही नियम से घुमाइए और dot product सिर्फ़ फ़ासले पर निर्भर रह जाता है:
+  </p>
+
+<pre><code>q at 3 . k at 1  (offset 2) = 1.7986
+q at 7 . k at 5  (offset 2) = <span class="ok">1.7986</span>   ← same offset, same score
+q at 3 . k at 0  (offset 3) = 1.7523   ← different offset
+
+where it is applied, straight from attn_sublayer's source:
+  return attention(rope(Q, pos), rope(K, pos), V) @ p["Wo"]  # rope: Q, K. Not V</code></pre>
+
+  <p>
+    यह Q और K पर लगता है क्योंकि dot उन्हीं दोनों का होता है। V वह content है
+    जो match हो जाने के बाद सौंपा जाता है; उसे घुमा दें तो content इस बात पर
+    निर्भर हो जाएगा कि token कहाँ बैठा है। Pairs, frequencies, और यह
+    extrapolate क्यों करता है: <a href="../rope/">RoPE वाला पन्ना</a>। यहाँ
+    बात सिर्फ़ इतनी है कि <em>इसे कहाँ call किया जाता है</em>।
+  </p>
+
+  <h2>6.7B parameters, 1T tokens: गणित</h2>
+  <p>
+    LLaMA-1 का हर size एक ही formula है, जिसमें paper की Table 2 से आए चार
+    नंबर लगते हैं। Attention 4d² है (चार d × d matrices — अभी GQA नहीं, वह
+    LLaMA 2 में 70B पर आता है), FFN 3dh, हर layer पर दो norms, एक embedding
+    table, और एक untied output head:
+  </p>
+
+<pre><code>size    dim  layers     ffn      count_params   paper
+  7B   4096      32   11008     6,738,415,616    6.7B <span class="ok">✓</span>
+ 13B   5120      40   13824    13,015,864,320   13.0B
+ 33B   6656      60   17920    32,528,943,616   32.5B
+ 65B   8192      80   22016    65,285,660,672   65.2B
+
+BREAK: put every bias term back (bias=True):
+  6,740,037,632 vs 6,738,415,616: +1,622,016 = <span class="hl">+0.024%</span></code></pre>
+
+  <p>
+    Paper की हर पंक्ति से rounding के भीतर मेल खाता है। FFN attention से
+    <em>दोगुना</em> है — इसीलिए <a href="../moe/">mixture-of-experts</a> FFN
+    के बाद आता है। Bias हटाना सादगी का फ़ैसला था, बचत का नहीं: 0.024%. Paper
+    इसका ज़िक्र तक नहीं करता। अब tokens. Chinchilla
+    (<a href="https://arxiv.org/abs/2203.15556">Hoffmann et al., 2022</a>) ने
+    एक सवाल का जवाब दिया: तय training budget के लिए कौन-सा model size और कितने
+    tokens loss को सबसे कम करते हैं? क़रीब 20 tokens प्रति parameter, यानी एक
+    7B model को 135B tokens देखने "चाहिए"। LLaMA-7B ने एक trillion देखे।
+  </p>
+
+<pre><code>LLaMA-7B parameters                 6.74e+09
+Chinchilla-optimal tokens, 20/param 1.35e+11  (135B)
+LLaMA-7B actually trained on        1e+12  (1T)   <span class="hl">7.4x more</span>
+
+inference compute ~ 2 * N per token:
+  LLaMA-7B     1.35e+10 FLOPs/token
+  GPT-3 175B   3.5e+11 FLOPs/token   26x more
+
+tokens per parameter:
+  GPT-3 175B 300B / 175.0B =   1.7
+  LLaMA-7B   1.0T /  6.7B = <span class="ok">148.4</span>
+  LLaMA-13B  1.0T / 13.0B =  76.8</code></pre>
+
+  <p>
+    यह तर्क वही cost model है जो आप पहले से दिमाग़ में चलाते हैं। Training एक
+    बार चुकाई जाती है। Inference हर token पर, हमेशा के लिए चुकानी पड़ती है, और
+    वह parameter की गिनती के साथ बढ़ती है: 7B हर token पर 175B से 26× सस्ता
+    है। अरबों requests serve करनी हों तो बेहतर यही है कि छोटे model की training
+    पर ज़्यादा ख़र्च कर दें, बजाय इसके कि कम ख़र्च करके बड़ा model serve करते
+    रहें। Paper के training curves दिखाते हैं कि एक trillion tokens पर भी 7B
+    का loss गिर ही रहा है — 135B के मुक़ाबले धीरे, पर गिर रहा है। और यही, वे
+    चार hunks नहीं, वह वजह है जिससे paper में LLaMA-13B ज़्यादातर benchmarks पर
+    GPT-3 175B से आगे निकला: GPT-3 ने 1.7 tokens प्रति parameter देखे,
+    LLaMA-13B ने 77.
+  </p>
+
+  <div class="note">
+    <strong>अगर पूछा जाए "LLaMA ने compute-optimal से आगे training क्यों
+    की":</strong> Chinchilla training का बिल कम करता है; LLaMA serving का बिल
+    कम करता है। title में "efficient" का यही मतलब है। 7B और 13B के लिए 1T
+    tokens, 33B और 65B के लिए 1.4T, सिर्फ़ public data; 65B को 2048 A100s पर
+    21 दिन लगे।
+  </div>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -470,6 +1083,37 @@ def pre_norm_block(x, p):                            # LLaMA
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

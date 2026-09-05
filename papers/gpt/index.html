@@ -7,7 +7,7 @@
 <meta name="description" content="GPT-1, GPT-2 and GPT-3 explained as one while loop: predict the next token, feed it back in, then scale. Runnable NumPy decoder block and generation loop, a tiny PyTorch model trained on CPU in seconds, seven demos that prove it by breaking it.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -35,6 +35,15 @@
       — everything below runs from it. NumPy, plus a tiny CPU PyTorch model for the training step.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
 
   <p>
     I'm an AI Engineer. I've shipped models, done the MLOps, and I've called the GPT API more
@@ -326,6 +335,664 @@ logits shape: (1, 32, 28)   gradient updates: <span class="ok">0</span></code></
     merely continue them — is <a href="../instructgpt/">InstructGPT</a>.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. Models ship செய்திருக்கிறேன், MLOps செய்திருக்கிறேன்,
+    என் அம்மாவைக் கூப்பிட்டதை விட GPT API-ஐ அதிக முறை கூப்பிட்டிருக்கிறேன். இருந்தும்
+    அந்த மூன்று papers உண்மையில் என்ன <em>சொல்கின்றன</em> என்று என்னால் சொல்ல
+    முடியாது; ஒரு தலைப்பு "unsupervised multitask" என்றும் அடுத்தது "few-shot"
+    என்றும் ஏன் சொல்கிறது என்பதும் தெரியாது. அவை மூன்றும் ஒரே கருத்துக்கு
+    மூன்று தலைப்புகள் என்றும், அந்தக் கருத்து நான் நூறு முறை எழுதியிருக்கும் ஒரு
+    loop தான் என்றும் யாரும் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (token, logits, mask,
+    temperature, loss…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற
+    papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>ரொம்ப நன்றாகிவிட்டதால் interface ஆகிவிட்ட autocomplete</h2>
+
+  <p>இது உங்களுக்குத் தெரியும்:</p>
+
+<pre><code>text = "the model "
+while len(text) &lt; 100:
+    text += most_likely_next_char(text)    # output-ஐ மீண்டும் உள்ளே கொடு</code></pre>
+
+  <p>
+    இதுதான் GPT. மூன்றுமே இதுதான். 2018-க்கும் 2020-க்கும் இடையே மாறியது ஒன்றே
+    ஒன்று — <code>most_likely_next_char</code>-க்கு உள்ளே என்ன இருக்கிறது
+    (<a href="../attention/">attention page</a>-ன் decoder blocks அடுக்கு,
+    causal mask போட்டு), மற்றும் அவை எத்தனை:
+  </p>
+
+<pre><code>def most_likely_next_char(text):
+    ctx = encode(text)[-block_size:]      # context window அளவுக்கு வெட்டு
+    logits, _ = gpt_forward(ctx, p)       # (T, vocab): ஒவ்வொரு row-க்கும் ஊகம்
+    return decode([argmax(logits[-1])])   # கடைசி row மட்டும் வைத்துக்கொள்</code></pre>
+
+  <p>
+    ஒரு கேள்வியை type செய்யுங்கள், அது விடையை type செய்யும் — ஏனெனில் ஒரு
+    கேள்விக்குப் பிறகு வர வாய்ப்புள்ள தொடர்ச்சிதான் அந்த விடை. தான் பதில்
+    சொல்கிறோம் என்று model-க்குத் தெரியாது. அது உங்கள் வாக்கியத்தை முடிக்கிறது.
+  </p>
+
+  <p class="thanglish">
+    GPT-nu solradhu oru while loop dhaan: adutha token-ai guess pannu, adhaye
+    thirumba input-la kudu. Model badhil solradhu illa — unga sentence-ai
+    mudikkiradhu, adhu dhaan ellame.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Token</strong></td><td>Text-ன் அலகு. என் script-ல் ஒரு எழுத்து, நிஜ model-ல் ஒரு word-piece</td><td>Dict-ன் key type</td></tr>
+      <tr><td><strong>Context window</strong></td><td>Model ஒரே நேரத்தில் பார்க்கக்கூடிய அதிகபட்ச tokens (<code>block_size</code>)</td><td>ஒரு ring buffer. பழைய tokens பின்னால் விழுந்துவிடும்</td></tr>
+      <tr><td><strong>Causal mask</strong></td><td>எந்த position-ம் தனக்குப் பின் வரும் position-ஐப் படிக்கக் கூடாது</td><td>எதிர்காலத்தின் மேல் ஒரு read-lock</td></tr>
+      <tr><td><strong>Temperature</strong></td><td>Softmax-க்கு முன் logits-ஐ வகுப்பது</td><td><code>argmax</code>-க்கும் பகடைக்கும் இடையே ஒரு knob</td></tr>
+      <tr><td><strong>In-context learning</strong></td><td>Prompt-ல் செய்து காட்டிய உதாரணங்கள், weights உறைந்தபடி</td><td>Redeploy இல்லாமல், input மூலம் configuration</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>ஒரே கருத்து, மூன்று தலைப்புகள்</h2>
+
+  <p>
+    GPT-1-க்கு முன் ஒவ்வொரு task-க்கும் ஒரு architecture கட்டி, ஒவ்வொன்றுக்கும்
+    labelled dataset-க்குக் காசு கொடுக்க வேண்டியிருந்தது. GPT-1-ன் வாதம்: task
+    "அடுத்த token-ஐக் கணி" என்றால் labels இலவசம். GPT-2 fine-tuning-ஐயே
+    கைவிட்டது. GPT-3 உதாரணங்களை prompt-க்குள் வைத்தது. அதே block, அதே loss, அதே
+    loop — எல்லாமே அதிகம். எந்த GPT codebase-லும் நீங்கள் சந்திக்கும் இரண்டு
+    விவரங்கள்: position embeddings sine அலைகள் அல்ல, அவை <em>கற்கப்படுபவை</em>;
+    GPT-2 முதல் LayerNorm ஒவ்வொரு sub-layer-ன் <em>input</em>-ல் அமர்கிறது.
+    இரண்டுமே மையக் கருத்து அல்ல.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Paper</th><th>அளவு</th><th>Data</th><th>தலைப்புச் செய்தி</th></tr></thead>
+    <tbody>
+      <tr><td><strong><a href="https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf">GPT-1</a></strong>, 2018</td><td>12 layers, d<sub>model</sub> 768, 117M params</td><td>BooksCorpus, ~7,000 வெளியிடப்படாத புத்தகங்கள்</td><td>Next-token மேல் pretrain செய்து, பிறகு ஒவ்வொரு task-க்கும் fine-tune — task-ன் inputs-ஐ delimiters-உடன் ஒரே token sequence ஆக மாற்றி. <strong>Pretraining கடத்தப்படுகிறது.</strong></td></tr>
+      <tr><td><strong><a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">GPT-2</a></strong>, 2019</td><td>48 layers, d<sub>model</sub> 1600, 1.5B params</td><td>WebText, Reddit-ல் link ஆன ~40 GB pages</td><td>Fine-tuning சுத்தமாக இல்லை. Task-ஐ text ஆகவே எழுது ("TL;DR:"), தொடர்ச்சியைப் படி. <strong>Scale-ல் இருந்து zero-shot.</strong></td></tr>
+      <tr><td><strong><a href="https://arxiv.org/abs/2005.14165">GPT-3</a></strong>, 2020</td><td>96 layers, d<sub>model</sub> 12288, 96 heads, 175B params</td><td>~300B tokens: வடிகட்டிய Common Crawl, WebText2, புத்தகங்கள், Wikipedia</td><td>Prompt-ல் சில செய்து காட்டிய உதாரணங்களை வையுங்கள், உறைந்த model அவற்றைப் பயன்படுத்தும். <strong>In-context learning, gradient updates இல்லை.</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">L(θ) = −Σ<sub>t</sub> log p<sub>θ</sub>(x<sub>t</sub> | x<sub>t−k</sub>, …, x<sub>t−1</sub>)</div>
+
+  <p>
+    GPT-1-ன் Equation 1, குறி மாற்றப்பட்டது — அதிகப்படுத்த வேண்டிய likelihood
+    அல்ல, குறைக்க வேண்டிய loss. k என்பது context window. மூன்று papers-ல்
+    இருக்கும் மற்ற எல்லாமே இந்தக் கூட்டல், பெரிதாக்கப்பட்டது. இதை pipeline
+    stages ஆகப் படியுங்கள்:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>tokens</code></td><td>(T,)</td><td>Integers. Text-ஏ தன் label — யாரும் எதையும் annotate செய்யவில்லை</td></tr>
+      <tr><td><code>tok_emb[tokens] + pos_emb[:T]</code></td><td>(T, d)</td><td>ஒவ்வொரு token என்ன, மேலும் அது எங்கே அமர்கிறது. இரண்டுமே கற்கப்படுபவை</td></tr>
+      <tr><td><code>decoder_block</code> × N</td><td>(T, d)</td><td>Causal attention (tokens பேசுகின்றன, பின்னோக்கி மட்டும்), பிறகு ஒரு MLP (ஒவ்வொரு token-ம் தனியே யோசிக்கிறது). Shape மாறவில்லை → அடுக்கலாம்</td></tr>
+      <tr><td><code>layer_norm @ W_out</code></td><td>(T, V)</td><td><strong>Logits.</strong> ஒவ்வொரு position-க்கும் ஒரு ஊகம், ஒரே நேரத்தில் — ஒரே matrix multiply T rows-ஐ score செய்கிறது. Mask அதைச் சட்டப்படி ஆக்குகிறது: row t, tokens[t+1] மேல் score செய்யப்படுகிறது, ஆனால் அதை ஒருபோதும் பார்த்ததில்லை</td></tr>
+      <tr><td><code>softmax</code>, row-wise</td><td>(T, V)</td><td>சதவீதங்கள்</td></tr>
+      <tr><td><code>−log p[target]</code></td><td>(T,)</td><td>நிஜமான அடுத்த token-ஐப் பார்த்து ஒவ்வொரு row-ம் எவ்வளவு அதிர்ச்சி அடைந்தது. உறுதியாகவும் சரியாகவும் இருந்தால் 0</td></tr>
+      <tr><td><code>mean</code></td><td>scalar</td><td>Loss. சீரான ஊகத்திற்கு ln(V); தரை என்பது data-வின் சொந்த randomness</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Loop: output-ஐ மீண்டும் உள்ளே கொடு</h2>
+  <p>
+    Demo 1, random weights-உடன் NumPy block-ஐ ஓட்டுகிறது. எதுவும் கற்கப்படவில்லை;
+    நீங்கள் shapes-ஐப் பார்க்க வேண்டும், அவ்வளவே. நான்கு tokens உள்ளே, ஒரு
+    (4, 28) matrix வெளியே — ஒரு position-க்கு ஒரு ஊகம் — loop கடைசி row-ஐ
+    மட்டும் வைத்துக்கொள்கிறது:
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ நிஜமான output:</strong></p>
+
+<pre><code>logits                        : (4, 28)  (one row PER position)
+we keep only logits[-1]       : (28,)  (the next-token guess)
+
+the loop, 5 steps, greedy:
+  step 0: T=4 tokens -&gt; logits(4, 28) -&gt; argmax of last row = 23 = 't'
+  step 1: T=5 tokens -&gt; logits(5, 28) -&gt; argmax of last row = 16 = 'l'
+  step 2: T=6 tokens -&gt; logits(6, 28) -&gt; argmax of last row =  0 = '\n'
+  step 3: T=7 tokens -&gt; logits(7, 28) -&gt; argmax of last row = 23 = 't'
+  step 4: T=8 tokens -&gt; logits(8, 28) -&gt; argmax of last row = 23 = 't'
+result: 'the tl\ntt'
+
+causal: logits for position 0 identical at ctx=4 and ctx=8? <span class="ok">True</span>
+no mask: logits for position 0 identical at ctx=4 and ctx=8? <span class="hl">False</span></code></pre>
+
+  <p>
+    கடைசி இரண்டு வரிகள் mask இலவசமாகத் தரும் ஒரு போனஸ். அது இருந்தால், sequence
+    வளர வளர row 0-ன் output ஒருபோதும் மாறாது — எனவே ஒரு server முந்தைய
+    ஒவ்வொரு row-ஐயும் மீண்டும் கணக்கிடாமல் cache செய்யலாம். அதுதான் KV cache.
+    Mask இல்லாமல் எதையும் cache செய்ய முடியாது.
+  </p>
+
+  <h3>Context window</h3>
+  <p>
+    <code>block_size</code>-க்கு அப்பால் loop-க்கு நினைவே இல்லை; GPT-3-ன் அளவு
+    2048 tokens. Demo 5, பயிற்சி பெற்ற model-ல் இதை இரண்டு வழிகளிலும் தவறாகச்
+    செய்கிறது:
+  </p>
+
+<pre><code>torch: 33 tokens into the block_size=32 trained model, no crop:
+  <span class="hl">IndexError: index out of range in self</span>   (pos_emb has only 32 rows)
+
+crop from the wrong end -- idx[:, :block_size] instead of idx[:, -block_size:]:
+  <span class="hl">the model hides the answer again......................................</span>
+  every token after the window filled is the same one? True
+  vs the right crop, same model, same prompt:
+  <span class="ok">the model hides the answer again. the prompt hides the answer again. t</span></code></pre>
+
+  <p>
+    வெட்ட மறந்தால், crash ஆவதுதான் நல்ல முடிவு. தலைப்பக்கத்திலிருந்து வெட்டினால்,
+    model அதே பழைய prefix-ஐயே எப்போதும் மீண்டும் படிக்கும், தான் இப்போது
+    எழுதியதைப் பார்க்கவே பார்க்காது, நீங்கள் நிறுத்தும் வரை ஒரே எழுத்தை அச்சடிக்கும்.
+  </p>
+
+  <h2>அந்த shift: label என்பது அடுத்த எழுத்து</h2>
+  <p>
+    Inputs என்பது <code>tokens[:-1]</code>, targets என்பது <code>tokens[1:]</code>.
+    அந்த ஒரு token shift-தான் GPT-3-ன் முழு labelling budget:
+  </p>
+
+<pre><code>text     : autocomplete
+inputs   : autocomplet   &lt;- tokens[:-1]
+targets  :  utocomplete   &lt;- tokens[1:], shifted one left
+pairs    : a-&gt;u u-&gt;t t-&gt;o o-&gt;c c-&gt;o o-&gt;m m-&gt;p p-&gt;l l-&gt;e e-&gt;t t-&gt;e</code></pre>
+
+  <p>இப்போது அதை உடையுங்கள். <code>targets = inputs</code> என வைத்து, நேர்மையான
+    version-ஐ ஒட்டி 200 steps train செய்யுங்கள்:</p>
+
+<pre><code>honest  (targets = tokens[1:]), 200 steps:
+  step     1  loss 3.536
+  step    50  loss 1.446
+  step   200  loss <span class="ok">0.313</span>
+BROKEN  (targets = inputs)  , 200 steps:
+  step     1  loss 3.719
+  step    50  loss 0.016
+  step   200  loss <span class="hl">0.002  ← learned output[i] = input[i], nothing else</span></code></pre>
+
+  <div class="note">
+    <strong>பூஜ்ஜியத்திற்கு அருகில் இருக்கும் loss வெற்றி அல்ல. அது ஒரு நாற்றம்.</strong>
+    உடைந்த model ஐம்பது steps-ல் identity function-ஐக் கண்டுபிடித்து நின்றுவிட்டது.
+    ஒரு language-model loss ரொம்ப நன்றாகத் தெரிந்தால், ஒவ்வொரு முறையும் முதலில்
+    shift-ஐச் சரிபாருங்கள்.
+  </div>
+
+  <p class="thanglish">
+    Inputs tokens[:-1], targets tokens[1:] — antha oru token shift dhaan GPT-3-oda
+    mothha labelling budget. Loss romba kammiya irundha, first shift-ai check pannu.
+  </p>
+
+  <h2>Train பண்ணு, பிறகு பேச விடு</h2>
+  <p>
+    Demo 3, என் laptop-ன் CPU-வில் இரண்டு layers, 105,728 parameters கொண்ட ஒரு
+    GPT-ஐ சுமார் பத்து நொடிகளில் train செய்கிறது. Corpus என்பது நான்கு word
+    lists-ல் இருந்து — subject, verb, object, adjunct, ஒவ்வொன்றும் சீராக
+    எடுக்கப்பட்டு — நான் உருவாக்கும் 400 வாக்கியங்கள். அதனால் model-க்கு ஒரு
+    grammar கற்க இருக்கிறது, மனப்பாடம் செய்ய முடியாது. அதன் பொருள் தரை எனக்குத்
+    தெரியும்: ஒரு வாக்கியத்திற்கு ஆறில் நான்கு தேர்வுகள் என்பது சுமார் 38
+    எழுத்துகளுக்கு 4·ln 6 nats, அதாவது ஒரு எழுத்துக்கு ஏறக்குறைய 0.19.
+  </p>
+
+<pre><code>  step     1  loss 3.536
+  step   150  loss 0.363
+  step   300  loss 0.288
+  step   600  loss <span class="ok">0.305</span>
+  a uniform guess scores ln(28) = 3.332; the corpus's own
+  randomness puts the floor near 0.191 (4 choices of 6 per sentence)
+
+temperature 0.8, 100 chars:
+  the model feeds the future by hand. the model feeds the next token again
+  . the prompt feeds the answer at scale</code></pre>
+
+  <p>
+    Demo 1-ன் அதே loop. Random weights <code>'the tl\ntt'</code> என்று
+    அச்சடித்தன; பயிற்சி பெற்ற weights corpus-ன் grammar-ல் வாக்கியங்களை
+    அச்சடிக்கின்றன. Loop-ல் எதுவும் மாறவில்லை. அது கட்டமைப்பைக் கற்றது, அர்த்தத்தை
+    அல்ல — என் corpus-ல் கற்க அர்த்தமே இல்லை, அதுதான் ஒரு language model என்ன
+    செய்கிறது என்பதன் நேர்மையான பதில்.
+  </p>
+
+  <h3>Temperature</h3>
+  <p>
+    Logits-க்கும் பகடைக்கும் இடையே ஒரே ஒரு எண். Softmax-க்கு முன் கடைசி row-ஐ
+    அதனால் வகுங்கள்: 1-க்குக் கீழே என்றால் <code>argmax</code> பக்கம் கூர்மையாகும்,
+    1-க்கு மேலே என்றால் சீரான பக்கம் தட்டையாகும். ஒவ்வொரு எழுத்தும் எந்த
+    distribution-ல் இருந்து எடுக்கப்பட்டதோ அதன் entropy-ஐ nats-ல் அச்சடிக்கிறேன்;
+    ln 28 ≈ 3.33 என்றால் "எதுவுமே தெரியவில்லை":
+  </p>
+
+<pre><code>temperature 0.2:  mean entropy 0.096 nats
+  feeds the answer again. the mask feeds the answer at scale. the mask cop
+  ies the next token at scale.
+
+temperature 2.0:  mean entropy <span class="hl">1.100</span> nats
+  feeds its own oly.\nthefix by hagan. tby\naby hok fedsy . the feeds k\nt
+  he prefix slowly.\nfeefcashi rec
+
+temperature 0 for 400 chars -- does it loop?
+  yes: the tail repeats every <span class="hl">35 chars</span>: 'r again. the prompt hides the answe'</code></pre>
+
+  <p>
+    அந்தக் கடைசி வரிதான் எல்லோரும் சந்திக்கும் "repetition" bug. Greedy decoding
+    தீர்மானகரமானது (deterministic), எனவே அது ஒரு state-ஐ மீண்டும் அடைந்த கணமே
+    என்றென்றும் ஒரு சுழற்சிக்குள் விழுந்துவிடும். Temperature 0 என்பது "மிகச்
+    சரியான setting" அல்ல; அது exit condition இல்லாத ஒரு loop.
+  </p>
+
+  <p class="thanglish">
+    Temperature-nu solradhu logits-ai softmax-kku munnadi divide panradhu dhaan.
+    0 vechaa deterministic — oru state thirumba vandha, loop-la maatikkum, exit
+    illa.
+  </p>
+
+  <h2>Loop-ஐ நேர்மையாக வைப்பது mask தான்</h2>
+  <p>
+    Attention page சொன்னது: mask-ஐ எடுத்துவிட்டால் அது BERT. நீங்கள் generate
+    செய்ய விரும்பினால் அது என்ன விலை என்பதை இதோ பாருங்கள். Demo 6, அதே model-ஐ
+    <code>causal=False</code> வைத்து, அதே data, அதே 600 steps train செய்கிறது:
+  </p>
+
+<pre><code>same model, same data, same steps, mask removed:
+  step     1  loss 3.540
+  step   600  loss <span class="hl">0.013  ← vs 0.305 with the mask on</span>
+
+loss per position: mean over positions 0..30, then position 31,
+the one row that has no next column to peek at:
+  causal : 0.280   last position: <span class="ok">0.190</span>
+  no mask: <span class="hl">0.001</span>   last position: <span class="hl">0.296</span>
+
+short prompt 'the model ', temperature 0.8:
+  causal :
+    the model feeds the future by hand. the model feeds the next token again
+    . the prompt feeds the answer at scale
+  no mask:
+    <span class="hl">the model ooooooomoooooooooooooooooooooooooooooooooooooooooooooooooooooo</span>
+    oooooooooooooooooooooooooooooooooooooo</code></pre>
+
+  <p>
+    Mask இல்லாமல், position i, position i+1-ஐப் பார்க்க முடியும் — அதுதான் அதன்
+    target. எனவே அது நகலெடுக்கிறது, கடைசி row தவிர ஒவ்வொரு row-லும் loss 0.001-க்கு
+    சரிகிறது; நகலெடுக்க எதுவும் இல்லாத ஒரே row அதுதான். Sampling நேரத்தில் கடைசி
+    row மட்டுமே முக்கியம், எனவே 32-ல் 31 rows-ன் பயிற்சி production-ல் ஒருபோதும்
+    வேலைக்கு வராத ஒரு தந்திரத்திற்குப் போய்விட்டது; நேர்மையான அந்த ஒரு row-க்கு
+    gradient-ல் 1/32 மட்டுமே கிடைத்தது: masked model-ன் 0.190-க்கு எதிராக 0.296.
+    கடைசி row நேர்மையானதாக இருக்க முழு 32-எழுத்து window கொடுங்கள் — அது தள்ளாடும்:
+    முடிவில்லாத வாக்கியங்கள், ஒரு புனையப்பட்ட வார்த்தை; script அதையும் அச்சடிக்கிறது.
+    ஒரே ஒரு flag-ஆல் கட்டுப்படுத்தப்படும் train/serve skew.
+  </p>
+
+  <div class="note">
+    <strong>குறைவான training loss, மோசமான model.</strong> Training-ஐ எளிதாக்க
+    mask இல்லை. Training-ஐ serving-ன் அதே பிரச்சனையாக ஆக்கவே அது இருக்கிறது.
+    Bidirectional attention என்பது <a href="../bert/">BERT</a>, BERT generate
+    செய்யாது.
+  </div>
+
+  <h2>In-context learning: prompt தான் program</h2>
+  <p>
+    GPT-3-ன் தலைப்புச் செய்தி. நேராகச் சொல்லிவிடுகிறேன், ஏனெனில் interviewers
+    கேட்பார்கள்: <strong>in-context learning என்றால் செய்து காட்டிய உதாரணங்கள்
+    prompt-ல் இருக்கின்றன, weights உறைந்திருக்கின்றன.</strong> Fine-tuning இல்லை,
+    gradient step இல்லை, disk-க்கு எதுவும் எழுதப்படவில்லை. Paper-ன் few-shot
+    format சரியாக இதே வடிவம்தான் — சில input→output ஜோடிகள், பிறகு output
+    இல்லாத ஒரு input:
+  </p>
+
+<pre><code>english: cat -&gt; french: chat
+english: dog -&gt; french: chien
+english: house -&gt; french: maison
+english: cheese -&gt; french:
+
+that prompt is 118 tokens; the model sees one integer array:
+  [10, 18, 12, 16, 14, 22, 13, 4, 1, 8, 6, 23] ... [1, 11, 21, 10, 18, 8, 13, 4]
+logits shape: (1, 32, 28)   gradient updates: <span class="ok">0</span></code></pre>
+
+  <p>
+    "உதாரணம்" என்றால் என்ன என்று code-ல் எதற்கும் தெரியாது. அந்த மூன்று ஜோடிகளும்
+    இன்னும் கொஞ்சம் prefix, அவ்வளவே; few-shot என்பது நீளமான input, முற்றுப்புள்ளி.
+    175B parameters-ல் வாய்ப்புள்ள தொடர்ச்சி <code>fromage</code> என்பதும், அதிக
+    உதாரணங்கள் மற்றும் அதிக parameters-உடன் இது மேம்படுகிறது என்பதும்தான் GPT-3-ன்
+    கூற்று — results பகுதி என்பது task வாரியாக அந்த வளைவு. என் model-க்கு 105,728
+    parameters, ஆறு nouns கொண்ட vocabulary. இது அதைச் செய்யாது, செய்வது போல் நான்
+    நடிக்கப் போவதும் இல்லை. இயங்குமுறை ஒன்றுதான். திறமைதான் scale வாங்கிக்
+    கொடுத்தது. அதற்குப் பிறகு வந்தது — autocomplete-ஐ வெறுமனே தொடராமல்,
+    அறிவுறுத்தல்களைப் பின்பற்ற <em>விரும்ப</em> வைப்பது —
+    <a href="../instructgpt/">InstructGPT</a>.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने models ship किए हैं, MLOps किया है, और GPT API
+    को अपनी माँ से भी ज़्यादा बार call किया है। फिर भी मैं आपको यह नहीं बता सकता
+    था कि वे तीन papers असल में <em>दावा</em> क्या करते हैं, या एक title में
+    "unsupervised multitask" और अगले में "few-shot" क्यों लिखा है। किसी ने नहीं
+    बताया कि वे एक ही विचार की तीन सुर्ख़ियाँ हैं, और वह विचार एक loop है जो
+    मैंने सौ बार लिखा है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (token, logits, mask,
+    temperature, loss…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers
+    में आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>वह autocomplete जो इतना अच्छा हो गया कि interface बन गया</h2>
+
+  <p>यह आप जानते हैं:</p>
+
+<pre><code>text = "the model "
+while len(text) &lt; 100:
+    text += most_likely_next_char(text)    # output को वापस अंदर डालो</code></pre>
+
+  <p>
+    यही GPT है। तीनों। 2018 और 2020 के बीच सिर्फ़ इतना बदला कि
+    <code>most_likely_next_char</code> के अंदर क्या है —
+    <a href="../attention/">attention page</a> वाले decoder blocks का ढेर, causal
+    mask चालू — और वे कितने हैं:
+  </p>
+
+<pre><code>def most_likely_next_char(text):
+    ctx = encode(text)[-block_size:]      # context window तक काटो
+    logits, _ = gpt_forward(ctx, p)       # (T, vocab): हर row के लिए एक अंदाज़ा
+    return decode([argmax(logits[-1])])   # सिर्फ़ आख़िरी row रखो</code></pre>
+
+  <p>
+    कोई सवाल type कीजिए और यह जवाब type कर देता है, क्योंकि जवाब ही सवाल की सबसे
+    संभावित निरंतरता है। Model को पता नहीं कि वह जवाब दे रहा है। वह आपका वाक्य
+    पूरा कर रहा है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Token</strong></td><td>Text की इकाई। मेरी script में एक अक्षर, असली model में एक word-piece</td><td>Dict का key type</td></tr>
+      <tr><td><strong>Context window</strong></td><td>सबसे ज़्यादा कितने tokens model एक साथ देख सकता है (<code>block_size</code>)</td><td>एक ring buffer। पुराने tokens पीछे से गिर जाते हैं</td></tr>
+      <tr><td><strong>Causal mask</strong></td><td>कोई position बाद वाली position नहीं पढ़ सकती</td><td>भविष्य पर एक read-lock</td></tr>
+      <tr><td><strong>Temperature</strong></td><td>Softmax से पहले logits को भाग देना</td><td><code>argmax</code> और पासे के बीच एक knob</td></tr>
+      <tr><td><strong>In-context learning</strong></td><td>Prompt में हल किए हुए उदाहरण, weights जमे हुए</td><td>Redeploy से नहीं, input से configuration</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>एक विचार, तीन सुर्ख़ियाँ</h2>
+
+  <p>
+    GPT-1 से पहले आप हर task के लिए एक architecture बनाते थे और हर एक के लिए
+    labelled dataset का ख़र्च उठाते थे। GPT-1 की बात: अगर task "अगला token
+    बताओ" है तो labels मुफ़्त हैं। GPT-2 ने fine-tuning ही छोड़ दी। GPT-3 ने
+    उदाहरण prompt में रख दिए। वही block, वही loss, वही loop, बस हर चीज़ ज़्यादा।
+    दो बातें जो आपको किसी भी GPT codebase में मिलेंगी: position embeddings
+    sine तरंगें नहीं, <em>सीखे हुए</em> होते हैं, और GPT-2 से आगे LayerNorm हर
+    sub-layer के <em>input</em> पर बैठता है। इनमें से कोई भी मूल विचार नहीं है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Paper</th><th>आकार</th><th>Data</th><th>मुख्य दावा</th></tr></thead>
+    <tbody>
+      <tr><td><strong><a href="https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf">GPT-1</a></strong>, 2018</td><td>12 layers, d<sub>model</sub> 768, 117M params</td><td>BooksCorpus, ~7,000 अप्रकाशित किताबें</td><td>Next-token पर pretrain, फिर हर task के लिए fine-tune — task के inputs को delimiters के साथ एक ही token sequence में लिखकर। <strong>Pretraining transfer होती है।</strong></td></tr>
+      <tr><td><strong><a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">GPT-2</a></strong>, 2019</td><td>48 layers, d<sub>model</sub> 1600, 1.5B params</td><td>WebText, Reddit से linked ~40 GB pages</td><td>Fine-tuning बिलकुल नहीं। Task को text की तरह लिखिए ("TL;DR:") और निरंतरता पढ़िए। <strong>Scale से zero-shot।</strong></td></tr>
+      <tr><td><strong><a href="https://arxiv.org/abs/2005.14165">GPT-3</a></strong>, 2020</td><td>96 layers, d<sub>model</sub> 12288, 96 heads, 175B params</td><td>~300B tokens: छना हुआ Common Crawl, WebText2, किताबें, Wikipedia</td><td>Prompt में कुछ हल किए उदाहरण रखिए और जमा हुआ model उन्हें इस्तेमाल कर लेता है। <strong>In-context learning, कोई gradient update नहीं।</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">L(θ) = −Σ<sub>t</sub> log p<sub>θ</sub>(x<sub>t</sub> | x<sub>t−k</sub>, …, x<sub>t−1</sub>)</div>
+
+  <p>
+    GPT-1 का Equation 1, चिह्न पलटा हुआ — ताकि यह बढ़ाने वाली likelihood नहीं,
+    घटाने वाला loss हो। k context window है। तीन papers में बाक़ी सब कुछ यही
+    जोड़ है, बस बड़ा किया हुआ। इसे pipeline stages की तरह पढ़िए:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>tokens</code></td><td>(T,)</td><td>Integers. Text ख़ुद अपना label है — किसी ने कुछ annotate नहीं किया</td></tr>
+      <tr><td><code>tok_emb[tokens] + pos_emb[:T]</code></td><td>(T, d)</td><td>हर token क्या है, और कहाँ बैठा है। दोनों सीखे हुए</td></tr>
+      <tr><td><code>decoder_block</code> × N</td><td>(T, d)</td><td>Causal attention (tokens बात करते हैं, सिर्फ़ पीछे की ओर), फिर एक MLP (हर token अकेले सोचता है)। Shape वही → stack हो सकता है</td></tr>
+      <tr><td><code>layer_norm @ W_out</code></td><td>(T, V)</td><td><strong>Logits.</strong> हर position के लिए एक अंदाज़ा, एक साथ — एक matrix multiply T rows को score करता है। Mask इसे जायज़ बनाता है: row t को tokens[t+1] पर score मिलता है और उसने उसे कभी देखा नहीं</td></tr>
+      <tr><td><code>softmax</code>, row-wise</td><td>(T, V)</td><td>प्रतिशत</td></tr>
+      <tr><td><code>−log p[target]</code></td><td>(T,)</td><td>असली अगले token से हर row कितनी चौंकी। पक्का और सही हो तो 0</td></tr>
+      <tr><td><code>mean</code></td><td>scalar</td><td>Loss. समान अंदाज़े के लिए ln(V); फ़र्श data की अपनी randomness है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Loop: output को वापस अंदर डालो</h2>
+  <p>
+    Demo 1 random weights के साथ NumPy block चलाता है। कुछ सीखा नहीं गया; मैं बस
+    चाहता हूँ आप shapes देखें। चार tokens अंदर, एक (4, 28) matrix बाहर — हर
+    position के लिए एक अंदाज़ा — और loop सिर्फ़ आख़िरी row रखता है:
+  </p>
+
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। यह रहा असली output:</strong></p>
+
+<pre><code>logits                        : (4, 28)  (one row PER position)
+we keep only logits[-1]       : (28,)  (the next-token guess)
+
+the loop, 5 steps, greedy:
+  step 0: T=4 tokens -&gt; logits(4, 28) -&gt; argmax of last row = 23 = 't'
+  step 1: T=5 tokens -&gt; logits(5, 28) -&gt; argmax of last row = 16 = 'l'
+  step 2: T=6 tokens -&gt; logits(6, 28) -&gt; argmax of last row =  0 = '\n'
+  step 3: T=7 tokens -&gt; logits(7, 28) -&gt; argmax of last row = 23 = 't'
+  step 4: T=8 tokens -&gt; logits(8, 28) -&gt; argmax of last row = 23 = 't'
+result: 'the tl\ntt'
+
+causal: logits for position 0 identical at ctx=4 and ctx=8? <span class="ok">True</span>
+no mask: logits for position 0 identical at ctx=4 and ctx=8? <span class="hl">False</span></code></pre>
+
+  <p>
+    आख़िरी दो lines mask का मुफ़्त बोनस हैं। Mask चालू हो तो sequence बढ़ने पर भी
+    row 0 का output कभी नहीं बदलता, इसलिए server हर पुरानी row दोबारा गिनने के
+    बजाय cache कर सकता है। यही KV cache है। इसके बिना कुछ भी cache नहीं हो सकता।
+  </p>
+
+  <h3>Context window</h3>
+  <p>
+    <code>block_size</code> के आगे loop की कोई याददाश्त नहीं; GPT-3 का
+    2048 tokens है। Demo 5 trained model पर इसे दोनों तरह से ग़लत करता है:
+  </p>
+
+<pre><code>torch: 33 tokens into the block_size=32 trained model, no crop:
+  <span class="hl">IndexError: index out of range in self</span>   (pos_emb has only 32 rows)
+
+crop from the wrong end -- idx[:, :block_size] instead of idx[:, -block_size:]:
+  <span class="hl">the model hides the answer again......................................</span>
+  every token after the window filled is the same one? True
+  vs the right crop, same model, same prompt:
+  <span class="ok">the model hides the answer again. the prompt hides the answer again. t</span></code></pre>
+
+  <p>
+    काटना भूल गए तो crash होना अच्छा नतीजा है। सिर से काटा तो model वही बासी
+    prefix हमेशा दोबारा पढ़ता रहता है, जो उसने अभी लिखा वह कभी नहीं देखता, और आप
+    रोकने तक एक ही अक्षर छापता रहता है।
+  </p>
+
+  <h2>वह shift: label अगला अक्षर है</h2>
+  <p>
+    Inputs हैं <code>tokens[:-1]</code>, targets हैं <code>tokens[1:]</code>।
+    वही एक-token shift GPT-3 का पूरा labelling budget है:
+  </p>
+
+<pre><code>text     : autocomplete
+inputs   : autocomplet   &lt;- tokens[:-1]
+targets  :  utocomplete   &lt;- tokens[1:], shifted one left
+pairs    : a-&gt;u u-&gt;t t-&gt;o o-&gt;c c-&gt;o o-&gt;m m-&gt;p p-&gt;l l-&gt;e e-&gt;t t-&gt;e</code></pre>
+
+  <p>अब इसे तोड़िए। <code>targets = inputs</code> कर दीजिए और ईमानदार version के
+    साथ-साथ 200 steps train कीजिए:</p>
+
+<pre><code>honest  (targets = tokens[1:]), 200 steps:
+  step     1  loss 3.536
+  step    50  loss 1.446
+  step   200  loss <span class="ok">0.313</span>
+BROKEN  (targets = inputs)  , 200 steps:
+  step     1  loss 3.719
+  step    50  loss 0.016
+  step   200  loss <span class="hl">0.002  ← learned output[i] = input[i], nothing else</span></code></pre>
+
+  <div class="note">
+    <strong>शून्य के पास वाला loss सफलता नहीं, बदबू है।</strong> टूटे हुए model
+    ने पचास steps में identity function ढूँढ़ लिया और रुक गया। जब भी
+    language-model का loss बहुत अच्छा लगे, सबसे पहले shift जाँचिए।
+  </div>
+
+  <h2>Train कीजिए, फिर बोलने दीजिए</h2>
+  <p>
+    Demo 3 मेरे laptop के CPU पर दो layers और 105,728 parameters वाला एक GPT
+    क़रीब दस सेकंड में train करता है। Corpus वे 400 वाक्य हैं जो मैं चार word
+    lists से बनाता हूँ — subject, verb, object, adjunct, हर एक समान रूप से चुना
+    गया — ताकि model के पास सीखने को grammar हो और वह रट न सके। इसका मतलब यह भी
+    है कि फ़र्श मुझे पता है: हर वाक्य में छह में से चार चुनाव यानी लगभग 38
+    अक्षरों पर 4·ln 6 nats, यानी प्रति अक्षर लगभग 0.19।
+  </p>
+
+<pre><code>  step     1  loss 3.536
+  step   150  loss 0.363
+  step   300  loss 0.288
+  step   600  loss <span class="ok">0.305</span>
+  a uniform guess scores ln(28) = 3.332; the corpus's own
+  randomness puts the floor near 0.191 (4 choices of 6 per sentence)
+
+temperature 0.8, 100 chars:
+  the model feeds the future by hand. the model feeds the next token again
+  . the prompt feeds the answer at scale</code></pre>
+
+  <p>
+    Demo 1 वाला ही loop। Random weights ने <code>'the tl\ntt'</code> छापा था;
+    trained weights corpus की grammar में वाक्य छापते हैं। Loop में कुछ नहीं
+    बदला। उसने संरचना सीखी, अर्थ नहीं — मेरे corpus में सीखने लायक़ अर्थ है ही
+    नहीं, और यही एक language model के काम का ईमानदार वर्णन है।
+  </p>
+
+  <h3>Temperature</h3>
+  <p>
+    Logits और पासे के बीच एक संख्या। Softmax से पहले आख़िरी row को इससे भाग
+    दीजिए: 1 से कम <code>argmax</code> की ओर तेज़ करता है, 1 से ज़्यादा समान
+    वितरण की ओर सपाट। जिस distribution से हर अक्षर निकाला गया, मैं उसकी entropy
+    nats में छापता हूँ; ln 28 ≈ 3.33 का मतलब है "कुछ पता नहीं":
+  </p>
+
+<pre><code>temperature 0.2:  mean entropy 0.096 nats
+  feeds the answer again. the mask feeds the answer at scale. the mask cop
+  ies the next token at scale.
+
+temperature 2.0:  mean entropy <span class="hl">1.100</span> nats
+  feeds its own oly.\nthefix by hagan. tby\naby hok fedsy . the feeds k\nt
+  he prefix slowly.\nfeefcashi rec
+
+temperature 0 for 400 chars -- does it loop?
+  yes: the tail repeats every <span class="hl">35 chars</span>: 'r again. the prompt hides the answe'</code></pre>
+
+  <p>
+    वह आख़िरी line ही वह "repetition" bug है जिससे सब टकराते हैं। Greedy decoding
+    deterministic है, इसलिए जिस पल वह किसी state पर दोबारा पहुँचता है, वह हमेशा
+    के लिए एक चक्र में है। Temperature 0 "सबसे सटीक setting" नहीं है; वह बिना
+    exit condition वाला loop है।
+  </p>
+
+  <h2>Loop को ईमानदार mask बनाता है</h2>
+  <p>
+    Attention page ने कहा था: mask हटा दीजिए तो वह BERT है। अगर आप generate करना
+    चाहते हैं तो उसकी क़ीमत यह है। Demo 6 वही model <code>causal=False</code> के
+    साथ, वही data, वही 600 steps train करता है:
+  </p>
+
+<pre><code>same model, same data, same steps, mask removed:
+  step     1  loss 3.540
+  step   600  loss <span class="hl">0.013  ← vs 0.305 with the mask on</span>
+
+loss per position: mean over positions 0..30, then position 31,
+the one row that has no next column to peek at:
+  causal : 0.280   last position: <span class="ok">0.190</span>
+  no mask: <span class="hl">0.001</span>   last position: <span class="hl">0.296</span>
+
+short prompt 'the model ', temperature 0.8:
+  causal :
+    the model feeds the future by hand. the model feeds the next token again
+    . the prompt feeds the answer at scale
+  no mask:
+    <span class="hl">the model ooooooomoooooooooooooooooooooooooooooooooooooooooooooooooooooo</span>
+    oooooooooooooooooooooooooooooooooooooo</code></pre>
+
+  <p>
+    Mask के बिना position i, position i+1 को देख सकती है — और वही उसका target
+    है। तो वह नक़ल करता है, और आख़िरी row को छोड़कर हर row पर loss 0.001 तक गिर
+    जाता है; वही एक row है जिसके पास नक़ल करने को कुछ नहीं। Sampling के समय
+    सिर्फ़ आख़िरी row मायने रखती है, यानी 32 में से 31 rows की training एक ऐसी
+    चालाकी पर गई जो production में कभी नहीं चलती, और वह एक ईमानदार row gradient
+    का 1/32 ही पा सकी: masked model के 0.190 के मुक़ाबले 0.296। पूरी 32-अक्षर
+    window दीजिए ताकि आख़िरी row ईमानदार हो, तो वह लड़खड़ाता है — बेसिर-पैर लंबे
+    वाक्य, एक गढ़ा हुआ शब्द; script वह भी छापती है। एक flag से नियंत्रित
+    train/serve skew।
+  </p>
+
+  <div class="note">
+    <strong>कम training loss, ख़राब model.</strong> Mask training को आसान बनाने
+    के लिए नहीं है। वह training को serving जैसी ही समस्या बनाने के लिए है।
+    Bidirectional attention <a href="../bert/">BERT</a> है, और BERT generate
+    नहीं करता।
+  </div>
+
+  <h2>In-context learning: prompt ही program है</h2>
+  <p>
+    GPT-3 की सुर्ख़ी। साफ़-साफ़ कह देता हूँ, क्योंकि interviewer पूछेंगे:
+    <strong>in-context learning का मतलब है कि हल किए हुए उदाहरण prompt में हैं
+    और weights जमे हुए हैं।</strong> कोई fine-tuning नहीं, कोई gradient step
+    नहीं, disk पर कुछ नहीं लिखा जाता। Paper का few-shot format ठीक इसी आकार का
+    है — कुछ input→output जोड़े, फिर बिना output वाला एक input:
+  </p>
+
+<pre><code>english: cat -&gt; french: chat
+english: dog -&gt; french: chien
+english: house -&gt; french: maison
+english: cheese -&gt; french:
+
+that prompt is 118 tokens; the model sees one integer array:
+  [10, 18, 12, 16, 14, 22, 13, 4, 1, 8, 6, 23] ... [1, 11, 21, 10, 18, 8, 13, 4]
+logits shape: (1, 32, 28)   gradient updates: <span class="ok">0</span></code></pre>
+
+  <p>
+    Code में कहीं यह नहीं लिखा कि "उदाहरण" क्या होता है। वे तीन हल किए जोड़े बस
+    और prefix हैं; few-shot का मतलब लंबा input, बस इतना ही। GPT-3 का दावा यह है
+    कि 175B parameters पर सबसे संभावित निरंतरता <code>fromage</code> है, और यह
+    ज़्यादा उदाहरणों और ज़्यादा parameters के साथ बेहतर होती जाती है — results
+    section वही curve है, task दर task। मेरे model में 105,728 parameters और छह
+    संज्ञाओं की vocabulary है। यह ऐसा नहीं करेगा, और मैं बहाना भी नहीं करूँगा कि
+    करता है। तंत्र वही है। क्षमता वह है जो scale ने ख़रीदी। इसके बाद जो आया —
+    autocomplete को केवल आगे बढ़ाने के बजाय निर्देश मानने के लिए
+    <em>इच्छुक</em> बनाना — वह <a href="../instructgpt/">InstructGPT</a> है।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -497,6 +1164,37 @@ def get_batch(data, block_size, batch_size, gen, shift=True):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

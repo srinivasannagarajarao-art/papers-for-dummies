@@ -7,7 +7,7 @@
 <meta name="description" content="The BERT paper explained as code. Pre-training is a cloze test: hide 15% of the tokens, let every token see both sides, guess the blanks. Runnable NumPy plus a tiny PyTorch model that trains on CPU in under 30 seconds, then fails on purpose when you put the causal mask back.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -35,6 +35,15 @@
       — everything below runs from it. NumPy, plus a tiny CPU PyTorch model for
       the training step.</p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
 
   <p>
     I'd fine-tuned BERT for a classifier before I understood what pre-training
@@ -287,6 +296,569 @@ causal mask (GPT) -- each row = what that token can see:
     layers of real features with NSP behind them beat my 32 numbers.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    Pre-training என்ன செய்தது என்று புரிவதற்கு முன்பே நான் ஒரு classifier-க்காக
+    BERT-ஐ fine-tune செய்திருந்தேன். <code>bert-base-uncased</code> load செய்,
+    ஒரு head சேர், மூன்று epochs train செய், ship. ஆனால் யாரும் சொல்லாதது ஒன்று:
+    இந்த paper என்பது நான் ஒன்பது வயதில் எழுதிய ஒரு தேர்வுக் கேள்வி, கூடவே
+    <a href="../attention/">உங்களிடம் ஏற்கனவே இருக்கும் encoder</a> — அதில்
+    ஒரே ஒரு argument-ஐ நீக்கியது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (masked language model,
+    token, encoder, mask, fine-tune…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால்
+    code-லும் மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>Pre-training என்பது ஒரு கோடிட்ட இடத்தை நிரப்புக</h2>
+
+  <p>பள்ளியில் இதைச் செய்திருப்பீர்கள்:</p>
+
+<pre><code>sentence = "the cat sat on the mat"
+question = "the cat ___ on the mat"     # கோடிட்ட இடம்
+answer   = "sat"                        # மூலவாக்கியம் ஆசிரியரிடம்</code></pre>
+
+  <p>
+    BERT அதுதான் — 3.3 பில்லியன் வார்த்தைகள் மேல், மாணவனாக ஒரு transformer
+    encoder, மேலும் loss <em>கோடிட்ட இடங்களுக்கு மட்டும்</em> மதிப்பெண்:
+  </p>
+
+<pre><code>for sentence in the_internet:
+    hidden, answers = hide_15_percent(sentence)   # சில tokens-ஐ மறை
+    guess = encoder(hidden)                       # token இரு பக்கமும் பார்க்கும்
+    loss  = cross_entropy(guess, answers)         # மறைத்தவற்றுக்கு மட்டும்</code></pre>
+
+  <p>
+    அதுதான் pre-training: எந்த task-ம் மனதில் இல்லை, "the cat"-க்கும் "on the
+    mat"-க்கும் இடையே பொதுவாக என்ன வரும் என்பது மட்டும். பிறகு ஒவ்வொரு
+    task-க்கும் ஒரு சிறிய head பொருத்தி, முழுவதையும் இன்னும் கொஞ்சம் train
+    செய்வது — அதுதான் fine-tuning. ஒரே library, task-க்கு ஒரு வேறு
+    <code>main()</code>.
+  </p>
+
+  <p class="thanglish">
+    Pre-training-nu solradhu school-la panna fill-in-the-blank dhaan. 15% tokens
+    mattum maraikkuradhu, encoder guess pannuradhu, blanks-kku mattum loss.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>MLM</strong></td><td>Masked language model: tokens-ஐ மறைத்து, அவற்றைக் கணிக்கச் சொல்வது</td><td>கோடிட்ட இடத்தை நிரப்புக</td></tr>
+      <tr><td><strong>Bidirectional</strong></td><td>ஒவ்வொரு token-ம் தன் இடது <em>மற்றும்</em> வலது பக்கத்தைப் பார்க்கிறது</td><td>Causal mask இல்லை. வெறும் <code>mask=None</code></td></tr>
+      <tr><td><strong>Pre-train / fine-tune</strong></td><td>மொழியை ஒருமுறை கற்றுக்கொள்; பிறகு ஒரு head சேர்த்து ஒவ்வொரு task-க்கும் எல்லா parameter-ஐயும் train செய்</td><td>ஒரே பொது library, task-க்கு ஒரு வேறு <code>main()</code></td></tr>
+      <tr><td><strong>[CLS]</strong></td><td>முதலில் சேர்க்கப்படும் ஒரு கூடுதல் token; அதன் output முழு input-ஐயும் குறிக்கிறது</td><td>Sequence மேல் ஒரு <code>reduce()</code>, ஒரே struct-ஆக</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>GPT-1-ஐயும் ELMo-வையும் இது ஏன் வென்றது</h2>
+
+  <p>
+    சாதாரண language model, tokens 1–4-லிருந்து token 5-ஐக் கணிக்கும், பிறகு
+    1–5-லிருந்து 6-ஐ. ஒவ்வொரு token-ம் தன் இடதுபுறத்தை மட்டுமே பார்க்கும்.
+    GPT-1 அப்படித்தான். Text உருவாக்குவதற்கு இது நல்லது, ஆனால் "the bank of
+    the river"-ல் "bank"-க்கான சிறந்த குறிப்பு <em>வலதுபுறம்</em> இருக்கிறது.
+    அப்படியானால் ஒவ்வொரு token-ம் இரு பக்கமும் பார்க்கட்டுமே? ஏனெனில் அது
+    ஏமாற்றும்: அடுக்கப்பட்ட encoder-ல், layer 2-வில் உள்ள token 5, layer
+    1-லிருந்து token 6-ஐப் படிக்கிறது — அது ஏற்கனவே token 5-ஐப் படித்துவிட்டது.
+    ஒவ்வொரு வார்த்தையும் "மறைமுகமாகத் தன்னையே பார்க்கக்கூடும்" என்று paper
+    சொல்கிறது. ELMo இதை ஒரு left-to-right LSTM, ஒரு right-to-left LSTM, இறுதியில்
+    ஒட்டி — ஒரு "shallow concatenation" — என்று சமாளித்தது. BERT-இன் ஒரே தந்திரம்:
+    token <em>மறைக்கப்பட்டால்</em> கசிய ஒன்றுமில்லை. அதை <code>[MASK]</code>-ஆல்
+    மாற்று, எல்லோரையும் எங்கும் பார்க்க விடு — மதிப்பெண் பெற ஒரே வழி, இரு
+    பக்கத்திலிருந்தும் ஊகிப்பதுதான். இந்தக் கோடிட்ட இடம் வெறும் அழகான உவமை அல்ல.
+    ஆழமான bidirectionality-ஐ சட்டப்பூர்வமாக்குவது அதுதான்.
+  </p>
+
+  <p class="thanglish">
+    Rendu pakkamum paakka vitta, token thannaye paathukkum — adhu dhaan leak.
+    Token-ai maraichaa leak illa. Andha oru trick dhaan BERT.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">L<sub>MLM</sub> = − Σ<sub>i ∈ M</sub> log p(x<sub>i</sub> | x̃)</div>
+
+  <p>x என்பது மூல tokens, x̃ என்பது அதே sequence-ல் 15% சிதைக்கப்பட்டது,
+    M என்பது சிதைக்கப்பட்ட இடங்களின் தொகுப்பு. படிநிலைகளாகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>x</code></td><td>(L,)</td><td>ஒரு sequence-இன் token ids. Paper-ல் L = 512, என் script-ல் 17</td></tr>
+      <tr><td><code>x̃ = corrupt(x)</code></td><td>(L,)</td><td>15% இடங்களைத் தேர்ந்தெடு. அவற்றில் 80% <code>[MASK]</code>, 10% ஒரு random token, 10% தொடாமல்</td></tr>
+      <tr><td><code>encoder(x̃)</code></td><td>(L, d)</td><td>Attention page-இன் attention stack, <strong><code>mask=None</code> உடன்</strong>. ஒவ்வொரு row-ம் ஒவ்வொரு column-ஐயும் பார்க்கிறது</td></tr>
+      <tr><td><code>head</code></td><td>(L, V)</td><td>Vocabulary logits-க்கு ஒரே linear layer: "இங்கே எந்த token இருந்தது?"</td></tr>
+      <tr><td>i ∈ M-ல் <code>−log p</code></td><td>scalar</td><td>Cross-entropy, ஆனால் சிதைக்கப்பட்ட இடங்களில் மட்டும். மீதி 85% context, கேள்வி அல்ல</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Masking செய்முறை: 15%, பிறகு 80/10/10</h2>
+
+  <p>
+    விசித்திரமான பகுதி 80/10/10. தேர்ந்தெடுத்த ஒவ்வொரு token-ஐயும்
+    <code>[MASK]</code>-ஆல் ஏன் மாற்றக்கூடாது? ஏனெனில் fine-tune செய்யும்போது
+    <code>[MASK]</code> ஒருபோதும் வருவதில்லை. 10% random, 10% அப்படியே வைத்தல்
+    என்பதால், model சில நேரம் <em>தெரியும்</em> token-க்கும் மதிப்பெண் பெறுகிறது —
+    எனவே அது தன் input-ஐ முழுமையாக நம்ப முடியாது. அவற்றை நீக்கி train செய்தால்,
+    தெரியும் token-ல் accuracy 99.3%-லிருந்து 53.0%-ஆக விழுகிறது: break-it
+    அட்டவணையின் ஒரு row, மேலும் paper-இன் appendix-ல் ஒரு ablation.
+  </p>
+
+  <p><strong>NumPy-ல் அந்தச் செய்முறை — ஒரு வாக்கியம், பிறகு பத்தாயிரம்:</strong></p>
+
+<pre><code>original : [CLS] d D e E g G h H a A b B g G h H
+corrupted: [CLS] d D e _ g G _ H a A b B g G h _
+labels   :     . . . . E . . h . . . . . . . . H
+kind     :     . . . . M . . M . . . . . . . . M
+           (M = [MASK]  R = random token  K = kept as-is  . = no loss)
+
+over 10000 sentences (160000 real tokens):
+  [MASK]   12.0%   (recipe says 12.0%)
+  random    1.5%   (recipe says 1.5%)
+  kept      1.5%   (recipe says 1.5%)
+  picked   15.0%   (recipe says 15.0%) <span class="ok">✓</span></code></pre>
+
+  <p>
+    என் பொம்மை corpus: ஒரு "வாக்கியம்" என்பது எட்டு அடைப்புக் குறி ஜோடிகள் —
+    ஒரு opener (<code>a</code>–<code>h</code>), அதைத் தொடர்ந்து அதற்கான closer
+    (<code>A</code>–<code>H</code>), openers random-ஆகத் தேர்ந்தெடுக்கப்படுகின்றன.
+    எனவே ஒரு closer-ஐ அதன் <em>இடதுபுறத்திலிருந்து</em> கணிக்கலாம், ஒரு
+    opener-ஐ அதன் <em>வலதுபுறத்திலிருந்து</em> மட்டுமே. இது வேண்டுமென்றே:
+    பாதி கோடிட்ட இடங்களுக்கு வலது context தேவை.
+  </p>
+
+  <h2>Mask-ஐ நீக்கு, ஒவ்வொரு token-ம் இரு பக்கமும் பார்க்கும்</h2>
+
+  <p>
+    Attention page-இன் <code>scaled_dot_product_attention</code>, அதே input,
+    ஒரே ஒரு argument மாற்றம். Row = ஒரு token; column = அது இன்னொன்றை எவ்வளவு
+    படிக்கிறது.
+  </p>
+
+<pre><code>no mask (BERT) -- each row = what that token can see:
+  b  [0.79 0.01 0.04 0.04 0.11]   sees 5 of 5
+  B  [0.02 0.86 0.04 0.03 0.05]   sees 5 of 5
+  e  [0.20 0.10 0.28 0.21 0.22]   sees 5 of 5 <span class="ok">← வலது E-ஐப் படிக்கிறது</span>
+  E  [0.20 0.07 0.25 0.27 0.21]   sees 5 of 5
+  a  [0.39 0.09 0.17 0.13 0.23]   sees 5 of 5
+
+causal mask (GPT) -- each row = what that token can see:
+  b  [1.00 0.00 0.00 0.00 0.00]   <span class="hl">sees 1 of 5</span>
+  B  [0.03 0.97 0.00 0.00 0.00]   sees 2 of 5
+  e  [0.34 0.17 0.49 0.00 0.00]   sees 3 of 5 <span class="hl">← E வருவது தெரியாது</span>
+  E  [0.26 0.09 0.32 0.34 0.00]   sees 4 of 5
+  a  [0.39 0.09 0.17 0.13 0.23]   sees 5 of 5</code></pre>
+
+  <div class="note">
+    <strong>அதே code, ஒரே argument.</strong> <code>mask=None</code> என்றால்
+    BERT; <code>mask=causal_mask(n)</code> என்றால் GPT. கடைசி row இரண்டிலும்
+    ஒன்றுதான்: கடைசி token எப்போதும் எல்லாவற்றையும் பார்க்கிறது — அதனால்தான்
+    causal model generation-க்கு நல்லது. BERT-க்கு ஒவ்வொரு token-க்கும் அந்தப்
+    பார்வை வேண்டும்.
+  </div>
+
+  <h2>Train செய்: loss குறைகிறது, கோடிட்ட இடங்கள் நிரம்புகின்றன</h2>
+
+  <p>
+    Encoder என்பது attention page-இன் இரண்டு blocks, PyTorch-ல், 32 அகலம்,
+    இரண்டு heads, 27k parameters. BERT-base என்பது பன்னிரண்டு blocks, 768 அகலம்,
+    பன்னிரண்டு heads, 110M parameters, BooksCorpus மற்றும் Wikipedia மேல் ஒரு
+    மில்லியன் steps. அதே வடிவம், சிறிய எண்கள். Laptop CPU-ல் அறுநூறு steps:
+  </p>
+
+<pre><code>  step    1   loss 3.083   masked-token accuracy   5.3%
+  step  200   loss 0.289   masked-token accuracy  89.4%
+  step  400   loss 0.429   masked-token accuracy  89.6%
+  step  600   loss 0.407   masked-token accuracy  89.4% <span class="ok">✓</span>
+
+  partner visible and intact :  99.9%  (4172 targets)
+  partner hidden or corrupted:  18.3%  (613 targets, chance = 12.5%)</code></pre>
+
+  <p>
+    ஏன் 89%, 100% இல்லை? கடைசி இரண்டு வரிகள் காரணத்தைச் சொல்கின்றன. Partner
+    தெரிந்தால்: கிட்டத்தட்ட சரியானது. ஒரு ஜோடியின் இரு பாதிகளும்
+    தேர்ந்தெடுக்கப்பட்டால்: ஊகிக்க எதுவும் மிச்சமில்லை. அந்த 11% என்பது
+    செய்முறை, model அல்ல.
+  </p>
+
+  <p><strong>ஒரு held-out வாக்கியம், model நிரப்பிய கோடிட்ட இடங்கள்:</strong></p>
+
+<pre><code>  original : [CLS] a A e E h H a A g G g G c C f F
+  input    : [CLS] a A e E h H a _ g G g G c b f _
+  predicted: [CLS] a A e E h H a A g G g G c C f F   <span class="ok">✓✓✓</span></code></pre>
+
+  <p>
+    இரண்டு கோடிட்ட இடங்கள் நிரம்பின. மேலும் <code>c</code>-க்குப் பிறகு வந்த
+    <code>b</code> ஒரு random replacement, கோடிட்ட இடம் அல்ல; model அதையும்
+    திருத்தியது. அதுதான் 10% random விதி.
+  </p>
+
+  <h2>Mask-ஐ வைத்தே இருந்து, அது தோற்பதைப் பார்</h2>
+
+  <p>
+    இப்போது paper-இன் உண்மையான வாதம். அதே model, அதே data stream, அதே seed,
+    அதே 600 steps. ஒரே மாற்றம் <code>causal=True</code>: attention page-இன்
+    lower-triangular mask, மீண்டும் வைக்கப்பட்டது.
+  </p>
+
+<pre><code>                                  bidirectional    causal
+  all masked tokens                       89.4%     <span class="hl">55.5%</span>
+    closers (clue on the LEFT)            89.6%     89.7% <span class="ok">✓</span>
+    openers (clue on the RIGHT)           89.3%     <span class="hl">20.4%</span>
+  chance = 12.5%</code></pre>
+
+  <p>
+    அந்தப் பிரிவைப் பாருங்கள். Causal model, BERT அளவுக்கே நன்றாக அடைப்புகளை
+    மூடுகிறது; opener அதன் இடதுபுறத்தில் இருக்கிறது. ஆனால் அதனால் ஒரு opener-ஐ
+    ஊகிக்க முடியாது: ஒரே ஆதாரம் அதன் <em>வலதுபுறம்</em> உள்ள closer, mask அதை
+    மறைக்கிறது. 20%, random-ஐ விட சற்றே மேல். மொழியின் பாதிக்கு அதன் குறிப்பு
+    வலதுபுறத்தில் இருக்கிறது. Paper-இன் முழு வாதமும் அந்த ஒரு row-ல்.
+  </p>
+
+  <p class="thanglish">
+    Causal model closers-ai nalla mudikkudhu, aana openers-la 20% dhaan. Clue
+    right-la irundha, mask adha maraikkudhu. Adhu dhaan paper-oda point.
+  </p>
+
+  <div class="note">
+    <strong>Interview பதில்.</strong> "BERT-ஐ வைத்து ஏன் text generate செய்ய
+    முடியாது?" ஏனெனில் அது வலது context-ஐ வைத்துக் கோடிட்ட இடங்களை நிரப்புகிறது,
+    generation நேரத்தில் வலது context இன்னும் இல்லை. மேலும் <em>அடுத்த</em>
+    token-ஐக் கணிக்க அது ஒருபோதும் train செய்யப்படவில்லை, மறைக்கப்பட்டவற்றை
+    மட்டுமே. அந்த வேலை <a href="../gpt/">GPT குடும்பத்துக்கு</a>ப் போனது —
+    அது mask-ஐ வைத்துக்கொண்டு அந்த 20%-ஐ விலையாகக் கொடுக்கிறது.
+  </div>
+
+  <h2>[CLS], NSP, மற்றும் task-க்கு ஒரு வேறு main()</h2>
+
+  <p>
+    BERT ஒவ்வொரு input-க்கும் முன்னால் <code>[CLS]</code> என்ற ஒரு கூடுதல்
+    token-ஐச் சேர்க்கிறது. அர்த்தம் இல்லை; ஒரு இடம் மட்டும். Stack-இன் உச்சியில்
+    அதன் output "அந்த வாக்கியம்": encoder output (batch, 17, 32), row 0 என்பது
+    (batch, 32), ஒரே linear layer (batch, 2) தருகிறது. அவ்வளவுதான் முழு
+    classification head.
+  </p>
+
+  <p>
+    Paper-இன் இரண்டாவது pre-training task, <strong>next sentence
+    prediction</strong>, அந்த இடத்துக்கு ஒரு வேலை தருகிறது. A மற்றும் B
+    வாக்கியங்களை எடு; பாதி நேரம் B உண்மையிலேயே A-ஐத் தொடர்ந்தது, பாதி நேரம் அது
+    random. <code>[CLS] A [SEP] B [SEP]</code> மற்றும் ஒரு கற்ற segment embedding
+    கொடுத்து, <code>[CLS]</code> output <em>IsNext</em> அல்லது <em>NotNext</em>
+    என்று சொல்லப் பயிற்றுவி. §5.1-இன் ablation, அதை நீக்கினால் QNLI, MNLI, SQuAD
+    பாதிக்கப்படும் என்கிறது. ஒரு வருடம் கழித்து RoBERTa, NSP இல்லாமல் அதிக
+    data-வில் train செய்து BERT-க்கு இணையாக அல்லது மேலாக வந்தது — எனவே இத்துறை
+    அதைக் கைவிட்டது. நானும் implement செய்யவில்லை, அதன் விலை தெரிகிறது:
+    pre-training-ல் <code>[CLS]</code> எதுவும் செய்யவில்லை.
+  </p>
+
+  <p>
+    Fine-tuning அதைச் சரிசெய்யும் — ஆனால் gradients encoder வரை சென்றால் மட்டுமே.
+    ஒரு பொம்மை task, ஒரு சிறிய CoLA: இந்த வாக்கியம் இலக்கணப்படி சரியா? பாதியில்
+    ஒரு closer தவறான ஒன்றால் மாற்றப்பட்டிருக்கும்.
+  </p>
+
+<pre><code>  300 steps of fine-tuning        trainable params  accuracy
+  head only, encoder frozen                     66     <span class="hl">51.8%</span>
+  everything (the paper)                     27188     <span class="ok">99.2%</span>
+  everything, NO pre-training                27188     <span class="hl">50.1%</span>
+  chance = 50.0%</code></pre>
+
+  <p>
+    மூன்று rows, paper-இன் இரு வாதங்களும். Encoder-ஐ freeze செய்: random
+    அளவுதான். எல்லாவற்றையும் fine-tune செய்: 300 steps-ல் தீர்ந்தது. ஒரு
+    <em>random</em> encoder-லிருந்து அதே 300 steps fine-tune செய்: மீண்டும்
+    random அளவு. Pre-training fine-tuning-ஐ மலிவாக்குகிறது; எல்லாவற்றையும்
+    fine-tune செய்வது pre-training-ஐப் பயனுள்ளதாக்குகிறது. Paper இரண்டையும்
+    செய்கிறது, 110M parameters மேல், 2e-5 முதல் 5e-5 வரை, இரண்டு முதல் நான்கு
+    epochs. என் பொம்மையில் frozen head-க்கு எதுவும் கிடைக்கவில்லை; paper-இன்
+    NER மேல் செய்த feature-based சோதனையில் அது கிட்டத்தட்ட முழு தூரமும்
+    செல்கிறது — ஏனெனில் NSP-உடன் பன்னிரண்டு layers-இன் உண்மையான features,
+    என் 32 எண்களை விட மேல்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने एक classifier के लिए BERT fine-tune कर लिया था, यह समझने से पहले ही
+    कि pre-training ने उसके साथ किया क्या है। <code>bert-base-uncased</code>
+    load करो, एक head जोड़ो, तीन epochs train करो, ship। जो किसी ने नहीं बताया
+    वह यह है: यह paper वही एक परीक्षा-प्रश्न है जो मैंने नौ साल की उम्र में हल
+    किया था, और साथ में <a href="../attention/">वही encoder जो आपके पास पहले से
+    है</a> — बस एक argument हटा हुआ।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (masked language model,
+    token, encoder, mask, fine-tune…) मैंने वैसे ही रखे हैं। क्योंकि code में
+    और बाक़ी papers में आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली
+    English में।</strong>
+  </div>
+
+  <h2>Pre-training एक रिक्त स्थान भरो है</h2>
+
+  <p>यह आपने स्कूल में किया है:</p>
+
+<pre><code>sentence = "the cat sat on the mat"
+question = "the cat ___ on the mat"     # रिक्त स्थान
+answer   = "sat"                        # मूल वाक्य शिक्षक के पास है</code></pre>
+
+  <p>
+    BERT यही है — 3.3 अरब शब्दों पर, विद्यार्थी की जगह एक transformer encoder,
+    और loss <em>सिर्फ़ रिक्त स्थानों</em> पर:
+  </p>
+
+<pre><code>for sentence in the_internet:
+    hidden, answers = hide_15_percent(sentence)   # कुछ tokens छिपाओ
+    guess = encoder(hidden)                       # हर token दोनों तरफ़ देखता है
+    loss  = cross_entropy(guess, answers)         # सिर्फ़ छिपे हुए पर अंक</code></pre>
+
+  <p>
+    यही pre-training है: कोई task दिमाग़ में नहीं, बस इतना कि "the cat" और
+    "on the mat" के बीच आम तौर पर क्या आता है। फिर हर task के लिए एक छोटा head
+    लगाओ और पूरे मॉडल को थोड़ा और train करो। वही fine-tuning है। एक ही library,
+    हर task के लिए अलग <code>main()</code>।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>MLM</strong></td><td>Masked language model: tokens छिपाओ, फिर उनका अनुमान लगाओ</td><td>रिक्त स्थान भरो</td></tr>
+      <tr><td><strong>Bidirectional</strong></td><td>हर token अपने बाएँ <em>और</em> दाएँ, दोनों पर attend करता है</td><td>कोई causal mask नहीं। बस <code>mask=None</code></td></tr>
+      <tr><td><strong>Pre-train / fine-tune</strong></td><td>भाषा एक बार सीखो; फिर head जोड़कर हर task के लिए हर parameter train करो</td><td>एक साझा library, हर task के लिए अलग <code>main()</code></td></tr>
+      <tr><td><strong>[CLS]</strong></td><td>शुरू में जोड़ा गया एक अतिरिक्त token, जिसका output पूरे input का प्रतिनिधि है</td><td>पूरे sequence पर एक <code>reduce()</code>, एक struct में</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>यह GPT-1 और ELMo से आगे क्यों निकला</h2>
+
+  <p>
+    एक सामान्य language model tokens 1–4 से token 5 का अनुमान लगाता है, फिर 1–5
+    से 6 का। हर token सिर्फ़ अपना बायाँ देखता है। GPT-1 बिलकुल यही था। Text
+    generate करने के लिए ठीक, लेकिन "the bank of the river" में "bank" का सबसे
+    अच्छा सुराग़ <em>दाईं</em> तरफ़ है। तो हर token को दोनों तरफ़ देखने क्यों न
+    दें? क्योंकि वह नक़ल कर लेता है: stacked encoder में layer 2 का token 5,
+    layer 1 का token 6 पढ़ता है, जो token 5 को पहले ही पढ़ चुका है। Paper कहता है
+    कि हर शब्द "अप्रत्यक्ष रूप से ख़ुद को देख सकता है"। ELMo ने इससे बचने के लिए
+    एक left-to-right LSTM और एक right-to-left LSTM को अंत में जोड़ा — एक "shallow
+    concatenation"। BERT की एक ही तरकीब: अगर token <em>छिपा</em> है, तो लीक होने
+    को कुछ है ही नहीं। उसे <code>[MASK]</code> से बदल दो, सबको हर जगह देखने दो,
+    और अंक पाने का इकलौता रास्ता है दोनों तरफ़ से अनुमान लगाना। यह रिक्त-स्थान
+    वाली बात कोई प्यारी सी उपमा भर नहीं है। यही गहरी bidirectionality को जायज़
+    बनाती है।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">L<sub>MLM</sub> = − Σ<sub>i ∈ M</sub> log p(x<sub>i</sub> | x̃)</div>
+
+  <p>x मूल tokens हैं, x̃ वही sequence जिसका 15% बिगाड़ा गया है, और M बिगाड़ी
+    गई positions का समूह। इसे चरणों में पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>x</code></td><td>(L,)</td><td>एक sequence के token ids। Paper में L = 512, मेरी script में 17</td></tr>
+      <tr><td><code>x̃ = corrupt(x)</code></td><td>(L,)</td><td>15% positions चुनो। उनमें से 80% <code>[MASK]</code>, 10% कोई random token, 10% अछूते</td></tr>
+      <tr><td><code>encoder(x̃)</code></td><td>(L, d)</td><td>Attention page वाला attention stack, <strong><code>mask=None</code> के साथ</strong>। हर row हर column देखती है</td></tr>
+      <tr><td><code>head</code></td><td>(L, V)</td><td>Vocabulary logits के लिए एक linear layer: "यहाँ कौन सा token था?"</td></tr>
+      <tr><td>i ∈ M पर <code>−log p</code></td><td>scalar</td><td>Cross-entropy, पर सिर्फ़ बिगाड़ी गई positions पर। बाक़ी 85% context हैं, सवाल नहीं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Masking की विधि: 15%, फिर 80/10/10</h2>
+
+  <p>
+    अजीब हिस्सा 80/10/10 है। हर चुने हुए token को <code>[MASK]</code> से क्यों न
+    बदलें? क्योंकि fine-tune करते समय <code>[MASK]</code> कभी आता ही नहीं।
+    10% random और 10% ज्यों का त्यों रखने का मतलब है कि model को कभी-कभी किसी
+    <em>दिखते हुए</em> token पर अंक मिलते हैं, इसलिए वह अपने input पर पूरा भरोसा
+    कभी नहीं कर सकता। इनके बिना train करो और दिखते हुए token पर accuracy 99.3%
+    से गिरकर 53.0% हो जाती है: break-it तालिका की एक row, और paper के appendix
+    का एक ablation।
+  </p>
+
+  <p><strong>NumPy में यह विधि, एक वाक्य और फिर दस हज़ार:</strong></p>
+
+<pre><code>original : [CLS] d D e E g G h H a A b B g G h H
+corrupted: [CLS] d D e _ g G _ H a A b B g G h _
+labels   :     . . . . E . . h . . . . . . . . H
+kind     :     . . . . M . . M . . . . . . . . M
+           (M = [MASK]  R = random token  K = kept as-is  . = no loss)
+
+over 10000 sentences (160000 real tokens):
+  [MASK]   12.0%   (recipe says 12.0%)
+  random    1.5%   (recipe says 1.5%)
+  kept      1.5%   (recipe says 1.5%)
+  picked   15.0%   (recipe says 15.0%) <span class="ok">✓</span></code></pre>
+
+  <p>
+    मेरा खिलौना corpus: एक "वाक्य" यानी आठ कोष्ठक-जोड़े, एक opener
+    (<code>a</code>–<code>h</code>) और उसके बाद उसी का closer
+    (<code>A</code>–<code>H</code>), openers random चुने गए। यानी closer का
+    अनुमान उसके <em>बाएँ</em> से लग जाता है, पर opener का सिर्फ़ उसके
+    <em>दाएँ</em> से। यह जानबूझकर है: आधे रिक्त स्थानों को दायाँ context चाहिए।
+  </p>
+
+  <h2>Mask हटाओ और हर token दोनों तरफ़ देखेगा</h2>
+
+  <p>
+    Attention page का <code>scaled_dot_product_attention</code>, वही input, एक
+    argument बदला हुआ। Row = एक token; column = वह दूसरे को कितना पढ़ता है।
+  </p>
+
+<pre><code>no mask (BERT) -- each row = what that token can see:
+  b  [0.79 0.01 0.04 0.04 0.11]   sees 5 of 5
+  B  [0.02 0.86 0.04 0.03 0.05]   sees 5 of 5
+  e  [0.20 0.10 0.28 0.21 0.22]   sees 5 of 5 <span class="ok">← दाईं ओर का E पढ़ा</span>
+  E  [0.20 0.07 0.25 0.27 0.21]   sees 5 of 5
+  a  [0.39 0.09 0.17 0.13 0.23]   sees 5 of 5
+
+causal mask (GPT) -- each row = what that token can see:
+  b  [1.00 0.00 0.00 0.00 0.00]   <span class="hl">sees 1 of 5</span>
+  B  [0.03 0.97 0.00 0.00 0.00]   sees 2 of 5
+  e  [0.34 0.17 0.49 0.00 0.00]   sees 3 of 5 <span class="hl">← E का पता नहीं</span>
+  E  [0.26 0.09 0.32 0.34 0.00]   sees 4 of 5
+  a  [0.39 0.09 0.17 0.13 0.23]   sees 5 of 5</code></pre>
+
+  <div class="note">
+    <strong>वही code, एक argument।</strong> <code>mask=None</code> यानी BERT;
+    <code>mask=causal_mask(n)</code> यानी GPT। आख़िरी row दोनों में एक जैसी है:
+    आख़िरी token हमेशा सब कुछ देखता है, इसीलिए causal model generation के लिए
+    ठीक है। BERT चाहता है कि यह नज़र हर token के पास हो।
+  </div>
+
+  <h2>इसे train करो: loss गिरता है, रिक्त स्थान भरते हैं</h2>
+
+  <p>
+    Encoder यानी attention page के दो blocks, PyTorch में, 32 चौड़ा, दो heads,
+    27k parameters। BERT-base यानी बारह blocks, 768 चौड़ा, बारह heads, 110M
+    parameters, BooksCorpus और Wikipedia पर दस लाख steps। वही आकार, छोटे नंबर।
+    Laptop CPU पर छह सौ steps:
+  </p>
+
+<pre><code>  step    1   loss 3.083   masked-token accuracy   5.3%
+  step  200   loss 0.289   masked-token accuracy  89.4%
+  step  400   loss 0.429   masked-token accuracy  89.6%
+  step  600   loss 0.407   masked-token accuracy  89.4% <span class="ok">✓</span>
+
+  partner visible and intact :  99.9%  (4172 targets)
+  partner hidden or corrupted:  18.3%  (613 targets, chance = 12.5%)</code></pre>
+
+  <p>
+    89% क्यों, 100% क्यों नहीं? आख़िरी दो लाइनें बताती हैं। Partner दिख रहा हो:
+    लगभग पूर्ण। जोड़े के दोनों हिस्से चुन लिए जाएँ: अनुमान लगाने को कुछ बचा ही
+    नहीं। वह 11% विधि है, model नहीं।
+  </p>
+
+  <p><strong>एक held-out वाक्य, model द्वारा भरे गए रिक्त स्थान:</strong></p>
+
+<pre><code>  original : [CLS] a A e E h H a A g G g G c C f F
+  input    : [CLS] a A e E h H a _ g G g G c b f _
+  predicted: [CLS] a A e E h H a A g G g G c C f F   <span class="ok">✓✓✓</span></code></pre>
+
+  <p>
+    दो रिक्त स्थान भर गए। और <code>c</code> के बाद वाला <code>b</code> एक random
+    replacement था, रिक्त स्थान नहीं; model ने उसे भी सुधार दिया। यही 10% random
+    वाला नियम है।
+  </p>
+
+  <h2>Mask रहने दो और इसे नाकाम होते देखो</h2>
+
+  <p>
+    अब paper का असली तर्क। वही model, वही data stream, वही seed, वही 600 steps।
+    बदला सिर्फ़ <code>causal=True</code>: attention page वाला lower-triangular
+    mask, वापस लगा दिया गया।
+  </p>
+
+<pre><code>                                  bidirectional    causal
+  all masked tokens                       89.4%     <span class="hl">55.5%</span>
+    closers (clue on the LEFT)            89.6%     89.7% <span class="ok">✓</span>
+    openers (clue on the RIGHT)           89.3%     <span class="hl">20.4%</span>
+  chance = 12.5%</code></pre>
+
+  <p>
+    इस बँटवारे को देखिए। Causal model कोष्ठक उतने ही अच्छे से बंद करता है जितना
+    BERT; opener उसके बाईं ओर है। पर वह opener का अनुमान नहीं लगा सकता: इकलौता
+    सबूत उसके <em>दाएँ</em> वाला closer है, और mask उसे छिपा देता है। 20%,
+    यानी random से ज़रा ही ऊपर। आधी भाषा का सुराग़ दाईं तरफ़ होता है। Paper का
+    पूरा दावा उसी एक row में है।
+  </p>
+
+  <div class="note">
+    <strong>Interview वाला जवाब।</strong> "BERT से text generate क्यों नहीं कर
+    सकते?" क्योंकि वह दायाँ context इस्तेमाल करके रिक्त स्थान भरता है, और
+    generation के वक़्त दायाँ context अभी होता ही नहीं। और उसे <em>अगला</em>
+    token predict करना कभी सिखाया ही नहीं गया, सिर्फ़ छिपे हुए। वह काम
+    <a href="../gpt/">GPT परिवार</a> के पास गया, जो mask रखता है और वह 20% की
+    क़ीमत चुकाता है।
+  </div>
+
+  <h2>[CLS], NSP, और हर task के लिए अलग main()</h2>
+
+  <p>
+    BERT हर input के आगे एक अतिरिक्त token, <code>[CLS]</code>, जोड़ देता है।
+    कोई अर्थ नहीं; बस एक जगह। Stack के ऊपर उसका output ही "वह वाक्य" है:
+    encoder output (batch, 17, 32), row 0 यानी (batch, 32), एक linear layer से
+    (batch, 2)। पूरा classification head बस इतना ही है।
+  </p>
+
+  <p>
+    Paper का दूसरा pre-training task, <strong>next sentence prediction</strong>,
+    उस जगह को काम देता है। वाक्य A और B लो; आधी बार B सचमुच A के बाद आया था,
+    आधी बार वह random है। <code>[CLS] A [SEP] B [SEP]</code> के साथ एक सीखा हुआ
+    segment embedding दो, और <code>[CLS]</code> के output को <em>IsNext</em> या
+    <em>NotNext</em> कहना सिखाओ। §5.1 का ablation कहता है कि इसे हटाने से QNLI,
+    MNLI और SQuAD को नुक़सान होता है। एक साल बाद RoBERTa ने NSP के बिना, ज़्यादा
+    data पर train करके BERT की बराबरी की या उसे पीछे छोड़ा, तो field ने इसे छोड़
+    दिया। मैंने इसे implement नहीं किया, और उसकी क़ीमत दिखती है:
+    pre-training में <code>[CLS]</code> ने कुछ किया ही नहीं।
+  </p>
+
+  <p>
+    Fine-tuning इसे ठीक करता है, पर तभी जब gradients encoder तक पहुँचें। खिलौना
+    task, एक छोटा सा CoLA: क्या यह वाक्य व्याकरण के हिसाब से सही है? आधों में एक
+    closer को ग़लत closer से बदल दिया गया है।
+  </p>
+
+<pre><code>  300 steps of fine-tuning        trainable params  accuracy
+  head only, encoder frozen                     66     <span class="hl">51.8%</span>
+  everything (the paper)                     27188     <span class="ok">99.2%</span>
+  everything, NO pre-training                27188     <span class="hl">50.1%</span>
+  chance = 50.0%</code></pre>
+
+  <p>
+    तीन rows, और paper के दोनों दावे। Encoder freeze करो: बस संयोग जितना।
+    सब कुछ fine-tune करो: 300 steps में हल। किसी <em>random</em> encoder से उन्हीं
+    300 steps के लिए fine-tune करो: फिर संयोग जितना। Pre-training fine-tuning को
+    सस्ता बनाती है; सब कुछ fine-tune करना pre-training को काम का बनाता है। Paper
+    दोनों करता है, पूरे 110M parameters पर, 2e-5 से 5e-5 पर, दो से चार epochs।
+    मेरे खिलौने में frozen head को कुछ नहीं मिलता; paper के अपने NER वाले
+    feature-based प्रयोग में वह लगभग पूरा रास्ता तय कर लेता है, क्योंकि NSP के
+    साथ बारह layers के असली features मेरे 32 नंबरों से बेहतर हैं।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -443,6 +1015,37 @@ def mlm_loss(logits, labels):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

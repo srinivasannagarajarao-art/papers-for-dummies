@@ -7,7 +7,7 @@
 <meta name="description" content="The RAG paper explained as code. Retrieval is an open-book exam: chunk, embed, index, top-k, paste into the prompt. Runnable NumPy with no language model in the loop, eight demos that prove it by breaking it.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -36,6 +36,15 @@
       in the loop: the "generation" step assembles the prompt and prints it.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
 
   <p>
     I've shipped RAG. Twice. Embedding model, vector database, LLM, done. And
@@ -357,6 +366,713 @@ prompt words for Q1, k=3:  small chunks 103  big chunks 271  (whole document: 23
     reading — which is what an agent loop is, and what RAG-Token gestures at.
   </div>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் RAG-ஐ ship செய்திருக்கிறேன். இரண்டு முறை. Embedding model, vector
+    database, LLM — முடிந்தது. ஒவ்வொரு முறை பதில் தவறாக வந்தபோதும் நான்
+    LLM-ஐத்தான் குற்றம் சொன்னேன். பிறகு இந்தக் கட்டுரையைப் படித்தேன்: LLM
+    சின்ன பாதிதான். நீங்கள் கட்டி, tune செய்து, debug செய்யும் பாதி
+    <em>retriever</em> — அதற்குள் ஒரு matrix இருக்கும் search engine அது
+    என்று யாரும் என்னிடம் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (retriever, chunk,
+    embedding, cosine similarity, top-k, index, prompt…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>RAG என்பது ஒரு open-book தேர்வு</h2>
+
+  <p>இது உங்களுக்குத் தெரியும்:</p>
+
+<pre><code>answer = llm(question)     # closed book: weights-ல் நினைவிருப்பது மட்டும்</code></pre>
+
+  <p>கட்டுரையின் திருப்பம்: சரியான பக்கத்தை முதலில் மாணவனிடம் கொடுப்பது:</p>
+
+<pre><code>hits   = index.search(embed(question), k=3)   # சரியான பக்கத்தில் புத்தகம் திற
+prompt = f"Context:\n{hits}\n\nQuestion: {question}"
+answer = llm(prompt)                          # நினைவிலிருந்து அல்ல, பக்கத்திலிருந்து</code></pre>
+
+  <p>
+    இதுதான் முழுக் கட்டுரையின் இதயம். Model என்பது மாணவன், index என்பது
+    புத்தகம், prompt என்பது நீங்கள் மேசையின் மேல் நகர்த்தித் தரும் பக்கம்.
+    அல்லது: ஒரு database-ன் முன் இருக்கும் cache. Weights தான் database —
+    மாற்ற மெதுவானது, மீண்டும் கட்ட விலை அதிகம். Index தான் cache — எப்போது
+    வேண்டுமானாலும் மாற்றலாம். கட்டுரை நேரடியாக இதைச் செய்கிறது: 2018
+    Wikipedia index-ஐ 2016 index-ஆக மாற்றினால், உலகத் தலைவர்கள் பற்றி "இப்போது
+    யார்…" என்ற கேள்விகளுக்கான பதில்கள் அதற்கேற்ப மாறுகின்றன. எதுவும்
+    retrain செய்யப்படவில்லை. புத்தகம் மாறியது, மாணவன் அல்ல.
+  </p>
+
+  <p class="thanglish">
+    RAG-nu solradhu open-book exam dhaan. Model dhaan student, index dhaan
+    book, prompt dhaan neenga mesai mela nagarthi kudukra page. Index-a
+    maathina podhum — retrain thevai illa.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>தேர்வு உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query</strong> x</td><td>தட்டச்சு செய்த கேள்வி</td><td>தேர்வுக் கேள்வி</td></tr>
+      <tr><td><strong>Passage</strong> z</td><td>Corpus-ன் ஒரு chunk</td><td>பாடப் புத்தகத்தின் ஒரு பக்கம்</td></tr>
+      <tr><td><strong>Index</strong></td><td>ஒவ்வொரு passage-ம் vector-ஆக, அடுக்கி வைக்கப்பட்டது</td><td>புத்தகத்தின் index</td></tr>
+      <tr><td><strong>Retriever</strong> p<sub>η</sub>(z | x)</td><td>கேள்விக்கு எதிராக ஒரு passage-க்கு score தருகிறது</td><td>பக்கத்தைக் கண்டுபிடிப்பது</td></tr>
+      <tr><td><strong>Generator</strong> p<sub>θ</sub>(y | x, z)</td><td>Passage-ம் கேள்வியும் கொடுக்கப்பட்ட LLM</td><td>புத்தகம் திறந்த மாணவன்</td></tr>
+      <tr><td><strong>Parametric memory</strong></td><td>Weights-ல் இருப்பது</td><td>மாணவன் மனப்பாடம் செய்தது</td></tr>
+      <tr><td><strong>Non-parametric memory</strong></td><td>Index-ல் இருப்பது</td><td>பாடப் புத்தகம்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    இதற்கு முன், T5 போன்ற closed-book model ஒவ்வொரு உண்மையையும் தன்
+    weights-ல் வைத்திருந்தது; extractive அமைப்புகள் (reader-உடன் DPR, REALM)
+    passages-ஐ எடுத்தன, ஆனால் ஒன்றிலிருந்து ஒரு span-ஐ நகலெடுக்க மட்டுமே
+    முடிந்தது. RAG எடுக்கிறது, பிறகு <em>generate</em> செய்கிறது. அது மூன்று
+    open-domain QA benchmarks-ல் state of the art-ஐ அமைத்தது — 11 பில்லியன்
+    parameter closed-book T5-ஐயும், extractive retrievers-ஐயும் முந்தி.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">p(y | x) ≈ Σ<sub>z ∈ top-k</sub> p<sub>η</sub>(z | x) · p<sub>θ</sub>(y | x, z),   where p<sub>η</sub>(z | x) ∝ exp(d(z)<sup>T</sup> q(x))</div>
+
+  <p>இதை pipeline stages-ஆகப் படியுங்கள், retriever முதலில்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>d(z)</code></td><td>(768,) × 21M rows</td><td>ஒவ்வொரு passage-ம் BERT வழியாக ஒரு முறை. Frozen. FAISS-ல் சேமிப்பு.</td></tr>
+      <tr><td><code>q(x)</code></td><td>(768,)</td><td>கேள்வி இரண்டாவது BERT வழியாக — retriever-ல் train ஆகும் ஒரே பகுதி</td></tr>
+      <tr><td><code>d(z)<sup>T</sup> q(x)</code></td><td>scalar</td><td><strong>Similarity.</strong> ஒரு dot product — attention-ல் இருந்த அதே ஒன்று</td></tr>
+      <tr><td><code>top-k</code></td><td>k passages</td><td>argsort, சிறந்த k-ஐ வைத்துக்கொள் (கட்டுரையில் 5 அல்லது 10)</td></tr>
+      <tr><td><code>p<sub>η</sub>(z | x)</code></td><td>k எண்கள், கூட்டினால் 1</td><td>k scores மேல் softmax: ஒவ்வொரு பக்கத்தையும் எவ்வளவு நம்புவது</td></tr>
+      <tr><td><code>p<sub>θ</sub>(y | x, z)</code></td><td>ஒரு passage-க்கு ஒரு பதில்</td><td>BART, [passage ; question] கொடுத்தால் பதில் எழுதுகிறது</td></tr>
+      <tr><td><code>Σ</code></td><td>ஒரு பதில்</td><td>k பதில்களின் எடையிட்ட சராசரி, எடைகள் retriever-லிருந்து</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Model இல்லாமல் embedding</h2>
+  <p>
+    கட்டுரையின் retriever DPR: இரண்டு BERT encoders (<a href="../bert/">BERT
+    பக்கம்</a> பாருங்கள்) — ஒன்று கேள்விகளுக்கு, ஒன்று passages-க்கு. ஒரு
+    கேள்வியும் அதற்குப் பதில் தரும் passage-ம் அருகருகே விழும்படி train
+    செய்யப்படுகின்றன. என்னிடம் NumPy script-ல் train செய்த BERT இல்லை,
+    pipeline-ஐ மறைக்கும் ஒன்றும் வேண்டாம். அதனால் script தேடலின் மிகப் பழைய
+    தந்திரத்தைப் பயன்படுத்துகிறது: வார்த்தைகளை எண்ணு, அரிதான வார்த்தைகளுக்கு
+    அதிக எடை (tf-idf), ஒவ்வொரு வார்த்தையையும் hash செய்து நிலையான அகல
+    vector-ல் ஒரு slot-க்கு அனுப்பு, நீளத்தால் வகுத்துவிடு.
+  </p>
+  <p>
+    Shape-ஐப் பொறுத்தவரை நேர்மையானது — ஒரு chunk-க்கு ஒரு நிலையான அளவு
+    vector, dot product-ஆல் ஒப்பிடப்படுகிறது; FAISS பார்ப்பதும் அதுதான்.
+    அர்த்தத்தைப் பொறுத்தவரை நேர்மையற்றது: "owns"-ம் "owned"-ம் ஒரே கருத்து
+    என்று DPR-க்குத் தெரியும்; hash table-க்குத் தெரியாது. அதற்கான விலையை
+    ஒரு நிமிடத்தில் கட்டப்போகிறோம்.
+  </p>
+
+  <p><strong>ஒரு chunk vector-ஆக மாறுவதைப் பாருங்கள்:</strong></p>
+
+<pre><code>chunk 4:  Lantern's default job timeout is 45 minutes.
+tokens:   ['lantern', 'default', 'job', 'timeout', '45', 'minutes']
+buckets:  [279, 223, 248, 402, 299, 675]
+
+vector shape: (1024,)   nonzero entries: 6 of 1024
+L2 norm: 1.000 <span class="ok">✓</span>
+  bucket  279  lantern   idf 1.38  weight 0.200
+  bucket  223  default   idf 3.40  weight 0.491
+  bucket  248  job       idf 2.01  weight 0.291
+  bucket  402  timeout   idf 2.70  weight 0.391
+  bucket  299  45        idf 3.40  weight 0.491
+  bucket  675  minutes   idf 3.40  weight 0.491
+
+vocabulary: 118 distinct tokens -&gt; 1024 buckets, 8 hash collisions</code></pre>
+
+  <p>
+    "lantern" 21 chunks-ல் 14-ல் இருக்கிறது, அதனால் அதற்கு மிகச் சிறிய எடை;
+    "default", "45", "minutes" ஒவ்வொன்றும் ஒரே ஒரு chunk-ல் மட்டும், அதனால்
+    அவைதான் vector-ஐச் சுமக்கின்றன. Tf-idf என்பது இவ்வளவுதான். Corpus
+    என்பது Lantern என்ற கற்பனையான job scheduler பற்றிய 21 வாக்கியங்கள் —
+    கற்பனை, அதனால் உலகத்தோடு எதையும் fact-check செய்ய முடியாது; ஒத்திசைவானது,
+    அதனால் ஒவ்வொரு கேள்விக்கும் ஒரே சரியான chunk இருக்கிறது.
+  </p>
+
+  <h2>Retrieval என்பது ஒரு matrix multiply</h2>
+  <p>
+    Chunk vectors-ஐ ஒரு matrix-ஆக அடுக்குங்கள். கேள்வியையும் அதே முறையில்
+    embed செய்யுங்கள். <code>index @ q</code> ஒவ்வொரு chunk-க்கும் ஒரு score
+    தருகிறது; <code>argsort</code> top-k தருகிறது. அதுதான் retriever. 21
+    rows-ல் இது NumPy; 21 மில்லியனில் இது FAISS — ஒவ்வொரு row-ஐயும் scan
+    செய்யாமல் இருக்க approximate nearest-neighbour அமைப்புடன். ஒரே பொருள்.
+  </p>
+
+  <p><strong>மூன்று கேள்விகள், தலா top-3. <code>*</code> பதில் chunk-ஐக் குறிக்கிறது:</strong></p>
+
+<pre><code>Q: What is Lantern's default job timeout?
+   query tokens: ['lantern', 'default', 'job', 'timeout']
+<span class="ok">*</span> #1  0.720  chunk  4  Lantern's default job timeout is 45 minutes.
+  #2  0.315  chunk  5  A job that exceeds its timeout is retried at most twice.
+  #3  0.251  chunk  0  Lantern is the internal job scheduler at Fennel Systems...
+
+Q: Which team owns Lantern?
+   query tokens: ['team', 'owns', 'lantern']
+<span class="ok">*</span> #1  <span class="hl">0.342</span>  chunk 12  Lantern is owned by the Platform team.
+  #2  0.174  chunk 13  The Platform team's on-call rotation is one week long.
+  #3  0.172  chunk 14  Priya Raman is the current tech lead of the Platform team.
+
+Q: How long are failed jobs kept in the dead-letter table?
+   query tokens: ['long', 'failed', 'jobs', 'kept', 'dead', 'letter', 'table']
+<span class="ok">*</span> #1  0.766  chunk 19  Failed jobs are kept in the dead-letter table for 30 days.
+  #2  0.398  chunk  0  Lantern is the internal job scheduler at Fennel Systems...
+  #3  0.175  chunk 13  The Platform team's on-call rotation is one week long.</code></pre>
+
+  <p>
+    மூன்றுக்கு மூன்றும் சரி — ஆனால் நடுவில் இருப்பதைப் பாருங்கள். "owns"
+    எதனோடும் பொருந்தவில்லை, ஏனெனில் corpus "owned" என்று சொல்கிறது. "team"
+    மற்றும் "lantern" மூலம்தான் அந்த hit வந்தது, சோர்வான 0.342 score-உடன்;
+    அடுத்த இடங்களுக்கு வந்தவை "team" ஒன்றை மட்டும் வைத்து வந்தன. வார்த்தை
+    பொருத்தத்திற்கும் அர்த்தத்திற்கும் இடையிலான அந்த இடைவெளிதான் DPR
+    இருப்பதற்கான முழுக் காரணம். Pipeline இரண்டு வழியிலும் ஒன்றுதான்.
+  </p>
+
+  <p class="thanglish">
+    "owns" match aagala, corpus-la "owned" nu irukku — adhaan score 0.342-la
+    thongudhu. Word overlap-kum meaning-kum idaila irukra gap dhaan DPR
+    irukradhukku full reason. Pipeline rendu vazhiyilum onnu dhaan.
+  </p>
+
+  <h2>Prompt என்பது நீங்கள் மேசையின் மேல் நகர்த்தித் தரும் பக்கம்</h2>
+  <p>
+    Top-k chunks-ஐ எடுத்து, எண் கொடுத்து, கீழே கேள்வியை வையுங்கள். அந்த
+    string-தான் ஒரு உண்மையான அமைப்பு LLM-க்கு அனுப்புவது. Script அதை
+    அனுப்பாமல் அச்சிடுகிறது, ஏனெனில் இங்கிருந்து LLM-ன் வேலைதான் எளிய பாதி.
+  </p>
+
+<pre><code>Answer using only the context below.
+If the answer is not in the context, say you do not know.
+
+Context:
+[1] Lantern's default job timeout is 45 minutes.
+[2] A job that exceeds its timeout is retried at most twice.
+[3] Lantern is the internal job scheduler at Fennel Systems: every batch job
+    at Fennel is submitted to Lantern, queued by Lantern, given a timeout by
+    Lantern, and retried by Lantern when it fails; failed jobs that keep
+    failing are kept by Lantern in the dead-letter table, and failed jobs stay
+    there until they expire.
+
+Question: What is Lantern's default job timeout?
+Answer:
+
+(103 words. An LLM call goes here. There is none in this script.)</code></pre>
+
+  <p>இப்போது அதே கேள்வி, retriever-ஐக் கழற்றிவிட்டு:</p>
+
+<pre><code>Context:
+<span class="hl">(none)</span>
+
+Question: What is Lantern's default job timeout?
+Answer:</code></pre>
+
+  <div class="note">
+    <strong>Model இதற்குப் பதில் சொல்லும். நம்பிக்கையுடன். ஓர் எண்ணுடன்.</strong>
+    Lantern தனிப்பட்டது; weights அதை ஒருபோதும் பார்த்ததில்லை. அந்த நம்பிக்கையான
+    தவறான எண்தான் எல்லோரும் LLM மேல் சுமத்தும் "hallucination". அது ஒரு
+    retrieval miss. நேர்காணல் கேள்வி "என் RAG ஏன் hallucinate செய்கிறது?"
+    என்பது; பதில், பெரும்பாலான நாட்களில், "அது செய்யவில்லை — உங்கள் retriever
+    செய்கிறது."
+  </div>
+
+  <h2>இரண்டு RAG-கள்: கட்டுரையினுடையது, நீங்கள் ship செய்யப்போவது</h2>
+  <p>
+    இதை யாரும் வெளிப்படையாகச் சொல்வதில்லை: எல்லோரும் RAG என்று அழைக்கும்
+    அமைப்பு கட்டுரையில் இருக்கும் அமைப்பு அல்ல. கட்டுரை retriever-ஐயும்
+    generator-ஐயும் <em>சேர்ந்து</em> train செய்கிறது. Ship ஆவது ஒரு frozen
+    pipeline.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>பகுதி</th><th>கட்டுரை (2020)</th><th>Ship ஆவது</th><th>இந்த script</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Retriever</strong></td><td>DPR bi-encoder; query பக்கம் fine-tune</td><td>Frozen embedding model, அல்லது BM25</td><td>Hashed tf-idf, training இல்லை</td></tr>
+      <tr><td><strong>Index</strong></td><td>21M Wikipedia passages மேல் FAISS, தலா 100 வார்த்தைகள்</td><td>ஒரு vector database</td><td><code>np.stack</code>, 21 rows</td></tr>
+      <tr><td><strong>Generator</strong></td><td>BART-large, fine-tune செய்யப்பட்டது</td><td>API-க்குப் பின்னால் ஒரு frozen LLM</td><td>Prompt-ஐ அச்சிடுகிறது</td></tr>
+      <tr><td><strong>Passages → model</strong></td><td>ஒவ்வொன்றாக, k பதில்கள் சராசரி</td><td>எல்லா k-ம் ஒரே prompt-ல்</td><td>எல்லா k-ம் ஒரே prompt-ல்</td></tr>
+      <tr><td><strong>Training signal</strong></td><td>(கேள்வி, பதில்) இணைகள்; எந்த passage எடுக்க வேண்டும் என்பதற்கு label இல்லை</td><td>ஏதுமில்லை</td><td>ஏதுமில்லை</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Training-தான் புத்திசாலித்தனமான பகுதி. Query encoder-ஐயும் BART-ஐயும்
+    கேள்வி–பதில் இணைகள் மேல் சேர்ந்து fine-tune செய்யுங்கள்; document encoder-ம்
+    index-ம் frozen-ஆகவே இருக்கும், ஏனெனில் ஒவ்வொரு step-லும் 21 மில்லியன்
+    passages-ஐ மீண்டும் embed செய்வது நடக்கக்கூடிய காரியமல்ல. இருந்தும்
+    gradient p<sub>η</sub>(z | x) வழியாக retriever-ஐ அடைகிறது: ஒரு passage
+    generator-க்குப் பதில் கிடைக்க உதவியிருந்தால், அந்த வகை passage-ஐ
+    அருகில் இழுக்க query encoder கற்றுக்கொள்கிறது. "இதுதான் சரியான passage"
+    என்று யாரும் label போடுவதில்லை. பதிலிலிருந்து மட்டுமே அது கற்கப்படுகிறது.
+  </p>
+  <p>
+    இரண்டு variants. <strong>RAG-Sequence</strong> முழுப் பதிலுக்கும் ஒரே
+    passage-ஐத் தேர்ந்தெடுக்கிறது, ஒவ்வொரு passage-க்கும் generator-ஐ ஒரு
+    முறை ஓட்டி, k பதில்களைச் சராசரிப்படுத்துகிறது. <strong>RAG-Token</strong>
+    generate ஆகும் ஒவ்வொரு token-லும் passage-ஐ மீண்டும் தேர்ந்தெடுக்கிறது,
+    அதனால் ஒரே பதில் பல documents-லிருந்து எடுத்துக்கொள்ள முடியும். QA
+    benchmarks-ல் இரண்டும் சில புள்ளிகள் இடைவெளிக்குள்தான், பொதுவாக
+    RAG-Sequence முன்னால்; Jeopardy கேள்வி உருவாக்கத்தில் RAG-Token
+    வெல்கிறது — அங்கே ஒரு பதிலுக்கு ஒன்றுக்கும் மேற்பட்ட பக்கங்களின்
+    உண்மைகள் தேவை. Frozen pipeline இரண்டும் அல்ல — ஒரு prompt, ஒரு call —
+    script அதைத்தான் எழுதுகிறது, ஏனெனில் நீங்கள் debug செய்யப்போவது அதைத்தான்.
+    Generator-ம் ஒரு transformer decoder தான்:
+    <a href="../attention/">attention பக்கம்</a>, ஒரு mask-உடன்.
+  </p>
+
+  <h2>Retriever அமைதியாகத் தோற்கும் மூன்று வழிகள்</h2>
+  <p>
+    இவை ஒவ்வொன்றும் "LLM தவறாகச் சொல்லிவிட்டது" என்றுதான் வெளியில் தெரியும்.
+    எதுவும் LLM அல்ல. Script ஒவ்வொன்றையும் வேண்டுமென்றே உடைக்கிறது.
+  </p>
+
+  <h3>1. Normalisation-ஐத் தவிர்த்தால் நீளம் ஜெயிக்கும்</h3>
+  <p>
+    Divide-by-norm-ஐ நீக்கினால் dot product cosine-ஆக இருப்பது நின்றுவிடும்.
+    நீளமான chunk-க்கு நீளமான vector; நீளமான vector தனக்குச் சம்பந்தமே இல்லாத
+    ஒப்பீடுகளையும் ஜெயிக்கும். Corpus-ல் ஒரு README பத்தி இருக்கிறது — 37
+    tokens, எல்லாவற்றையும் குறிப்பிடுகிறது, எதற்கும் பதில் சொல்வதில்லை. அது
+    கைப்பற்றுவதைப் பாருங்கள்:
+  </p>
+
+<pre><code>Q: What is Lantern's default job timeout?
+   cosine #1:  chunk  4  (0.720)      raw dot #1:  chunk  0  (26.88)
+Q: Which team owns Lantern?
+   cosine #1:  chunk 12  (0.342)      raw dot #1:  chunk  0  (11.48)
+Q: How long are failed jobs kept in the dead-letter table?
+   cosine #1:  chunk 19  (0.766)      raw dot #1:  <span class="hl">chunk  0  (68.36)</span></code></pre>
+
+  <p>
+    மூன்றுக்கு மூன்றும், பக்கத்திலேயே மிகப் பெரிய scores-உடன். உங்கள்
+    retriever <code>return longest_paragraph</code> ஆகிவிட்டது.
+  </p>
+
+  <h3>2. Corpus-ஆல் பதில் சொல்ல முடியாத ஒன்றைக் கேளுங்கள்</h3>
+  <p>
+    <code>argsort</code> எப்போதும் k rows-ஐத் திருப்பித் தரும். Top-k-ல்
+    "எனக்குத் தெரியாது" என்பதே கிடையாது. இல்லாத team பற்றிக் கேளுங்கள் —
+    இருக்கும் அருகிலுள்ள team கிடைக்கும், அதுவும் உண்மையான hit-ஐ விட
+    <em>சிறந்த</em> score-உடன்:
+  </p>
+
+<pre><code>Q (answer IS in corpus):  Which team owns Lantern?
+<span class="ok">*</span> #1  0.342  chunk 12  Lantern is owned by the Platform team.
+
+Q (answer NOT in corpus): Who is the tech lead of the Security team?
+  #1  <span class="hl">0.530</span>  chunk 14  Priya Raman is the current tech lead of the Platform team.
+  #2  0.201  chunk 12  Lantern is owned by the Platform team.
+  #3  0.129  chunk 13  The Platform team's on-call rotation is one week long.</code></pre>
+
+  <p>
+    மேலோட்டமாகப் படிக்கும் model "Priya Raman" என்று பதில் சொல்லும். ஒரு
+    score threshold ஒரே நேரத்தில் 0.53-க்கு மேலேயும் 0.34-க்குக் கீழேயும்
+    இருக்க வேண்டியிருக்கும். அது முடியாது. உங்களுக்கு ஒரு reranker வேண்டும்,
+    அல்லது context-ஐ உண்மையிலேயே படித்து மறுக்கும் model வேண்டும் — அதற்கு
+    ஒரு eval-ம் வேண்டும், ஏனெனில் retriever இதை ஒருபோதும் சொல்லாது.
+  </p>
+
+  <h3>3. Chunks மிகப் பெரியவை: உண்மை புதைந்துவிடுகிறது</h3>
+  <p>
+    21 வாக்கியங்களை தலா 7-ஆக 3 chunks-ஆக இணையுங்கள். அதே corpus, அதே
+    கேள்விகள், அதே கணிதம். இப்போது ஒவ்வொரு chunk-ம் Lantern-ஐக்
+    குறிப்பிடுகிறது, அதனால் ஒவ்வொன்றும் கொஞ்சம் சரியாகத் தெரிகிறது; hit-க்கும்
+    அடுத்தவருக்கும் இடையிலான இடைவெளி சரிந்துவிடுகிறது:
+  </p>
+
+<pre><code>       #1 score  #2 score    gap   #1 is    answer in #1?
+small chunks:
+  Q1      0.720     0.315   0.405   chunk  4   yes
+  Q2      0.342     0.174   0.168   chunk 12   yes
+  Q3      0.766     0.398   0.368   chunk 19   yes
+
+big chunks:
+  Q1      0.535     0.232   0.303   chunk  0   yes, sentence 5 of 7
+  Q2      0.215     0.206   <span class="hl">0.009</span>   chunk  2   NO
+  Q3      0.226     0.200   0.026   chunk  0   <span class="hl">NO</span>
+
+prompt words for Q1, k=3:  small chunks 103  big chunks 271  (whole document: 239)</code></pre>
+
+  <p>
+    Q2-ன் இடைவெளி 0.168-லிருந்து 0.009-ஆகக் குறைகிறது — ஒரு நாணய சுழற்சி —
+    நாணயமும் தவறாக விழுகிறது. Q3, README பத்தியிடம் தோற்கிறது; அதில் Q3-ன்
+    ஒவ்வொரு வார்த்தையும் இருக்கிறது, இரண்டு முறை. மேலும் 3 chunks-ல் k=3
+    என்பது முழு documentதான்: retriever எதுவும் செய்யவில்லை, நீங்கள் wiki-ஐ
+    prompt-ல் ஒட்டி, ஆறு வார்த்தைக் கேள்விக்கு 271 வார்த்தைகள் கட்டினீர்கள்.
+    Pipeline-ல் மிக முக்கியமான knob chunk size-தான், யாரும் tune செய்யாத
+    knob-ம் அதுதான்.
+  </p>
+
+  <p class="thanglish">
+    Chunk periusaana odane Q2-oda gap 0.168-la irundhu 0.009-kku vandhurudhu —
+    coin toss, adhuvum thappa vizhudhu. Chunk size dhaan pipeline-la romba
+    mukkiyamaana knob, adhe dhaan yaarum tune panradhu illa.
+  </p>
+
+  <div class="note">
+    <strong>நான்காவது ஒன்றும் இருக்கிறது, demo 8-ல்.</strong> "Which port does
+    the Lantern dashboard listen on?" என்பதற்கு இரண்டு chunks தேவை; இரண்டாவது
+    chunk கேள்வியுடன் ஒரே ஒரு வார்த்தையையும், <em>முதல் hop-ன் பதிலுடன்</em>
+    எல்லாவற்றையும் பகிர்ந்துகொள்கிறது. k=1-ல் prompt-க்குக் கிடைப்பது அரை
+    உண்மை. தீர்வு: படித்த பிறகு மீண்டும் retrieve செய்வது — agent loop
+    என்பது அதுதான், RAG-Token சுட்டிக்காட்டுவதும் அதைத்தான்.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने RAG ship किया है। दो बार। Embedding model, vector database, LLM —
+    हो गया। और हर बार जब जवाब ग़लत आया, मैंने LLM को दोष दिया। फिर मैंने
+    paper पढ़ा और पता चला कि LLM तो छोटा आधा हिस्सा है। जिसे आप बनाते हैं,
+    tune करते हैं और debug करते हैं वह आधा हिस्सा है <em>retriever</em> —
+    और किसी ने मुझे नहीं बताया था कि वह एक search engine है जिसके अंदर एक
+    matrix बैठा है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (retriever, chunk,
+    embedding, cosine similarity, top-k, index, prompt…) मैंने वैसे ही रखे
+    हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>RAG एक open-book परीक्षा है</h2>
+
+  <p>यह आप जानते हैं:</p>
+
+<pre><code>answer = llm(question)     # closed book: weights को जो याद है, बस वही</code></pre>
+
+  <p>Paper का मोड़ यह है कि सही पन्ना पहले model के हाथ में दिया जाए:</p>
+
+<pre><code>hits   = index.search(embed(question), k=3)   # सही पन्ने पर किताब खोलो
+prompt = f"Context:\n{hits}\n\nQuestion: {question}"
+answer = llm(prompt)                          # याददाश्त से नहीं, पन्ने से</code></pre>
+
+  <p>
+    यही पूरे paper का दिल है। Model विद्यार्थी है, index किताब है, और prompt
+    वह पन्ना है जिसे आप मेज़ पर सरकाकर देते हैं। या यों कहें: database के आगे
+    लगा एक cache। Weights ही database हैं — बदलने में धीमे, दोबारा बनाने में
+    महँगे। Index ही cache है — जब चाहो बदल दो। Paper सचमुच यही करता है: 2018
+    का Wikipedia index हटाकर 2016 वाला लगा दो, और विश्व नेताओं के बारे में
+    "अभी कौन है…" वाले सवालों के जवाब उसी हिसाब से बदल जाते हैं। कुछ भी
+    retrain नहीं हुआ। किताब बदली, विद्यार्थी नहीं।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>परीक्षा वाली मिसाल</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query</strong> x</td><td>सवाल, जैसा टाइप किया गया</td><td>परीक्षा का सवाल</td></tr>
+      <tr><td><strong>Passage</strong> z</td><td>Corpus का एक chunk</td><td>किताब का एक पन्ना</td></tr>
+      <tr><td><strong>Index</strong></td><td>हर passage एक vector के रूप में, ऊपर-नीचे रखे हुए</td><td>किताब का index</td></tr>
+      <tr><td><strong>Retriever</strong> p<sub>η</sub>(z | x)</td><td>सवाल के सामने passage को score देता है</td><td>पन्ना ढूँढ़ना</td></tr>
+      <tr><td><strong>Generator</strong> p<sub>θ</sub>(y | x, z)</td><td>LLM, जिसे passage और सवाल दोनों मिले हैं</td><td>खुली किताब वाला विद्यार्थी</td></tr>
+      <tr><td><strong>Parametric memory</strong></td><td>जो weights में है</td><td>जो विद्यार्थी ने रट रखा है</td></tr>
+      <tr><td><strong>Non-parametric memory</strong></td><td>जो index में है</td><td>किताब</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    इससे पहले, T5 जैसा closed-book model हर तथ्य अपने weights में रखता था,
+    और extractive systems (reader के साथ DPR, REALM) passages तो लाते थे पर
+    उनमें से सिर्फ़ एक span नक़ल कर पाते थे। RAG लाता है, फिर
+    <em>generate</em> करता है। इसी ने तीन open-domain QA benchmarks पर state
+    of the art बनाया — 11 अरब parameter वाले closed-book T5 और extractive
+    retrievers, दोनों से आगे।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">p(y | x) ≈ Σ<sub>z ∈ top-k</sub> p<sub>η</sub>(z | x) · p<sub>θ</sub>(y | x, z),   where p<sub>η</sub>(z | x) ∝ exp(d(z)<sup>T</sup> q(x))</div>
+
+  <p>इसे pipeline के चरणों की तरह पढ़िए, पहले retriever:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>d(z)</code></td><td>(768,) × 21M rows</td><td>हर passage एक बार BERT से होकर। Frozen। FAISS में रखा हुआ।</td></tr>
+      <tr><td><code>q(x)</code></td><td>(768,)</td><td>सवाल दूसरे BERT से होकर — retriever का यही एक हिस्सा train होता है</td></tr>
+      <tr><td><code>d(z)<sup>T</sup> q(x)</code></td><td>scalar</td><td><strong>Similarity.</strong> एक dot product, वही जो attention में था</td></tr>
+      <tr><td><code>top-k</code></td><td>k passages</td><td>argsort, सबसे अच्छे k रख लो (paper में 5 या 10)</td></tr>
+      <tr><td><code>p<sub>η</sub>(z | x)</code></td><td>k संख्याएँ, जोड़ = 1</td><td>k scores पर softmax: किस पन्ने पर कितना भरोसा</td></tr>
+      <tr><td><code>p<sub>θ</sub>(y | x, z)</code></td><td>हर passage पर एक जवाब</td><td>BART, [passage ; question] मिलने पर जवाब लिखता है</td></tr>
+      <tr><td><code>Σ</code></td><td>एक जवाब</td><td>k जवाबों का भारित औसत, भार retriever से</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Model के बिना embedding</h2>
+  <p>
+    Paper का retriever DPR है: दो BERT encoders (<a href="../bert/">BERT वाला
+    पन्ना</a> देखिए), एक सवालों के लिए, एक passages के लिए, इस तरह train किए
+    गए कि सवाल और उसका जवाब देने वाला passage पास-पास गिरें। मेरे NumPy
+    script में कोई train किया हुआ BERT नहीं है, और मैं चाहता भी नहीं कि कोई
+    चीज़ pipeline को ढँक दे। तो script खोज की सबसे पुरानी तरकीब इस्तेमाल करता
+    है: शब्द गिनो, दुर्लभ शब्दों को ज़्यादा भार दो (tf-idf), हर शब्द को hash
+    करके एक तयशुदा चौड़ाई वाले vector के slot में डालो, और लंबाई से भाग दो।
+  </p>
+  <p>
+    Shape के लिहाज़ से ईमानदार — हर chunk का एक तय आकार का vector, dot
+    product से तुलना, बिलकुल वही जो FAISS देखता है। मतलब के लिहाज़ से
+    बेईमान: DPR जानता है कि "owns" और "owned" एक ही बात है; hash table नहीं
+    जानता। इसकी क़ीमत एक मिनट में चुकानी पड़ेगी।
+  </p>
+
+  <p><strong>यह देखिए, एक chunk vector बनते हुए:</strong></p>
+
+<pre><code>chunk 4:  Lantern's default job timeout is 45 minutes.
+tokens:   ['lantern', 'default', 'job', 'timeout', '45', 'minutes']
+buckets:  [279, 223, 248, 402, 299, 675]
+
+vector shape: (1024,)   nonzero entries: 6 of 1024
+L2 norm: 1.000 <span class="ok">✓</span>
+  bucket  279  lantern   idf 1.38  weight 0.200
+  bucket  223  default   idf 3.40  weight 0.491
+  bucket  248  job       idf 2.01  weight 0.291
+  bucket  402  timeout   idf 2.70  weight 0.391
+  bucket  299  45        idf 3.40  weight 0.491
+  bucket  675  minutes   idf 3.40  weight 0.491
+
+vocabulary: 118 distinct tokens -&gt; 1024 buckets, 8 hash collisions</code></pre>
+
+  <p>
+    "lantern" 21 में से 14 chunks में है, इसलिए उसे सबसे कम भार मिलता है;
+    "default", "45" और "minutes" एक-एक chunk में ही हैं, इसलिए vector का
+    बोझ वही उठाते हैं। Tf-idf बस इतना ही है। Corpus, Lantern नाम के एक
+    गढ़े हुए job scheduler के बारे में 21 वाक्य हैं — गढ़े हुए, ताकि दुनिया
+    से कुछ भी fact-check न हो सके; और आपस में संगत, ताकि हर सवाल का एक ही
+    सही chunk हो।
+  </p>
+
+  <h2>Retrieval एक matrix multiply है</h2>
+  <p>
+    Chunk vectors को एक matrix में जमा दीजिए। सवाल को भी उसी तरह embed
+    कीजिए। <code>index @ q</code> हर chunk का एक score देता है;
+    <code>argsort</code> top-k देता है। बस यही retriever है। 21 rows पर यह
+    NumPy है; 2.1 करोड़ पर यह FAISS है, एक approximate nearest-neighbour
+    structure के साथ, ताकि हर row scan न करनी पड़े। चीज़ वही है।
+  </p>
+
+  <p><strong>तीन सवाल, हर एक पर top-3। <code>*</code> जवाब वाले chunk का निशान है:</strong></p>
+
+<pre><code>Q: What is Lantern's default job timeout?
+   query tokens: ['lantern', 'default', 'job', 'timeout']
+<span class="ok">*</span> #1  0.720  chunk  4  Lantern's default job timeout is 45 minutes.
+  #2  0.315  chunk  5  A job that exceeds its timeout is retried at most twice.
+  #3  0.251  chunk  0  Lantern is the internal job scheduler at Fennel Systems...
+
+Q: Which team owns Lantern?
+   query tokens: ['team', 'owns', 'lantern']
+<span class="ok">*</span> #1  <span class="hl">0.342</span>  chunk 12  Lantern is owned by the Platform team.
+  #2  0.174  chunk 13  The Platform team's on-call rotation is one week long.
+  #3  0.172  chunk 14  Priya Raman is the current tech lead of the Platform team.
+
+Q: How long are failed jobs kept in the dead-letter table?
+   query tokens: ['long', 'failed', 'jobs', 'kept', 'dead', 'letter', 'table']
+<span class="ok">*</span> #1  0.766  chunk 19  Failed jobs are kept in the dead-letter table for 30 days.
+  #2  0.398  chunk  0  Lantern is the internal job scheduler at Fennel Systems...
+  #3  0.175  chunk 13  The Platform team's on-call rotation is one week long.</code></pre>
+
+  <p>
+    तीन में से तीन — पर बीच वाले को देखिए। "owns" किसी से मेल नहीं खाया,
+    क्योंकि corpus में "owned" लिखा है। सही hit "team" और "lantern" के दम पर
+    आया, एक कमज़ोर 0.342 score के साथ, और उपविजेता सिर्फ़ "team" के भरोसे
+    वहाँ पहुँच गए। शब्दों के मेल और मतलब के बीच की यही खाई DPR के होने की
+    पूरी वजह है। Pipeline दोनों हाल में एक जैसा ही रहता है।
+  </p>
+
+  <h2>Prompt वही पन्ना है जो आप मेज़ पर सरकाते हैं</h2>
+  <p>
+    Top-k chunks लीजिए, उन्हें नंबर दीजिए, नीचे सवाल रख दीजिए। यही string एक
+    असली system LLM को भेजता है। Script उसे भेजने के बजाय छाप देता है,
+    क्योंकि यहाँ से आगे LLM का काम ही आसान आधा हिस्सा है।
+  </p>
+
+<pre><code>Answer using only the context below.
+If the answer is not in the context, say you do not know.
+
+Context:
+[1] Lantern's default job timeout is 45 minutes.
+[2] A job that exceeds its timeout is retried at most twice.
+[3] Lantern is the internal job scheduler at Fennel Systems: every batch job
+    at Fennel is submitted to Lantern, queued by Lantern, given a timeout by
+    Lantern, and retried by Lantern when it fails; failed jobs that keep
+    failing are kept by Lantern in the dead-letter table, and failed jobs stay
+    there until they expire.
+
+Question: What is Lantern's default job timeout?
+Answer:
+
+(103 words. An LLM call goes here. There is none in this script.)</code></pre>
+
+  <p>अब वही सवाल, retriever को हटाकर:</p>
+
+<pre><code>Context:
+<span class="hl">(none)</span>
+
+Question: What is Lantern's default job timeout?
+Answer:</code></pre>
+
+  <div class="note">
+    <strong>Model इसका जवाब देगा। पूरे आत्मविश्वास से। एक संख्या के साथ।</strong>
+    Lantern निजी है; weights ने उसे कभी देखा ही नहीं। वही आत्मविश्वास से भरी
+    ग़लत संख्या है जिसे सब "hallucination" कहकर LLM के सिर मढ़ देते हैं। वह
+    एक retrieval miss थी। Interview का सवाल होता है "मेरा RAG hallucinate
+    क्यों करता है?" और जवाब, ज़्यादातर दिन, यही है: "करता नहीं — आपका
+    retriever करता है।"
+  </div>
+
+  <h2>दो RAG: paper वाला, और जो आप ship करेंगे</h2>
+  <p>
+    यह बात कोई खुलकर नहीं कहता: जिस system को सब RAG कहते हैं, वह paper वाला
+    system है ही नहीं। Paper retriever और generator को <em>साथ</em> train
+    करता है। जो ship होता है वह एक frozen pipeline है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>हिस्सा</th><th>Paper (2020)</th><th>जो ship होता है</th><th>यह script</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Retriever</strong></td><td>DPR bi-encoder; query वाला हिस्सा fine-tune</td><td>एक frozen embedding model, या BM25</td><td>Hashed tf-idf, कोई training नहीं</td></tr>
+      <tr><td><strong>Index</strong></td><td>2.1 करोड़ Wikipedia passages पर FAISS, हर एक 100 शब्द</td><td>एक vector database</td><td><code>np.stack</code>, 21 rows</td></tr>
+      <tr><td><strong>Generator</strong></td><td>BART-large, fine-tune किया हुआ</td><td>API के पीछे एक frozen LLM</td><td>Prompt छाप देता है</td></tr>
+      <tr><td><strong>Passages → model</strong></td><td>एक-एक करके, k जवाबों का औसत</td><td>सारे k एक ही prompt में</td><td>सारे k एक ही prompt में</td></tr>
+      <tr><td><strong>Training signal</strong></td><td>(सवाल, जवाब) जोड़े; कौन-सा passage लाना है इसका कोई label नहीं</td><td>कोई नहीं</td><td>कोई नहीं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    असली चतुराई training में है। Query encoder और BART को सवाल–जवाब जोड़ों पर
+    साथ fine-tune कीजिए; document encoder और index frozen रहते हैं, क्योंकि
+    हर step पर 2.1 करोड़ passages दोबारा embed करना कोई चीज़ ही नहीं है। फिर
+    भी gradient p<sub>η</sub>(z | x) के रास्ते retriever तक पहुँचता है: अगर
+    किसी passage ने generator को सही जवाब तक पहुँचाया, तो query encoder वैसे
+    passages को पास खींचना सीख लेता है। कोई यह label नहीं लगाता कि "यही सही
+    passage था"। यह सिर्फ़ जवाब से सीखा जाता है।
+  </p>
+  <p>
+    दो variants। <strong>RAG-Sequence</strong> पूरे जवाब के लिए एक passage
+    चुनता है, हर passage पर generator एक बार चलाता है, और k जवाबों का औसत
+    लेता है। <strong>RAG-Token</strong> हर generate होने वाले token पर
+    passage दोबारा चुनता है, ताकि एक ही जवाब कई documents से खींच सके। QA
+    benchmarks पर दोनों दो-चार अंक के भीतर हैं, आम तौर पर RAG-Sequence आगे;
+    Jeopardy-सवाल बनाने में RAG-Token जीतता है, जहाँ एक जवाब के लिए एक से
+    ज़्यादा पन्नों के तथ्य चाहिए। Frozen pipeline इनमें से कोई नहीं है — एक
+    prompt, एक call — और script वही लिखता है, क्योंकि आप उसी को debug
+    करेंगे। Generator ख़ुद एक transformer decoder है:
+    <a href="../attention/">attention वाला पन्ना</a>, एक mask के साथ।
+  </p>
+
+  <h2>Retriever के चुपचाप फ़ेल होने के तीन तरीक़े</h2>
+  <p>
+    इनमें से हर एक "LLM ग़लत था" बनकर सामने आता है। इनमें से कोई भी LLM नहीं
+    है। Script हर एक को जान-बूझकर तोड़ता है।
+  </p>
+
+  <h3>1. Normalisation छोड़िए और लंबाई जीत जाएगी</h3>
+  <p>
+    Divide-by-norm हटा दीजिए और dot product cosine रहना बंद कर देता है। लंबे
+    chunk का vector लंबा होता है, और लंबा vector ऐसी तुलनाएँ जीत जाता है
+    जिनमें उसका कोई हक़ नहीं। Corpus में एक README पैराग्राफ़ है — 37 tokens,
+    ज़िक्र सबका, जवाब किसी का नहीं। देखिए वह कैसे क़ब्ज़ा कर लेता है:
+  </p>
+
+<pre><code>Q: What is Lantern's default job timeout?
+   cosine #1:  chunk  4  (0.720)      raw dot #1:  chunk  0  (26.88)
+Q: Which team owns Lantern?
+   cosine #1:  chunk 12  (0.342)      raw dot #1:  chunk  0  (11.48)
+Q: How long are failed jobs kept in the dead-letter table?
+   cosine #1:  chunk 19  (0.766)      raw dot #1:  <span class="hl">chunk  0  (68.36)</span></code></pre>
+
+  <p>
+    तीन में से तीन, और पन्ने के सबसे बड़े scores के साथ। आपका retriever
+    <code>return longest_paragraph</code> बन चुका है।
+  </p>
+
+  <h3>2. ऐसा कुछ पूछिए जिसका जवाब corpus में है ही नहीं</h3>
+  <p>
+    <code>argsort</code> हमेशा k rows लौटाता है। Top-k में "मुझे नहीं पता"
+    जैसा कुछ होता ही नहीं। ऐसी team के बारे में पूछिए जो है ही नहीं, और आपको
+    सबसे नज़दीकी मौजूद team मिलेगी — असली hit से <em>बेहतर</em> score के साथ:
+  </p>
+
+<pre><code>Q (answer IS in corpus):  Which team owns Lantern?
+<span class="ok">*</span> #1  0.342  chunk 12  Lantern is owned by the Platform team.
+
+Q (answer NOT in corpus): Who is the tech lead of the Security team?
+  #1  <span class="hl">0.530</span>  chunk 14  Priya Raman is the current tech lead of the Platform team.
+  #2  0.201  chunk 12  Lantern is owned by the Platform team.
+  #3  0.129  chunk 13  The Platform team's on-call rotation is one week long.</code></pre>
+
+  <p>
+    ऊपर-ऊपर से पढ़ने वाला model "Priya Raman" कह देगा। किसी score threshold
+    को एक ही साथ 0.53 से ऊपर और 0.34 से नीचे बैठना पड़ेगा। यह हो नहीं सकता।
+    आपको एक reranker चाहिए, या ऐसा model जो सचमुच context पढ़े और मना कर दे —
+    और उसके लिए एक eval भी, क्योंकि retriever आपको कभी नहीं बताएगा।
+  </p>
+
+  <h3>3. Chunks बहुत बड़े: तथ्य दब जाता है</h3>
+  <p>
+    21 वाक्यों को 7-7 करके 3 chunks में मिला दीजिए। वही corpus, वही सवाल,
+    वही गणित। अब हर chunk में Lantern का ज़िक्र है, तो हर chunk थोड़ा-थोड़ा
+    सही लगता है, और सही hit और उपविजेता के बीच की खाई ढह जाती है:
+  </p>
+
+<pre><code>       #1 score  #2 score    gap   #1 is    answer in #1?
+small chunks:
+  Q1      0.720     0.315   0.405   chunk  4   yes
+  Q2      0.342     0.174   0.168   chunk 12   yes
+  Q3      0.766     0.398   0.368   chunk 19   yes
+
+big chunks:
+  Q1      0.535     0.232   0.303   chunk  0   yes, sentence 5 of 7
+  Q2      0.215     0.206   <span class="hl">0.009</span>   chunk  2   NO
+  Q3      0.226     0.200   0.026   chunk  0   <span class="hl">NO</span>
+
+prompt words for Q1, k=3:  small chunks 103  big chunks 271  (whole document: 239)</code></pre>
+
+  <p>
+    Q2 की खाई 0.168 से घटकर 0.009 रह जाती है — यानी सिक्का उछालना — और सिक्का
+    ग़लत तरफ़ गिरता है। Q3 उसी README पैराग्राफ़ से हार जाता है, जिसमें उसके
+    सारे शब्द मौजूद हैं, दो-दो बार। और 3 chunks में से k=3 यानी पूरा document:
+    retriever ने कुछ किया ही नहीं, आपने wiki को prompt में चिपका दिया और छह
+    शब्दों के सवाल के लिए 271 शब्द चुकाए। Chunk size इस pipeline का सबसे
+    असरदार knob है और वही है जिसे कोई tune नहीं करता।
+  </p>
+
+  <div class="note">
+    <strong>एक चौथा तरीक़ा भी है, demo 8 में।</strong> "Which port does the
+    Lantern dashboard listen on?" के लिए दो chunks चाहिए, और दूसरा chunk सवाल
+    से सिर्फ़ एक शब्द साझा करता है और <em>पहले hop के जवाब</em> से सब कुछ।
+    k=1 पर prompt को आधा तथ्य मिलता है। इलाज है — पढ़ने के बाद दोबारा retrieve
+    करना, यानी वही जो agent loop है, और जिसकी तरफ़ RAG-Token इशारा करता है।
+  </div>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -542,6 +1258,37 @@ def retrieve(question, index, idf, k=3, normalise=True):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

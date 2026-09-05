@@ -7,7 +7,7 @@
 <meta name="description" content="The LoRA paper explained as code. A fine-tune is a diff on the weights and the diff is low-rank, so store it as two thin matrices. Runnable NumPy, five demos that prove it by breaking it.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -36,6 +36,15 @@
       — everything below runs from it. NumPy only.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
 
   <p>
     I'd shipped LoRA adapters before I understood them. <code>r=8</code>,
@@ -279,6 +288,557 @@ loss drop at r = 64 vs r = 1:  no scale <span class="hl">78x</span>   alpha/r <s
     the common "α = 2r" rule of thumb is.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    LoRA adapters-ஐப் புரிந்துகொள்வதற்கு முன்பே நான் அவற்றை ship செய்திருக்கிறேன்.
+    <code>r=8</code>, <code>lora_alpha=16</code>,
+    <code>target_modules=["q_proj", "v_proj"]</code> — ஒரு blog post-லிருந்து copy
+    செய்தது, வேலையும் செய்தது. <code>r</code> என்றால் என்ன, <code>alpha</code> ஏன்
+    இருக்கிறது, README ஏன் zero inference latency உறுதியளிக்கிறது — எதுவும் என்னால்
+    சொல்லியிருக்க முடியாது. இந்த paper முழுவதுமே ஒரு diff பற்றிய ஒரே ஒரு
+    அவதானிப்புதான் என்று யாரும் சொல்லவில்லை.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (patch, rank, adapter,
+    gradient, checkpoint…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற
+    papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல்
+    தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>Fine-tune என்பது ஒரு patch, fork அல்ல</h2>
+  <p>இது உங்களுக்குத் தெரியும். முழு fine-tune ஒரு fork: ஒவ்வொரு weight-ஐயும் copy செய்து, ஒவ்வொன்றையும் திருத்தி, அந்த copy-ஐ வைத்துக்கொள்வது.</p>
+
+<pre><code>W_task = W_base.copy()       # task ஒன்றுக்கு 4096 x 4096 floats
+W_task += learned_change     # ஒவ்வொரு entry-யும் நகரலாம்
+save(W_task)                 # disk-ல் இன்னொரு முழு copy</code></pre>
+
+  <p>
+    LoRA என்பது patch-ஐ மட்டும் சேமிக்கும் branch. <code>W_base</code> read-only-ஆக
+    இருக்கிறது; மாற்றம் அதற்குப் பக்கத்தில் வாழ்கிறது. Paper-ன் அவதானிப்பு என்னவென்றால்
+    அந்த patch <em>மெல்லியது</em>: rank <code>r</code>, அதாவது 4096 அகலமான matrix-க்கு
+    <code>r</code> = 8, சில நேரம் 1 கூடப் போதும்.
+  </p>
+
+<pre><code>A = random(d_in, r)          # r = 8, 4096 அல்ல
+B = zeros(r, d_out)          # patch காலியாகத் தொடங்குகிறது
+h = x @ W_base + (x @ A) @ B * (alpha / r)
+
+W_merged = W_base + A @ B * (alpha / r)     # ship நேரம்: patch-ஐ apply செய்</code></pre>
+
+  <p>ஒரு பருமனான matrix-க்குப் பதிலாக இரண்டு மெல்லிய matrices. Ship செய்யும்போது patch-ஐ apply செய்து, முன்பு போலவே ஒரே matrix-ஐ serve செய்யுங்கள். இதுதான் paper.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Git ஒப்பீடு</th></tr></thead>
+    <tbody>
+      <tr><td><strong>W<sub>0</sub></strong></td><td>Pretrained weight. Frozen.</td><td><code>main</code>, read-only</td></tr>
+      <tr><td><strong>ΔW</strong></td><td>Fine-tune மாற்றுவது எது</td><td>அந்த diff</td></tr>
+      <tr><td><strong>r</strong></td><td>Rank: diff-க்கு எத்தனை சுயாதீன திசைகள் அனுமதிக்கப்படுகின்றன</td><td>Patch எவ்வளவு மெல்லியது</td></tr>
+      <tr><td><strong>B, A</strong></td><td>Diff இரண்டு மெல்லிய matrices-ஆக, ΔW = BA</td><td>Patch, சுருக்கிச் சேமிக்கப்பட்டது</td></tr>
+      <tr><td><strong>α</strong></td><td>ஒரு மாறிலி. Patch α/r-ஆல் scale செய்யப்படுகிறது</td><td>Patch-க்கான learning-rate knob</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="thanglish">
+    Full fine-tune oru fork — ellaa weights-um copy. LoRA oru branch, patch mattum
+    save pannudhu. Antha patch thin: rank r, 4096 wide matrix-kku r = 8 podhum.
+  </p>
+
+  <h2>இது adapters-ஐயும் முழு fine-tuning-ஐயும் ஏன் வென்றது</h2>
+  <p>
+    களம் GPT-3, 175 பில்லியன் parameters. Task ஒன்றுக்கு ஒரு முழு fine-tune என்பது
+    task ஒன்றுக்கு weights-ன் முழு copy — paper ஒரு checkpoint-ஐ 350GB என்று
+    சொல்கிறது — அத்துடன் train செய்யும்போது அவை அனைத்துக்கும் gradients மற்றும்
+    optimiser state. Adapters-தான் அப்போதைய தீர்வு: ஒவ்வொரு layer-க்கும்
+    <em>பிறகு</em> பொருத்தப்பட்ட சிறிய two-layer MLP. ஆனால் அது sequential path-ல்
+    ஒரு புதிய layer, உள்ளே ஒரு nonlinearity உண்டு; எனவே அதை மடித்து விட முடியாது,
+    ஒவ்வொரு request-க்கும் latency செலவாகிறது. Paper இதை "aren't existing solutions
+    good enough?" பகுதியில் அளக்கிறது: batch size 1-ல் இது தெளிவாகத் தெரியும் —
+    online inference வாழ்வதே அங்குதான்.
+  </p>
+  <p>
+    LoRA-ன் patch linear, எனவே அது weight-க்குள் மடிந்துவிடும். Base-ன் அதே latency.
+    Task மாற்றுவது என்பது ஒரு patch-ஐக் கழித்து, இன்னொன்றைக் கூட்டுவது. Task
+    ஒன்றுக்கான checkpoint patch மட்டுமே: முழு fine-tune 350GB இருந்த இடத்தில் paper
+    35MB என்று பதிவு செய்கிறது.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+  <div class="formula">h = W<sub>0</sub>x + ΔWx = W<sub>0</sub>x + BAx &nbsp;&nbsp;&nbsp; ΔW = BA, &nbsp;B is d×r, &nbsp;A is r×k, &nbsp;r ≪ min(d, k)</div>
+
+  <p>இதை pipeline stages-ஆகப் படியுங்கள்:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>W<sub>0</sub>x</code></td><td>(d,)</td><td>Frozen base. Model ஏற்கனவே செய்வது.</td></tr>
+      <tr><td><code>Ax</code></td><td>(r,)</td><td>x-ஐ r எண்களுக்கு <strong>அழுத்து</strong>. Init-ல் random Gaussian.</td></tr>
+      <tr><td><code>B(Ax)</code></td><td>(d,)</td><td>மீண்டும் <strong>விரி</strong>. Init-ல் zero, எனவே patch காலியாகத் தொடங்குகிறது.</td></tr>
+      <tr><td><code>× α/r</code></td><td>scalar</td><td>r-ஐ மாற்றும்போது step size நிலையாக இருக்கச் செய்கிறது. Equation 3-ல் இல்லை; அதற்கு அடுத்த பத்தியில்.</td></tr>
+      <tr><td><code>W<sub>0</sub> + BA</code></td><td>(d, k)</td><td>அந்த merge. Serve செய்வதற்கு முன் ஒருமுறை. மீண்டும் ஒரே matrix.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    இரண்டு குறிப்புகள். Paper <code>BA</code>-ஐ column vectors-உடன் எழுதுகிறது; என்
+    <code>x</code> ஒரு row, எனவே patch <code>(x @ A) @ B</code> என்று படிக்கப்படுகிறது
+    — A பிறகு B — மேலும் என் <code>A @ B</code> என்பது paper-ன் <code>BA</code>-ன்
+    transpose. பிறகு "rank": rank-1 matrix என்பது ஒரு column-ஐ ஒரு row-ஆல் பெருக்கியது
+    — d×k entries, ஆனால் d+k எண்கள் அளவு தகவல்; rank r என்பது அப்படி r-ஐக் கூட்டியது.
+    <code>np.linalg.svd</code> ஒரு matrix-ன் singular values-ஐப் பட்டியலிடும், மிகப்
+    பெரிய திசை முதலில்.
+  </p>
+
+  <h2>நீங்கள் எத்தனை எண்களை train செய்கிறீர்கள்?</h2>
+  <p>
+    d×d matrix ஒன்றின் முழு fine-tune d² எண்களை train செய்கிறது. LoRA r·(d + d)
+    train செய்கிறது. Paper-ன் GPT-3 எண்கள் இதே சூத்திரத்திலிருந்துதான் வருகின்றன:
+    96 layers, d<sub>model</sub> 12288.
+  </p>
+
+  <p><strong>என் சொல்லை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>one square weight, d = 4096. Full fine-tune trains d*d = 16,777,216
+
+    r   LoRA params   full / LoRA
+    1         8,192        2,048x
+    4        32,768          512x
+    8        65,536          256x
+   64       524,288           32x
+
+GPT-3 175B shape: 96 layers, d_model 12288. LoRA on Wq and Wv only:
+  r = 1:     4,718,592 trainable =   <span class="ok">4.7M</span>   (175,000M full, ratio 37,087x)
+  r = 8:    37,748,736 trainable =  37.7M   (175,000M full, ratio 4,636x)</code></pre>
+
+  <p>
+    4.7M மற்றும் 37.7M என்பவை paper-ன் GPT-3 results table-ல் உள்ள இரண்டு LoRA
+    வரிசைகள்; abstract-ன் "10,000 times" என்பது இதே விகிதம், வட்டமிடப்பட்டது. அவர்கள்
+    எதை adapt செய்தார்கள் என்பதைக் கவனியுங்கள்: attention-ல் W<sub>q</sub> மற்றும்
+    W<sub>v</sub> மட்டும், வேறு எதுவும் இல்லை; MLP frozen. இப்போது paper நேர்மையாகச்
+    சொல்லும், blog posts சொல்லாத விஷயம்: நீங்கள் <em>train</em> செய்வதை LoRA
+    சுருக்குகிறது, நீங்கள் <em>load</em> செய்வதை அல்ல.
+  </p>
+
+<pre><code>What LoRA does NOT shrink (d = 4096, r = 8, fp16 weights, fp32 Adam):
+  the frozen W itself ............   <span class="hl">33.6 MB  either way</span>
+  full FT  grads + Adam m, v .....  167.8 MB
+  LoRA     grads + Adam m, v .....    0.7 MB</code></pre>
+
+  <div class="note">
+    <strong>LoRA gradients, optimiser state, checkpoints ஆகியவற்றைக் குறைக்கிறது.
+    Inference-ல் base அதே அளவு memory-ஐச் செலவழிக்கிறது.</strong> அதனால்தான் paper-ன்
+    GPU memory சேமிப்பு சுமார் 3×, 10,000× அல்ல. Base-ஐச் சுருக்குவது quantisation-ன்
+    வேலை — QLoRA என்பது "4-bit base கூட ஒரு LoRA patch".
+  </div>
+
+  <h2>Diff low-rank — அதன் அர்த்தம் இதுதான்</h2>
+  <p>
+    Laptop-ல் GPT-3-ஐ fine-tune செய்ய முடியாது, எனவே ஒரே ஒரு linear layer-க்கான
+    நேர்மையான பதிப்பு இதோ. முழு fine-tune எந்த ΔW-க்கு converge ஆகுமோ அதை least
+    squares தருகிறது — closed form, training loop இல்லை — அதற்கு எத்தனை திசைகள் உள்ளன
+    என்பதை SVD சொல்கிறது. Task-ன் உண்மையான ΔW rank 4 கூட சிறிது noise; இதுதான் உண்மையான
+    diffs பற்றிய paper-ன் கூற்று. d = 64, 512 rows.
+  </p>
+
+<pre><code>  singular values of the fitted dW (first 10):
+   [3.001 2.    0.986 <span class="ok">0.512</span> 0.156 0.151 0.146 0.14  0.137 0.135]
+
+  rank r   dW error   test RMSE
+    none                 0.4852   ← base model
+       1     0.6199      0.3026
+       2     0.3330      0.1694
+       4     0.1628      0.0907   ← அந்தப் பள்ளம்
+       8     0.1432      0.0840
+      64     0.0000      0.0533   ← முழு fine-tune</code></pre>
+
+  <p>
+    நான்கு உண்மையான singular values — 3, 2, 1, 0.5 — பிறகு 0.15-ல் ஒரு noise floor.
+    Fit செய்யப்பட்ட ΔW-ல் 4096 entries, ஆனால் முக்கியமான திசைகள் 4. Rank 4 test
+    error-ஐ 0.49-லிருந்து 0.09-க்குக் கொண்டு வருகிறது; முழு fine-tune 0.05 தருகிறது,
+    அந்த இடைவெளி rank 8-ஆல் எட்ட முடியாத, தேவையும் இல்லாத 60 சிறு noise திசைகள்.
+    இப்போது இதை உடையுங்கள்: அதே அளவு ΔW, ஆனால் random Gaussian.
+  </p>
+
+<pre><code>BREAK IT: same size of dW, but full-rank (random Gaussian):
+   [0.928 0.878 0.847 0.828 0.803 0.793 0.774 0.75  0.737 0.719]   ← பள்ளம் இல்லை
+
+  rank r   dW error   test RMSE
+       8     0.7909      <span class="hl">0.3828</span>   ← rank 8 அரிதாகவே உதவுகிறது
+      64     0.0000      0.0536   ← முழு fine-tune</code></pre>
+
+  <p>
+    பள்ளம் இல்லை என்றால் LoRA இல்லை: rank 8, diff-ல் 79%-ஐத் தரையிலேயே விட்டுவிடுகிறது.
+    உண்மையான fine-tune diffs முதல் table போலத் தோன்றுவதால்தான் LoRA வேலை செய்கிறது —
+    இது ஒரு அனுபவபூர்வமான கூற்று, theorem அல்ல. Paper-ன் ஆதாரம் section 7: fine-tune
+    செய்யப்பட்ட GPT-3-ல், r = 64 update-ன் மேல் திசைகள் r = 8-ன் திசைகளுடன் அதிகமாகப்
+    பொருந்துகின்றன, மேலும் r = 1 முதல் 4 வரையே சோதிக்கப்பட்ட tasks-ல் முழு
+    fine-tuning-க்கு இணையாக இருந்தது. Paper-ன் சிறந்த பகுதி; எல்லோரும் தவறவிடுகிறார்கள்.
+  </p>
+
+  <p class="thanglish">
+    Real fine-tune diff-la nalla direction naalu dhaan, meethi ellaam noise. Adhanaala
+    rank 4 podhum. Random full-rank dW-ku antha cliff illa, rank 8 fail aagudhu.
+  </p>
+
+  <h2>Merge செய்யுங்கள், inference-ல் எதுவும் செலவில்லை</h2>
+  <p>
+    <code>x @ (W + AB)</code>-ம் <code>x @ W + (x @ A) @ B</code>-ம் ஒரே எண் —
+    distributivity. எனவே serve செய்வதற்கு முன், patch-ஐ weight-க்குள் ஒருமுறை
+    கூட்டிவிடுங்கள். Serve செய்யப்படும் model ஒரே ஒரு matmul, எப்போதும் இருந்தது போலவே.
+  </p>
+
+<pre><code>max |unmerged - merged| = 3.55e-15
+flops per token, base W alone .........  8,192
+flops per token, base + unmerged patch  10,240
+flops per token, merged ...............  <span class="ok">8,192   ← same as base</span>
+un-merge, max |W_back - W| = 5.55e-17   ← base recovered
+
+best single matrix that reproduces a LoRA layer:  residual 1.83e-15
+best single matrix that reproduces an adapter:    residual <span class="hl">5.44e-01</span></code></pre>
+
+  <p>
+    கடைசி இரண்டு வரிகள்தான் adapters-க்கு எதிரான முழு வாதம். ஒவ்வொரு layer-ஐயும்
+    சிறப்பாக மீட்டுருவாக்கும் ஒரே matrix எது என்று least squares-ஐக் கேட்டேன். LoRA-க்கு
+    அது சரியாக ஒன்றைக் கண்டுபிடிக்கிறது. Adapter-க்கு — இடையில் ஒரு relu உள்ள இரண்டு
+    matmuls — சிறந்த ஒற்றை matrix 54% தவறாக இருக்கிறது, ஏனெனில் எந்த linear map-ம்
+    relu-ஐ மீட்டுருவாக்காது. எனவே அது கூடுதல் layers-ஆகவே இருக்கிறது, கூடுதல் layers
+    என்பது கூடுதல் latency.
+  </p>
+
+  <div class="note">
+    <strong>Interview கேள்வி இதுதான்: "LoRA ஏன் inference latency சேர்ப்பதில்லை?"</strong>
+    ஒரே வரி: patch linear, எனவே அது W-க்குள் merge ஆகிறது. Bonus: un-merge என்பது கழித்தல்.
+  </div>
+
+  <p class="thanglish">
+    Patch linear-aa irukkarathaala serve pannradhukku munnaadi adha W-kkulla merge
+    panniralaam. Adapter-la relu irukku, adhanaala merge aagaadhu — latency varum.
+  </p>
+
+  <h2>B ஏன் zero-ல் தொடங்குகிறது (A அல்ல)</h2>
+  <p>
+    B = 0 எனில் patch zero, உங்கள் fine-tune-ன் step 0 base model-உடன் bit-for-bit
+    ஒன்றாக இருக்கும். கிட்டத்தட்ட அல்ல — அப்படியே. வேலை செய்யும் ஒன்றிலிருந்து மட்டுமே
+    அது விலகிச் செல்ல முடியும்.
+  </p>
+
+<pre><code>A random, B zero:    identical to base? <span class="ok">True</span>   max |diff| = 0.0
+A random, B random:  identical to base? False   outputs moved <span class="hl">31.5%</span>, untrained
+
+  init                  |dL/dA|  |dL/dB|   what happens
+  A random, B zero        0.000   11.009   B moves first, then A. Trains.
+  A zero,   B zero        <span class="hl">0.000    0.000</span>   both zero forever. Stuck.
+  A random, B random     10.724   11.009   trains, but step 0 is wrong.</code></pre>
+
+  <p>
+    A-ஐ அல்ல, B-ஐ ஏன் zero ஆக்குகிறோம்? இரண்டையும் ஏன் ஆக்கக் கூடாது? இரண்டாவது table
+    கையால் கணக்கிட்ட ஒரே ஒரு gradient. dL/dA என்பது B-ஆல் பெருக்கப்படுகிறது, எனவே
+    B = 0 எனில் A ஒரு step அசையாமல் இருக்கும் — ஆனால் B-க்கு உண்மையான gradient
+    கிடைக்கிறது, B நகர்ந்தவுடன் A பின்தொடர்கிறது. இரண்டையும் zero ஆக்கினால் ஒவ்வொரு
+    gradient-ம் zero; patch தொடக்கப் புள்ளியை விட்டு நகராது. இரண்டையும் random
+    ஆக்கினால், training தொடங்கும் முன்பே model-ஐ உடைத்துவிட்டீர்கள்.
+  </p>
+
+  <h2>α எதற்காக</h2>
+  <p>
+    Paper patch-ஐ α/r-ஆல் scale செய்து சொல்கிறது: நீங்கள் முதலில் முயற்சிக்கும் r-க்கு
+    α-வை அமைத்து, பிறகு அதை விட்டுவிடுங்கள். இது ஏன் வேலை செய்கிறது: Adam-ன் முதல் step
+    சரியாக lr × sign(grad), ஒவ்வொரு parameter-க்கும் ஒரே அளவு. B-க்கு r rows உள்ளன,
+    patch அவை அனைத்தையும் கூட்டுகிறது; எனவே அதே learning rate-க்கு பெரிய r என்றால்
+    பெரிய step — நீங்கள் r-ஆல் வகுக்கவில்லை என்றால்.
+  </p>
+
+<pre><code>one Adam step (lr = 0.001) on B, from B = 0. alpha = 4.
+
+    r   no scale: |dh|  loss drop   alpha/r: |dh|  loss drop
+    1             0.1031    0.00014           0.4125    0.00054
+    4             0.2553    0.00063           0.2553    0.00063
+   16             0.5219    0.00246           0.1305    0.00062
+   64             1.3644    0.01066           0.0853    0.00067
+
+loss drop at r = 64 vs r = 1:  no scale <span class="hl">78x</span>   alpha/r <span class="ok">1.2x</span></code></pre>
+
+  <p>
+    Scale இல்லாமல், r = 1-லிருந்து 64-க்குப் போனால் அதே optimiser step loss-க்கு 78×
+    அதிகம் செய்கிறது: நீங்கள் அமைதியாக learning rate-ஐ மாற்றிவிட்டீர்கள். α/r-உடன்
+    loss drop 20%-க்குள் நிலைத்திருக்கிறது. (r = 4 வரிசைதான் sanity check: அங்கு
+    α/r = 1, எனவே இரு பாதிகளும் பொருந்துகின்றன.) ஒரு நேர்மையான எச்சரிக்கை: α/r-ன் கீழ்
+    <em>norm</em> column இன்னும் r-உடன் சுருங்குகிறது; நிலைத்திருப்பது loss மாற்றம்தான்.
+    இதே காரணத்தால் 2023-ன் ஒரு தொடர்ச்சியான வேலை, rsLoRA, α/√r-ஐ ஆதரிக்கிறது.
+    நடைமுறையில் α என்பது patch-க்கான learning-rate knob — பரவலான "α = 2r" கட்டைவிரல்
+    விதி இவ்வளவுதான்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    LoRA adapters मैंने समझने से पहले ही ship कर दिए थे। <code>r=8</code>,
+    <code>lora_alpha=16</code>, <code>target_modules=["q_proj", "v_proj"]</code> —
+    किसी blog post से copy किया, और चल भी गया। <code>r</code> क्या है,
+    <code>alpha</code> क्यों है, README zero inference latency का वादा क्यों करता है
+    — कुछ भी मैं आपको नहीं बता सकता था। किसी ने नहीं बताया कि पूरा paper एक diff के
+    बारे में की गई एक ही observation है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (patch, rank, adapter,
+    gradient, checkpoint…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में
+    आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>Fine-tune एक patch है, fork नहीं</h2>
+  <p>यह आप जानते हैं। पूरा fine-tune एक fork है: हर weight को copy करो, हर weight को बदलो, और वह copy अपने पास रखो।</p>
+
+<pre><code>W_task = W_base.copy()       # हर task के लिए 4096 x 4096 floats
+W_task += learned_change     # हर entry हिल सकती है
+save(W_task)                 # disk पर एक और पूरी copy</code></pre>
+
+  <p>
+    LoRA वह branch है जो सिर्फ़ patch रखता है। <code>W_base</code> read-only रहता है;
+    बदलाव उसके बग़ल में रहता है। और paper की observation यह है कि वह patch
+    <em>पतला</em> है: rank <code>r</code>, जहाँ 4096 चौड़े matrix पर <code>r</code>
+    8 हो सकता है, या 1 भी।
+  </p>
+
+<pre><code>A = random(d_in, r)          # r = 8, 4096 नहीं
+B = zeros(r, d_out)          # patch ख़ाली शुरू होता है
+h = x @ W_base + (x @ A) @ B * (alpha / r)
+
+W_merged = W_base + A @ B * (alpha / r)     # ship समय: patch apply करो</code></pre>
+
+  <p>एक मोटे matrix की जगह दो पतले matrices। Ship करते समय patch apply करो और पहले की तरह एक ही matrix serve करो। यही पूरा paper है।</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Git उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>W<sub>0</sub></strong></td><td>Pretrained weight. Frozen.</td><td><code>main</code>, read-only</td></tr>
+      <tr><td><strong>ΔW</strong></td><td>Fine-tune जो बदलता है</td><td>वह diff</td></tr>
+      <tr><td><strong>r</strong></td><td>Rank: diff को कितनी स्वतंत्र दिशाएँ मिल सकती हैं</td><td>Patch कितना पतला है</td></tr>
+      <tr><td><strong>B, A</strong></td><td>Diff दो पतले matrices में, ΔW = BA</td><td>Patch, compressed रूप में</td></tr>
+      <tr><td><strong>α</strong></td><td>एक स्थिरांक। Patch α/r से scale होता है</td><td>Patch के लिए learning-rate knob</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>यह adapters और पूरे fine-tuning से बेहतर क्यों निकला</h2>
+  <p>
+    सन्दर्भ है GPT-3, 175 अरब parameters. हर task के लिए पूरा fine-tune यानी हर task
+    के लिए weights की पूरी copy — paper एक checkpoint को 350GB बताता है — और ऊपर से
+    training के दौरान उन सबके gradients और optimiser state. Adapters उस समय का उपाय
+    थे: हर layer के <em>बाद</em> लगा एक छोटा two-layer MLP. लेकिन वह sequential path
+    में एक नई layer है जिसके अंदर nonlinearity है, इसलिए उसे मोड़कर हटाया नहीं जा
+    सकता और हर request पर latency लगती है। Paper इसे अपने "aren't existing solutions
+    good enough?" वाले हिस्से में नापता है: batch size 1 पर साफ़ दिखता है — और online
+    inference वहीं रहता है।
+  </p>
+  <p>
+    LoRA का patch linear है, इसलिए वह weight में मुड़ जाता है। Base जितनी ही latency.
+    Task बदलना यानी एक patch घटाओ, दूसरा जोड़ो। हर task का checkpoint सिर्फ़ patch है:
+    जहाँ पूरा fine-tune 350GB था, वहाँ paper 35MB बताता है।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+  <div class="formula">h = W<sub>0</sub>x + ΔWx = W<sub>0</sub>x + BAx &nbsp;&nbsp;&nbsp; ΔW = BA, &nbsp;B is d×r, &nbsp;A is r×k, &nbsp;r ≪ min(d, k)</div>
+
+  <p>इसे pipeline stages की तरह पढ़िए:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>W<sub>0</sub>x</code></td><td>(d,)</td><td>Frozen base. जो model पहले से करता है।</td></tr>
+      <tr><td><code>Ax</code></td><td>(r,)</td><td>x को r संख्याओं तक <strong>निचोड़ो</strong>। Init पर random Gaussian.</td></tr>
+      <tr><td><code>B(Ax)</code></td><td>(d,)</td><td>वापस <strong>फैलाओ</strong>। Init पर zero, इसलिए patch ख़ाली शुरू होता है।</td></tr>
+      <tr><td><code>× α/r</code></td><td>scalar</td><td>r बदलने पर step size स्थिर रखता है। Equation 3 में नहीं; उसके बाद वाले पैराग्राफ़ में।</td></tr>
+      <tr><td><code>W<sub>0</sub> + BA</code></td><td>(d, k)</td><td>वह merge. Serve करने से पहले एक बार। फिर से एक ही matrix.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    दो बातें। Paper <code>BA</code> को column vectors के साथ लिखता है; मेरा
+    <code>x</code> एक row है, इसलिए patch <code>(x @ A) @ B</code> पढ़ा जाता है —
+    पहले A, फिर B — और मेरा <code>A @ B</code> paper के <code>BA</code> का transpose
+    है। और "rank": rank-1 matrix यानी एक column गुणा एक row — d×k entries, पर जानकारी
+    सिर्फ़ d+k संख्याओं की; rank r यानी ऐसी r चीज़ें जोड़ दी गईं।
+    <code>np.linalg.svd</code> matrix के singular values गिनाता है, सबसे बड़ी दिशा पहले।
+  </p>
+
+  <h2>आप कितनी संख्याएँ train कर रहे हैं?</h2>
+  <p>
+    एक d×d matrix का पूरा fine-tune d² संख्याएँ train करता है। LoRA r·(d + d) करता
+    है। Paper के GPT-3 आँकड़े इसी सूत्र से निकलते हैं: 96 layers, d<sub>model</sub> 12288.
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>one square weight, d = 4096. Full fine-tune trains d*d = 16,777,216
+
+    r   LoRA params   full / LoRA
+    1         8,192        2,048x
+    4        32,768          512x
+    8        65,536          256x
+   64       524,288           32x
+
+GPT-3 175B shape: 96 layers, d_model 12288. LoRA on Wq and Wv only:
+  r = 1:     4,718,592 trainable =   <span class="ok">4.7M</span>   (175,000M full, ratio 37,087x)
+  r = 8:    37,748,736 trainable =  37.7M   (175,000M full, ratio 4,636x)</code></pre>
+
+  <p>
+    4.7M और 37.7M paper की GPT-3 results table की दो LoRA पंक्तियाँ हैं; abstract का
+    "10,000 times" यही अनुपात है, गोल किया हुआ। ध्यान दीजिए उन्होंने adapt क्या किया:
+    attention में W<sub>q</sub> और W<sub>v</sub>, और कुछ नहीं; MLP frozen था। अब वह
+    बात जिस पर paper ईमानदार है और blog posts नहीं: LoRA वह घटाता है जो आप
+    <em>train</em> करते हैं, वह नहीं जो आप <em>load</em> करते हैं।
+  </p>
+
+<pre><code>What LoRA does NOT shrink (d = 4096, r = 8, fp16 weights, fp32 Adam):
+  the frozen W itself ............   <span class="hl">33.6 MB  either way</span>
+  full FT  grads + Adam m, v .....  167.8 MB
+  LoRA     grads + Adam m, v .....    0.7 MB</code></pre>
+
+  <div class="note">
+    <strong>LoRA gradients, optimiser state और checkpoints घटाता है। Inference पर base
+    उतनी ही memory लेता है।</strong> इसीलिए paper की GPU memory बचत लगभग 3× है,
+    10,000× नहीं। Base को छोटा करना quantisation का काम है — QLoRA यानी "4-bit base
+    प्लस एक LoRA patch"।
+  </div>
+
+  <h2>Diff low-rank है — और इसका मतलब यह है</h2>
+  <p>
+    Laptop पर GPT-3 fine-tune नहीं कर सकता, इसलिए एक linear layer के लिए ईमानदार
+    संस्करण यह रहा। Least squares वह ΔW देता है जिस पर पूरा fine-tune पहुँचता — closed
+    form, कोई training loop नहीं — और SVD बताता है कि उसमें कितनी दिशाएँ हैं। Task का
+    असली ΔW rank 4 है और थोड़ा noise; असली diffs को लेकर paper का यही दावा है।
+    d = 64, 512 rows.
+  </p>
+
+<pre><code>  singular values of the fitted dW (first 10):
+   [3.001 2.    0.986 <span class="ok">0.512</span> 0.156 0.151 0.146 0.14  0.137 0.135]
+
+  rank r   dW error   test RMSE
+    none                 0.4852   ← base model
+       1     0.6199      0.3026
+       2     0.3330      0.1694
+       4     0.1628      0.0907   ← वह ढलान
+       8     0.1432      0.0840
+      64     0.0000      0.0533   ← पूरा fine-tune</code></pre>
+
+  <p>
+    चार असली singular values — 3, 2, 1, 0.5 — फिर 0.15 पर एक noise floor. Fit किए गए
+    ΔW में 4096 entries हैं और मायने रखने वाली दिशाएँ 4. Rank 4 test error को 0.49 से
+    0.09 पर ले आता है; पूरा fine-tune 0.05 देता है, और वह अंतर 60 नन्ही noise दिशाएँ
+    हैं जिन तक rank 8 पहुँच नहीं सकता और जिनकी ज़रूरत भी नहीं। अब इसे तोड़िए: उतना ही
+    बड़ा ΔW, पर random Gaussian.
+  </p>
+
+<pre><code>BREAK IT: same size of dW, but full-rank (random Gaussian):
+   [0.928 0.878 0.847 0.828 0.803 0.793 0.774 0.75  0.737 0.719]   ← ढलान नहीं
+
+  rank r   dW error   test RMSE
+       8     0.7909      <span class="hl">0.3828</span>   ← rank 8 से बात नहीं बनी
+      64     0.0000      0.0536   ← पूरा fine-tune</code></pre>
+
+  <p>
+    ढलान नहीं तो LoRA नहीं: rank 8 diff का 79% ज़मीन पर छोड़ देता है। LoRA इसलिए काम
+    करता है क्योंकि असली fine-tune diffs पहली table जैसे दिखते हैं — यह अनुभव से निकला
+    दावा है, कोई theorem नहीं। Paper का सबूत section 7 है: fine-tune किए गए GPT-3 पर
+    r = 64 वाले update की ऊपरी दिशाएँ r = 8 वाली दिशाओं से काफ़ी हद तक मेल खाती हैं,
+    और जिन tasks पर परखा गया उन पर r = 1 से 4 ही पूरे fine-tuning की बराबरी कर रहा था।
+    Paper का सबसे अच्छा हिस्सा; और यही सब छोड़ देते हैं।
+  </p>
+
+  <h2>Merge कीजिए और inference पर कुछ मत चुकाइए</h2>
+  <p>
+    <code>x @ (W + AB)</code> और <code>x @ W + (x @ A) @ B</code> एक ही संख्या हैं —
+    distributivity. इसलिए serve करने से पहले patch को weight में एक बार जोड़ दीजिए।
+    Serve होने वाला model एक ही matmul है, वही जो वह हमेशा से था।
+  </p>
+
+<pre><code>max |unmerged - merged| = 3.55e-15
+flops per token, base W alone .........  8,192
+flops per token, base + unmerged patch  10,240
+flops per token, merged ...............  <span class="ok">8,192   ← same as base</span>
+un-merge, max |W_back - W| = 5.55e-17   ← base recovered
+
+best single matrix that reproduces a LoRA layer:  residual 1.83e-15
+best single matrix that reproduces an adapter:    residual <span class="hl">5.44e-01</span></code></pre>
+
+  <p>
+    आख़िरी दो पंक्तियाँ ही adapters के ख़िलाफ़ पूरा तर्क हैं। मैंने least squares से पूछा
+    कि हर layer को सबसे अच्छे ढंग से दोहराने वाला एक matrix कौन-सा है। LoRA के लिए वह
+    उसे ठीक-ठीक ढूँढ़ लेता है। Adapter के लिए — बीच में relu वाले दो matmuls — सबसे
+    अच्छा अकेला matrix 54% ग़लत है, क्योंकि कोई भी linear map relu को दोहरा नहीं सकता।
+    इसलिए वह अतिरिक्त layers ही बना रहता है, और अतिरिक्त layers यानी अतिरिक्त latency.
+  </p>
+
+  <div class="note">
+    <strong>Interview का सवाल है "LoRA inference latency क्यों नहीं बढ़ाता?"</strong>
+    एक पंक्ति: patch linear है, इसलिए वह W में merge हो जाता है। Bonus: un-merge सिर्फ़ घटाना है।
+  </div>
+
+  <h2>B zero से क्यों शुरू होता है (A से क्यों नहीं)</h2>
+  <p>
+    B = 0 पर patch zero है और आपके fine-tune का step 0 base model के बिल्कुल बराबर है
+    — क़रीब नहीं, हूबहू। वह किसी ऐसी चीज़ से ही दूर जा सकता है जो काम करती है।
+  </p>
+
+<pre><code>A random, B zero:    identical to base? <span class="ok">True</span>   max |diff| = 0.0
+A random, B random:  identical to base? False   outputs moved <span class="hl">31.5%</span>, untrained
+
+  init                  |dL/dA|  |dL/dB|   what happens
+  A random, B zero        0.000   11.009   B moves first, then A. Trains.
+  A zero,   B zero        <span class="hl">0.000    0.000</span>   both zero forever. Stuck.
+  A random, B random     10.724   11.009   trains, but step 0 is wrong.</code></pre>
+
+  <p>
+    B को zero क्यों, A को क्यों नहीं, या दोनों को क्यों नहीं? दूसरी table हाथ से निकाला
+    गया एक gradient है। dL/dA में B का गुणा होता है, इसलिए B = 0 पर A एक step तक टिका
+    रहता है — पर B को असली gradient मिलता है, और B के हिलते ही A पीछे-पीछे चल पड़ता है।
+    दोनों zero कर दीजिए तो हर gradient zero है; patch कभी origin छोड़ता ही नहीं। दोनों
+    random कर दीजिए तो training शुरू होने से पहले ही आपने model तोड़ दिया।
+  </p>
+
+  <h2>α किस लिए है</h2>
+  <p>
+    Paper patch को α/r से scale करता है और कहता है: जो पहला r आज़माएँ उसी पर α सेट कर
+    दीजिए, फिर उसे छोड़ दीजिए। यह क्यों चलता है: Adam का पहला step ठीक lr × sign(grad)
+    होता है, हर parameter के लिए एक जितना। B में r rows हैं और patch उन सब को जोड़ता
+    है, तो उसी learning rate पर बड़ा r यानी बड़ा step — जब तक आप r से भाग न दें।
+  </p>
+
+<pre><code>one Adam step (lr = 0.001) on B, from B = 0. alpha = 4.
+
+    r   no scale: |dh|  loss drop   alpha/r: |dh|  loss drop
+    1             0.1031    0.00014           0.4125    0.00054
+    4             0.2553    0.00063           0.2553    0.00063
+   16             0.5219    0.00246           0.1305    0.00062
+   64             1.3644    0.01066           0.0853    0.00067
+
+loss drop at r = 64 vs r = 1:  no scale <span class="hl">78x</span>   alpha/r <span class="ok">1.2x</span></code></pre>
+
+  <p>
+    Scale के बिना, r = 1 से 64 पर जाने से वही optimiser step loss पर 78× ज़्यादा असर
+    करता है: आपने चुपचाप अपनी learning rate बदल दी। α/r के साथ loss drop 20% के भीतर
+    टिका रहता है। (r = 4 वाली पंक्ति sanity check है: वहाँ α/r = 1 है, तो दोनों आधे
+    मिलते हैं।) एक ईमानदार चेतावनी: α/r के तहत <em>norm</em> वाला column अब भी r के
+    साथ घटता है; टिकता वह loss का बदलाव है — और इसी आधार पर 2023 का एक follow-up,
+    rsLoRA, α/√r की वकालत करता है। व्यवहार में α patch के लिए एक learning-rate knob है
+    — प्रचलित "α = 2r" वाला नियम बस इतना ही है।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -445,6 +1005,37 @@ def lora_grads(x, A, B, G, alpha, r):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

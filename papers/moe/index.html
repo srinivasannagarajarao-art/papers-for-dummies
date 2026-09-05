@@ -7,7 +7,7 @@
 <meta name="description" content="The sparsely-gated mixture-of-experts layer explained as a load balancer in front of eight small MLPs, plus the Switch Transformer's top-1 routing and capacity factor. Runnable NumPy; six demos that print the routing table, the FLOPs, the hot shard and the dropped tokens.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -35,6 +35,15 @@
       — everything below runs from it. NumPy only.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
 
   <p>
     I'm an AI Engineer. I've served Mixtral. I read "47B parameters, 13B active" on
@@ -272,6 +281,552 @@ collapsed router (logit bias +8 on E3, nothing to stop it):
     empty slots. Switch settles on 1.0 to 1.25; "dropless" MoE (MegaBlocks) came later.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. Mixtral-ஐ serve செய்திருக்கிறேன். Model card-ல்
+    "47B parameters, 13B active" என்று படித்து, தலையாட்டினேன் — ஆனால்
+    "active" என்றால் என்ன, ஒரு token process ஆகும்போது மீதி 34B எங்கே போகிறது
+    என்று என்னால் சொல்ல முடியவில்லை. பிறகு paper-ன் ஒரே diagram-ஐப் பார்த்தேன்.
+    அது எனக்குத் தெரிந்த ஒன்றுதான். அது ஒரு load balancer.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (load balancer, router,
+    expert, gate, top-k, capacity factor, shard, FLOPs…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>ஒரு MoE layer என்பது N services-க்கு முன்னால் இருக்கும் load balancer</h2>
+
+  <p>முதலாவதை நீங்கள் deploy செய்திருக்கிறீர்கள்; அது பெரிதானபோது இரண்டாவதை:</p>
+
+<pre><code>def handle(request):
+    return monolith(request)          # ஒவ்வொரு request-ம் முழு code-ஐயும் ஓட்டும்
+
+def handle(request):
+    svc = router.pick(request)        # load balancer ஒரே ஒரு backend-ஐத் தேர்கிறது
+    return svc(request)               # மீதி N-1 backends ஒன்றும் செய்வதில்லை</code></pre>
+
+  <p>
+    அவ்வளவுதான் அந்த layer. "Experts" என்பவை transformer-ன் feed-forward
+    block-ன் N நகல்கள் — <a href="../attention/">attention page-ல்</a> நான்
+    "wrapping" என்று சொன்ன இரண்டு-layer MLP — ஒவ்வொன்றுக்கும் தனித்தனி weights.
+    Router என்பது ஒரே ஒரு matrix-ம் ஒரு softmax-ம். Paper-ன் ஒரே திருப்பம்:
+    ஒன்றல்ல, <em>top k</em> backends-ஐத் தேர்ந்து, அவற்றின் விடைகளை நம்பிக்கை
+    அளவின்படி கலக்குங்கள்.
+  </p>
+
+<pre><code>def moe(x):
+    scores = softmax(x @ W_g)                  # x எந்த expert-க்குப் பொருந்தும்?
+    top    = argsort(-scores)[:k]              # சிறந்த k-ஐ வைத்துக்கொள்
+    gates  = scores[top] / scores[top].sum()   # renormalise: மீண்டும் கூட்டினால் 1
+    return sum(g * expert[i](x) for g, i in zip(gates, top))</code></pre>
+
+  <p>நான்கு வரிகள். இரு papers-லும் மீதி எல்லாம் production-ல் என்ன கெடுகிறது என்பதுதான்.</p>
+
+  <p class="thanglish">
+    MoE layer-nu solradhu N backend services-kku munnadi oru load balancer.
+    Router thaan traffic-a route pannudhu; oru token top-k experts-a mattum
+    visit pannudhu, meethi ellaam idle-a irukku.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Ops உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Expert</strong></td><td>சாதாரண 2-layer MLP. N எண்ணிக்கை, ஒரே shape, வெவ்வேறு weights</td><td>ஒரு backend service. ஒரே code, வெவ்வேறு config</td></tr>
+      <tr><td><strong>Router</strong> (gate)</td><td><code>softmax(x @ W<sub>g</sub>)</code>: ஒவ்வொரு token-க்கும், ஒவ்வொரு expert-க்கும் ஒரு score</td><td>Load balancer-ன் routing rule — ஆனால் இது கற்றுக்கொள்ளப்படுகிறது</td></tr>
+      <tr><td><strong>Top-k</strong></td><td>சிறந்த k scores-ஐ வைத்து மீதியை 0 ஆக்கு. வைத்தவையே gate values</td><td>உண்மையில் அழைக்கப்படும் k backends, அவற்றின் weights</td></tr>
+      <tr><td><strong>Auxiliary loss</strong></td><td>சமமில்லாத routing-க்கு ஒரு அபராதம்</td><td>Hot shard-ல் வெடிக்கும் alert</td></tr>
+      <tr><td><strong>Capacity factor</strong></td><td>ஒரு batch-ல் ஒரு expert-க்கு அதிகபட்ச tokens (Switch)</td><td>ஒவ்வொரு backend-க்கும் rate limit. Overflow drop ஆகும்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Shazeer-ன் paper இதைக் கொண்டு 137 billion parameters-ஐ train செய்தது —
+    LSTM layers-க்கு இடையில், <em>Attention Is All You Need</em> வருவதற்குச்
+    சில மாதங்கள் முன்பு — குறைந்த compute-ல் language modelling-ல் அப்போதைய
+    சிறந்த முடிவை வென்றது. GShard (2020) மற்றும் Switch (2021) இதை
+    transformer-க்குள் FFN-ன் இடத்தில் கொண்டு வந்தன; Mixtral 8x7B என்பது
+    சரியாக அந்த மாற்றத்துடன் கூடிய ஒரு
+    <a href="../llama/">LLaMA-வடிவ model</a>.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">y = Σ<sub>i</sub> G(x)<sub>i</sub> · E<sub>i</sub>(x)<br>G(x) = softmax(KeepTopK(x·W<sub>g</sub> + noise, k))</div>
+
+  <p>இரண்டாவது வரியை உள்ளிருந்து வெளியே, pipeline stages போலப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>x·W<sub>g</sub></code></td><td>(n, N)</td><td><strong>Score matrix.</strong> உள்ளே n tokens, வெளியே ஒவ்வொரு expert-க்கும் ஒரு score. Cell [t][i] = token t, expert i-க்கு எவ்வளவு பொருந்தும்</td></tr>
+      <tr><td><code>+ noise</code></td><td>(n, N)</td><td>Training-ல் மட்டும். N(0,1) × softplus(x·W<sub>noise</sub>): ஒரு அசைவு, ஒரே k எப்போதும் வெல்லாமல் இருக்க</td></tr>
+      <tr><td><code>KeepTopK</code></td><td>(n, N)</td><td>ஒவ்வொரு row-லும் பெரிய k-ஐ வைத்து மீதியை −∞ ஆக்கு</td></tr>
+      <tr><td><code>softmax</code></td><td>row-வாரியாக</td><td>வைத்த k சதவீதங்களாகி 1-ஆகக் கூடும்; −∞ சரியாக 0 ஆகும், அதனால் அழைப்பே இல்லை. என் script செய்வது போல முதலில் softmax, பிறகு renormalise — அதே எண்கள்தான்</td></tr>
+      <tr><td><code>E<sub>i</sub>(x)</code></td><td>(n, d)</td><td>Expert i-ன் MLP, அதைத் தேர்ந்தெடுத்த tokens-க்கு மட்டும் ஓடும்</td></tr>
+      <tr><td><code>Σ G·E</code></td><td>(n, d)</td><td>k outputs-ஐக் கலக்கு. உள்ளேயும் வெளியேயும் ஒரே shape: FFN-க்கு நேரடி மாற்று</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Router: rules கற்றுக்கொள்ளப்படும் ஒரு load balancer</h2>
+  <p>பதினாறு tokens, எட்டு experts, top-2. முதலில் token 0-ஐ படிப்படியாக, பிறகு routing table-ன் முதல் ஆறு rows (script பதினாறையும் print செய்யும்).</p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>token 0, router probabilities over all 8 experts:
+    [0.012 0.052 0.093 0.232 0.021 0.036 0.39  0.163]  sum 1.000
+  top-2 = experts [6, 3], probs [0.39  0.232], sum 0.622
+  renormalised gates [0.627 0.373], sum 1.000 <span class="ok">✓</span>
+
+routing table:
+  token   1st   gate     2nd   gate
+      0   E6    0.627    E3    0.373
+      1   E6    0.545    E0    0.455
+      2   E0    0.615    E1    0.385
+      3   E4    0.650    E1    0.350
+      4   E0    0.532    E5    0.468
+      5   E4    0.728    E2    0.272
+
+tokens per expert: E0:5  E1:3  E2:4  E3:2  E4:2  E5:5  <span class="hl">E6:8</span>  E7:3
+total assignments: 32 = 16 tokens x k=2</code></pre>
+
+  <p>
+    ஒவ்வொரு token-க்கும் சரியாக இரண்டு experts; மீதி ஆறுக்கும் அந்த token-க்கான
+    gate சரியாக 0. Gate 0 என்றால் அழைப்பு இல்லை; அழைப்பு இல்லை என்றால் compute
+    இல்லை. அதுதான் முழு தந்திரம். இப்போது E6-ஐப் பாருங்கள்: எந்த training-ம்
+    இல்லாத random init-லேயே 32 assignments-ல் எட்டு, அதே சமயம் E3-க்கும்
+    E4-க்கும் தலா இரண்டு. இதை மனதில் வையுங்கள்.
+  </p>
+  <p>
+    சூத்திரத்தில் உள்ள <code>+ noise</code> என்பது ranking உறைந்து போவதற்கு
+    Shazeer கொடுக்கும் தீர்வு: ஒவ்வொரு logit-ன் மேலும் Gaussian அசைவு, ஒரு
+    கற்ற scale-உடன், அதனால் ஒரே k எப்போதும் வெல்லாது. Dropout போல, இது
+    training-நேர switch. அதை on-ல் விட்டுவிட்டால்:
+  </p>
+
+<pre><code>noise off, two runs: outputs identical? True
+noise on,  two runs: outputs identical? <span class="hl">False</span>
+  max |y1 - y2| = 2.199; 10 of 16 tokens changed at least one expert</code></pre>
+
+  <h2>எட்டு மடங்கு parameters, இரு மடங்கு compute</h2>
+  <p>
+    ஒரு dense FFN என்பது d×h அளவுள்ள இரு matrices. எட்டு experts என்றால் அதன்
+    எட்டு மடங்கு, கூடவே ஒரு d×N router — அது கணக்கிலேயே வராது. ஆனால் ஒரு token
+    k experts-ஐ மட்டுமே சந்திக்கிறது, அதனால் அதன் FLOPs N FFNs அல்ல, k FFNs.
+    Model எவ்வளவு அறிகிறது என்பதையும், ஒவ்வொரு token எவ்வளவு வேலை செய்கிறது
+    என்பதையும் பிரிப்பதுதான் இந்த paper இருப்பதற்கான முழுக் காரணம்.
+  </p>
+
+<pre><code>d_model=1024, ffn hidden=4096, experts=8, top-2
+
+dense FFN params:                 8,388,608
+MoE params (8 experts):          67,117,056   8.00x
+
+FLOPs per token as k grows (params stay at 8.00x):
+  top-1:    16,793,600   1.00x
+  top-2:    33,570,816   <span class="ok">2.00x</span>
+  top-4:    67,125,248   4.00x
+  top-8:   134,234,112   <span class="hl">8.00x   &lt;- k = N: a dense layer, 8x the compute</span></code></pre>
+
+  <p>
+    உங்களிடம் கேட்கப்படும் கேள்வி: "Mixtral 8x7B தானே, பிறகு ஏன் 56B இல்லாமல்
+    47B?" ஏனென்றால் FFN மட்டுமே நகலெடுக்கப்படுகிறது. Attention, embeddings,
+    norms எல்லாம் பகிரப்படுகின்றன, ஒவ்வொரு token-ம் அவற்றுக்கு ஒரு முறை மட்டும்
+    செலவழிக்கிறது. Mixtral-ன் config-லிருந்து அதன் expert weights-ஐக்
+    கணக்கிட்டால் (SwiGLU experts, தலா மூன்று matrices, 32 layers):
+  </p>
+
+<pre><code>Mixtral 8x7B config, expert weights only (SwiGLU: 3 matrices each):
+  one expert:                    176,160,768
+  all experts, all layers:    45,097,156,608   ~45.1B
+  active per token (top-2):   11,274,289,152   ~11.3B</code></pre>
+
+  <p>
+    Mistral சுமார் 47B total, 13B active என்று சொல்கிறது; ஒவ்வொரு column-லும்
+    விடுபடும் ≈1.6B என்பது பகிரப்பட்ட attention, embeddings, norms. அதாவது ஒரு
+    token 13B model-ன் வேலையைச் செய்கிறது, ஆனால் அதற்கு 47B model-ன்
+    <em>memory</em> வேண்டும்: ஓடினாலும் ஓடாவிட்டாலும் ஒவ்வொரு expert-ம்
+    load ஆகியிருக்கும். VRAM-ல் எட்டுக்குக் காசு கொடுத்து இரண்டைப்
+    பயன்படுத்துகிறீர்கள். Interview கேள்விக்குப் பின்னால் ஒளிந்திருக்கும் MLOps
+    கேள்வி அதுதான். Script layer-ன் output shape (16, 8)-ஐ dense FFN-னுடையதோடும்,
+    token 0-ன் row-ஐ கையால் செய்த
+    0.627 × E6(x) + 0.373 × E3(x)-உடனும் சரிபார்க்கிறது: <code>True</code>.
+  </p>
+
+  <p class="thanglish">
+    Params 8x aana FLOPs per token 2x mattum dhaan — token k experts-a mattum
+    visit pannudhu. Aana memory-la ellaa experts-um load aagum: 13B velai,
+    47B VRAM. Adhu dhaan MLOps question.
+  </p>
+
+  <h2>Hot shards: load-balancing loss</h2>
+  <p>
+    ஒவ்வொரு ops நபரும் சந்தித்த தோல்வி. Random init-ல் ஒரு expert சற்றே
+    சிறப்பாக இருக்கிறது, அதனால் router அதற்கு அதிகம் அனுப்புகிறது; அதிக
+    gradient கிடைக்கிறது, மேலும் சிறப்படைகிறது, மேலும் அனுப்பப்படுகிறது.
+    மற்றவற்றுக்கு tokens இல்லை, gradient இல்லை, முன்னேற்றம் இல்லை. ஒரு hot
+    shard, நீங்கள் காசு கொடுத்துக்கொண்டிருக்கும் ஏழு சும்மா machines.
+    இதை paper "self-reinforcing" என்கிறது.
+  </p>
+  <p>
+    தீர்வு இரண்டாவது loss term. Shazeer-ன் paper இரண்டைப் பயன்படுத்துகிறது:
+    <em>importance</em> — batch முழுவதும் ஒவ்வொரு expert-ன் gates கூட்டுத்
+    தொகையின் coefficient of variation-ன் (std ÷ mean) வர்க்கம்; மற்றும்
+    <em>load</em> — token counts-ன் ஒரு மென்மையாக்கப்பட்ட மதிப்பீட்டின் மேல்
+    அதே கணக்கு. Switch இரண்டையும் ஒரே வரியால் மாற்றுகிறது,
+    N × Σ<sub>i</sub> f<sub>i</sub> · P<sub>i</sub>: f<sub>i</sub> என்பது
+    expert i-க்கு அனுப்பப்பட்ட tokens-ன் விகிதம், P<sub>i</sub> என்பது அதற்கான
+    router-ன் சராசரி probability. Count-க்கு gradient இல்லை; probability-க்கு
+    உண்டு; count அதிகமாக இருக்கும் இடத்தில் இந்தப் பெருக்கல் P-ஐக் கீழே
+    தள்ளுகிறது. அறுபத்து நான்கு tokens, top-1, தொடாத ஒரு router, பிறகு நான்
+    கையால் E3 பக்கம் சாய்த்த ஒன்று:
+  </p>
+
+<pre><code>random-init router (nobody touched it):
+  tokens per expert: E0:12  E1:6  E2:1  E3:10  E4:8  E5:11  E6:14  E7:2
+  importance loss (Shazeer, CV^2):     0.301
+  balance loss (Switch, N * sum f*P):  <span class="ok">1.078</span>
+
+collapsed router (logit bias +8 on E3, nothing to stop it):
+  tokens per expert: E0:0  E1:0  E2:0  E3:64  E4:0  E5:0  E6:0  E7:0
+  importance loss (Shazeer, CV^2):     7.000
+  balance loss (Switch, N * sum f*P):  <span class="hl">7.956</span></code></pre>
+
+  <p>
+    ஒவ்வொரு f<sub>i</sub>-ம் P<sub>i</sub>-ம் 1/N ஆக இருக்கும்போது Switch loss
+    1.0; ஒரு expert எல்லாவற்றையும் எடுத்துக்கொள்ளும்போது அது N-ஐ நோக்கி
+    ஏறுகிறது. தொடாத router கூட 1.078-ல் உட்கார்ந்திருக்கிறது: random init
+    சமநிலை அல்ல — E2-க்கு ஒரு token, E6-க்கு பதினான்கு. Paper இதைக் கூட்டுவதற்கு
+    முன் α = 0.01-ஆல் பெருக்குகிறது. சும்மா இருக்கும் experts ஏன் சும்மாவே
+    இருக்கின்றன என்பதை autograd இல்லாமல் பார்க்க: E5-ன் ஒவ்வொரு weight-ஓடும்
+    1.0-ஐக் கூட்டி, output கவனித்ததா என்று கேளுங்கள்.
+  </p>
+
+<pre><code>E5 received 0 tokens. Add 1.0 to every weight in E5:
+  output changed? <span class="hl">False</span>  -&gt; dLoss/dW for E5 is exactly 0. E5 never trains.</code></pre>
+
+  <div class="note">
+    <strong>Objective-ல் எதிர்த் திசையில் தள்ளும் ஒரே term balance loss
+    மட்டுமே.</strong> அதை நீக்குங்கள் — பணக்காரன் மேலும் பணக்காரனாகி, எட்டு
+    experts-க்கான memory-ஐ அணிந்துகொண்ட ஒரே-expert network உங்களுக்குக்
+    கிடைக்கும். DeepSeek-V3 (2024) இந்த loss-ஐ விட்டுவிட்டு, ஒவ்வொரு step-லும்
+    logits-ன் மேல் ஒரு per-expert bias-ஐ மேலோ கீழோ நகர்த்துகிறது — router-ஐ
+    உடைக்க நான் பயன்படுத்திய அதே <code>bias</code> argument, gradient-க்குப்
+    பதிலாக ஒரு controller-ஆல் இயக்கப்படுகிறது.
+  </div>
+
+  <h2>Switch: top-1, ஒரே loss, ஒரு rate limit</h2>
+  <p>
+    Shazeer-ன் paper k-ஐ 2-க்கும் 4-க்கும் இடையில் வைத்து, ஒப்பிடுவதற்கு router-க்கு
+    ஒரு token-க்கு இரு experts தேவை என்று வாதிட்டது.
+    <a href="https://arxiv.org/abs/2101.03961">Switch Transformer</a>
+    (Fedus, Zoph, Shazeer, 2021) k=1-ஐ முயற்சித்தது, தரம் குறையவில்லை என்று
+    கண்டு, அதையே வைத்துக்கொண்டது: ஒரு token-க்கு பாதி expert compute, எளிய
+    dispatch, மேலே சொன்ன ஒரே loss. T5-Base-ன் அதே FLOPs per token-உடன் அதே
+    தரத்தை 7× வேகத்தில் அடைகிறது, அந்த recipe 1.6 trillion parameters வரை
+    scale ஆனது. இன்றைய ஒவ்வொரு MoE LLM-ம் இந்தப் பதிப்பிலிருந்து வந்ததுதான் —
+    Mixtral-ல் k மீண்டும் 2-ஆக.
+  </p>
+  <p>
+    அதன் இரண்டாவது பங்களிப்பு rate limit. Experts நிலையான hardware-ல் நிலையான
+    அளவு batches-ஆக ஓடுகின்றன, அதனால் ஒவ்வொன்றுக்கும் ஒரு
+    <strong>capacity</strong>: (tokens ÷ N) × ஒரு capacity factor. அதற்கு மேல்
+    வரும் tokens layer-லிருந்து drop ஆகின்றன — experts-லிருந்து 0; residual
+    connection அவற்றைத் தூக்கிச் செல்கிறது. எதுவும் raise ஆகாது. எதுவும் log ஆகாது.
+  </p>
+
+<pre><code>64 tokens, 8 experts, top-1.  capacity = floor(factor * 64 / 8)
+
+  random-init router: factor 1.0   capacity  8  -&gt;  dropped 15 of 64
+  random-init router: factor 1.25  capacity 10  -&gt;  dropped  7 of 64
+  random-init router: factor 2.0   capacity 16  -&gt;  dropped <span class="ok"> 0</span> of 64
+
+  collapsed router:   factor 1.0   capacity  8  -&gt;  dropped <span class="hl">56</span> of 64
+  collapsed router:   factor 1.25  capacity 10  -&gt;  dropped 54 of 64
+  collapsed router:   factor 2.0   capacity 16  -&gt;  dropped 48 of 64</code></pre>
+
+  <p>
+    யாரும் bias செய்யாத ஒரு router-ல், factor 1.0-ல் 64 tokens-ல் பதினைந்து
+    சத்தமில்லாமல் layer-ஐத் தவிர்த்துச் சென்றன. Paper-ன் capacity table-ல்
+    இருக்கும் trade-off அதுதான்: அதிக factor குறைவான tokens-ஐ drop செய்யும்,
+    ஆனால் ஒவ்வொரு expert-ன் batch-ஐயும் cap வரை நிரப்பும், அதனால் காலி
+    slots-க்கும் compute கொடுக்கிறீர்கள். Switch 1.0-க்கும் 1.25-க்கும்
+    இடையில் நிற்கிறது; "dropless" MoE (MegaBlocks) அதற்குப் பிறகு வந்தது.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने Mixtral serve किया है। Model card पर
+    "47B parameters, 13B active" पढ़ा, सिर हिलाया, और यह नहीं बता सकता था कि
+    "active" का मतलब क्या है या जब एक token process हो रहा होता है तब बाक़ी
+    34B कहाँ रहते हैं। फिर मैंने paper का इकलौता diagram देखा और पहचान गया।
+    यह एक load balancer है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (load balancer, router,
+    expert, gate, top-k, capacity factor, shard, FLOPs…) मैंने वैसे ही रखे हैं।
+    क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>MoE layer यानी N services के आगे लगा load balancer</h2>
+
+  <p>पहला आपने deploy किया है, और जब वह बहुत बड़ा हो गया, तब दूसरा:</p>
+
+<pre><code>def handle(request):
+    return monolith(request)          # हर request पूरा code चलाता है
+
+def handle(request):
+    svc = router.pick(request)        # load balancer एक ही backend चुनता है
+    return svc(request)               # बाक़ी N-1 backends कुछ नहीं करते</code></pre>
+
+  <p>
+    बस यही है वह layer। "Experts" transformer के feed-forward block की N
+    copies हैं — वही दो-layer MLP जिसे मैंने
+    <a href="../attention/">attention page पर</a> "wrapping" कहा था — हर एक के
+    अपने weights। Router एक matrix और एक softmax है। Paper का इकलौता twist:
+    एक नहीं, <em>top k</em> backends चुनो और उनके जवाबों को confidence के
+    हिसाब से mix करो।
+  </p>
+
+<pre><code>def moe(x):
+    scores = softmax(x @ W_g)                  # x हर expert पर कितना fit बैठता है?
+    top    = argsort(-scores)[:k]              # सबसे अच्छे k रखो
+    gates  = scores[top] / scores[top].sum()   # renormalise: जोड़ फिर से 1
+    return sum(g * expert[i](x) for g, i in zip(gates, top))</code></pre>
+
+  <p>चार लाइनें। दोनों papers में बाक़ी सब यही है कि production में क्या बिगड़ता है।</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Ops उदाहरण</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Expert</strong></td><td>सादा 2-layer MLP। ऐसे N, एक ही shape, अलग weights</td><td>एक backend service। एक ही code, अलग config</td></tr>
+      <tr><td><strong>Router</strong> (gate)</td><td><code>softmax(x @ W<sub>g</sub>)</code>: हर token के लिए, हर expert का एक score</td><td>Load balancer का routing rule, फ़र्क़ बस यह कि यह सीखा जाता है</td></tr>
+      <tr><td><strong>Top-k</strong></td><td>सबसे अच्छे k scores रखो, बाक़ी शून्य। जो रखे गए वही gate values हैं</td><td>असल में जिन k backends को call किया गया, और उनके weights</td></tr>
+      <tr><td><strong>Auxiliary loss</strong></td><td>असमान routing पर जुर्माना</td><td>Hot shard पर बजने वाला alert</td></tr>
+      <tr><td><strong>Capacity factor</strong></td><td>प्रति batch, प्रति expert अधिकतम tokens (Switch)</td><td>हर backend पर rate limit। Overflow drop हो जाता है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Shazeer के paper ने इससे 137 billion parameters train किए — LSTM layers के
+    बीच, <em>Attention Is All You Need</em> से कुछ महीने पहले — और कम compute
+    पर language modelling का तत्कालीन best result हराया। GShard (2020) और
+    Switch (2021) इसे transformer के अंदर FFN की जगह ले आए; Mixtral 8x7B ठीक
+    इसी अदला-बदली वाला एक <a href="../llama/">LLaMA-आकार का model</a> है।
+  </p>
+
+  <h2>वह एक formula</h2>
+
+  <div class="formula">y = Σ<sub>i</sub> G(x)<sub>i</sub> · E<sub>i</sub>(x)<br>G(x) = softmax(KeepTopK(x·W<sub>g</sub> + noise, k))</div>
+
+  <p>दूसरी लाइन को अंदर से बाहर, pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>x·W<sub>g</sub></code></td><td>(n, N)</td><td><strong>Score matrix.</strong> अंदर n tokens, बाहर हर expert का एक score. Cell [t][i] = token t, expert i पर कितना fit बैठता है</td></tr>
+      <tr><td><code>+ noise</code></td><td>(n, N)</td><td>सिर्फ़ training में। N(0,1) × softplus(x·W<sub>noise</sub>): थोड़ी हलचल, ताकि हर बार वही k न जीतें</td></tr>
+      <tr><td><code>KeepTopK</code></td><td>(n, N)</td><td>हर row में सबसे बड़े k रखो, बाक़ी को −∞ कर दो</td></tr>
+      <tr><td><code>softmax</code></td><td>row-wise</td><td>रखे हुए k प्रतिशत बन जाते हैं जिनका जोड़ 1 है; −∞ ठीक 0 हो जाता है, यानी कोई call नहीं। पहले softmax फिर renormalise — जैसा मेरा script करता है — वही संख्याएँ देता है</td></tr>
+      <tr><td><code>E<sub>i</sub>(x)</code></td><td>(n, d)</td><td>Expert i का MLP, सिर्फ़ उन्हीं tokens पर चलता है जिन्होंने उसे चुना</td></tr>
+      <tr><td><code>Σ G·E</code></td><td>(n, d)</td><td>k outputs को mix करो। अंदर-बाहर एक ही shape: FFN के लिए drop-in</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Router: वह load balancer जिसके rules सीखे जाते हैं</h2>
+  <p>सोलह tokens, आठ experts, top-2। पहले token 0 कदम-दर-कदम, फिर routing table की पहली छह rows (script सोलहों print करता है)।</p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>token 0, router probabilities over all 8 experts:
+    [0.012 0.052 0.093 0.232 0.021 0.036 0.39  0.163]  sum 1.000
+  top-2 = experts [6, 3], probs [0.39  0.232], sum 0.622
+  renormalised gates [0.627 0.373], sum 1.000 <span class="ok">✓</span>
+
+routing table:
+  token   1st   gate     2nd   gate
+      0   E6    0.627    E3    0.373
+      1   E6    0.545    E0    0.455
+      2   E0    0.615    E1    0.385
+      3   E4    0.650    E1    0.350
+      4   E0    0.532    E5    0.468
+      5   E4    0.728    E2    0.272
+
+tokens per expert: E0:5  E1:3  E2:4  E3:2  E4:2  E5:5  <span class="hl">E6:8</span>  E7:3
+total assignments: 32 = 16 tokens x k=2</code></pre>
+
+  <p>
+    हर token को ठीक दो experts मिले; बाक़ी छह के लिए उसका gate ठीक 0 था।
+    Gate शून्य तो call नहीं; call नहीं तो compute नहीं। पूरा खेल यही है।
+    अब E6 देखिए: बिना किसी training के, random init पर ही, 32 assignments
+    में से आठ — जबकि E3 और E4 को दो-दो मिले। यह बात याद रखिए।
+  </p>
+  <p>
+    Formula में जो <code>+ noise</code> है, वह जमी हुई ranking के लिए Shazeer
+    का इलाज है: हर logit पर Gaussian हलचल, एक सीखे हुए scale के साथ, ताकि हर
+    बार वही k न जीतें। Dropout की तरह यह training-time switch है। इसे चालू
+    छोड़ दीजिए और:
+  </p>
+
+<pre><code>noise off, two runs: outputs identical? True
+noise on,  two runs: outputs identical? <span class="hl">False</span>
+  max |y1 - y2| = 2.199; 10 of 16 tokens changed at least one expert</code></pre>
+
+  <h2>आठ गुना parameters, दो गुना compute</h2>
+  <p>
+    Dense FFN यानी d×h की दो matrices। आठ experts यानी उसका आठ गुना, साथ में
+    एक d×N router जो गिनती में ही नहीं आता। पर एक token सिर्फ़ k experts तक
+    जाता है, इसलिए उसके FLOPs N FFNs नहीं, k FFNs हैं। Model कितना जानता है
+    और हर token कितना काम करता है — इन दोनों को अलग कर देना ही इस paper के
+    होने की पूरी वजह है।
+  </p>
+
+<pre><code>d_model=1024, ffn hidden=4096, experts=8, top-2
+
+dense FFN params:                 8,388,608
+MoE params (8 experts):          67,117,056   8.00x
+
+FLOPs per token as k grows (params stay at 8.00x):
+  top-1:    16,793,600   1.00x
+  top-2:    33,570,816   <span class="ok">2.00x</span>
+  top-4:    67,125,248   4.00x
+  top-8:   134,234,112   <span class="hl">8.00x   &lt;- k = N: a dense layer, 8x the compute</span></code></pre>
+
+  <p>
+    आपसे यह पूछा जाएगा: "Mixtral 8x7B है, तो 56B क्यों नहीं, 47B क्यों?"
+    क्योंकि सिर्फ़ FFN की copies बनती हैं। Attention, embeddings और norms साझा
+    हैं, और हर token उनकी क़ीमत एक ही बार चुकाता है। Mixtral के config से उसके
+    expert weights गिनें (SwiGLU experts, हर एक में तीन matrices, 32 layers):
+  </p>
+
+<pre><code>Mixtral 8x7B config, expert weights only (SwiGLU: 3 matrices each):
+  one expert:                    176,160,768
+  all experts, all layers:    45,097,156,608   ~45.1B
+  active per token (top-2):   11,274,289,152   ~11.3B</code></pre>
+
+  <p>
+    Mistral क़रीब 47B total और 13B active बताता है; हर column में जो ≈1.6B
+    छूट रहा है वह साझा attention, embeddings और norms हैं। यानी एक token काम
+    तो 13B model जितना करता है, पर उसे <em>memory</em> 47B वाली चाहिए: हर
+    expert load रहता है, चले या न चले। VRAM में आठ के पैसे देकर आप दो
+    इस्तेमाल करते हैं। Interview वाले सवाल के पीछे छिपा MLOps सवाल यही है।
+    Script layer के output की shape (16, 8) को dense FFN वाली से, और token 0
+    की row को हाथ से किए गए
+    0.627 × E6(x) + 0.373 × E3(x) से भी मिलाता है: <code>True</code>।
+  </p>
+
+  <h2>Hot shards: load-balancing loss</h2>
+  <p>
+    वह failure जिससे हर ops वाला मिल चुका है। Random init पर एक expert ज़रा-सा
+    बेहतर निकलता है, तो router उसे ज़्यादा भेजता है; उसे ज़्यादा gradient मिलता
+    है, वह और बेहतर होता है, और ज़्यादा भेजा जाता है। बाक़ियों को न tokens, न
+    gradient, न सुधार। एक hot shard, और सात खाली machines जिनका किराया आप फिर
+    भी दे रहे हैं। Paper इसे self-reinforcing कहता है।
+  </p>
+  <p>
+    इलाज है एक दूसरा loss term। Shazeer का paper दो इस्तेमाल करता है:
+    <em>importance</em> — पूरे batch में हर expert के जोड़े हुए gates के
+    coefficient of variation (std ÷ mean) का वर्ग; और <em>load</em> — token
+    counts के एक smooth अनुमान पर वही गणना। Switch दोनों की जगह एक लाइन रखता
+    है, N × Σ<sub>i</sub> f<sub>i</sub> · P<sub>i</sub>: f<sub>i</sub> यानी
+    expert i को भेजे गए tokens का हिस्सा, P<sub>i</sub> यानी उसके लिए router
+    की औसत probability। Count का gradient नहीं होता; probability का होता है;
+    यह गुणा वहाँ P को नीचे धकेलता है जहाँ count ज़्यादा है। चौंसठ tokens,
+    top-1, एक अनछुआ router और फिर एक जिसे मैंने हाथ से E3 की तरफ़ झुका दिया:
+  </p>
+
+<pre><code>random-init router (nobody touched it):
+  tokens per expert: E0:12  E1:6  E2:1  E3:10  E4:8  E5:11  E6:14  E7:2
+  importance loss (Shazeer, CV^2):     0.301
+  balance loss (Switch, N * sum f*P):  <span class="ok">1.078</span>
+
+collapsed router (logit bias +8 on E3, nothing to stop it):
+  tokens per expert: E0:0  E1:0  E2:0  E3:64  E4:0  E5:0  E6:0  E7:0
+  importance loss (Shazeer, CV^2):     7.000
+  balance loss (Switch, N * sum f*P):  <span class="hl">7.956</span></code></pre>
+
+  <p>
+    जब हर f<sub>i</sub> और P<sub>i</sub> 1/N हो तो Switch loss 1.0 रहता है,
+    और जब एक expert सब कुछ ले ले तो N की तरफ़ चढ़ता है। अनछुआ router भी 1.078
+    पर बैठा है: random init संतुलित नहीं होता — E2 को एक token मिला, E6 को
+    चौदह। Paper इसे जोड़ने से पहले α = 0.01 से गुणा करता है। और खाली experts
+    खाली ही क्यों रह जाते हैं, वह बिना autograd के देखिए: E5 के हर weight में
+    1.0 जोड़ दीजिए और पूछिए कि output ने कुछ महसूस किया या नहीं।
+  </p>
+
+<pre><code>E5 received 0 tokens. Add 1.0 to every weight in E5:
+  output changed? <span class="hl">False</span>  -&gt; dLoss/dW for E5 is exactly 0. E5 never trains.</code></pre>
+
+  <div class="note">
+    <strong>पूरे objective में उल्टी दिशा में धकेलने वाला अकेला term यही
+    balance loss है।</strong> इसे हटा दीजिए और अमीर और अमीर होता जाएगा, जब तक
+    आपके पास आठ experts जितनी memory पहने हुए एक-expert network न बचे।
+    DeepSeek-V3 (2024) इस loss को छोड़कर हर step पर logits पर लगे per-expert
+    bias को ऊपर-नीचे खिसकाता है — वही <code>bias</code> argument जिससे मैंने
+    router तोड़ा था, बस gradient की जगह एक controller उसे चलाता है।
+  </div>
+
+  <h2>Switch: top-1, एक loss, और एक rate limit</h2>
+  <p>
+    Shazeer के paper ने k को 2 और 4 के बीच रखा और तर्क दिया कि तुलना करने के
+    लिए router को हर token पर दो experts चाहिए।
+    <a href="https://arxiv.org/abs/2101.03961">Switch Transformer</a>
+    (Fedus, Zoph और Shazeer, 2021) ने k=1 आज़मा ही लिया, पाया कि quality बनी
+    रहती है, और उसी को रख लिया: प्रति token आधा expert compute, आसान dispatch,
+    और ऊपर वाला अकेला loss। T5-Base जितने ही FLOPs per token के साथ यह वही
+    quality 7× तक तेज़ी से छू लेता है, और यह recipe 1.6 trillion parameters तक
+    scale हुआ। आज का हर MoE LLM इसी version का वंशज है, Mixtral में k फिर से
+    2 पर।
+  </p>
+  <p>
+    इसका दूसरा योगदान rate limit है। Experts तय hardware पर तय आकार के batches
+    की तरह चलते हैं, इसलिए हर एक को एक <strong>capacity</strong> मिलती है:
+    (tokens ÷ N) × एक capacity factor। उससे आगे के tokens layer से drop कर
+    दिए जाते हैं — experts से 0; residual connection उन्हें आगे ले जाता है।
+    न कोई exception उठता है। न कोई log आता है।
+  </p>
+
+<pre><code>64 tokens, 8 experts, top-1.  capacity = floor(factor * 64 / 8)
+
+  random-init router: factor 1.0   capacity  8  -&gt;  dropped 15 of 64
+  random-init router: factor 1.25  capacity 10  -&gt;  dropped  7 of 64
+  random-init router: factor 2.0   capacity 16  -&gt;  dropped <span class="ok"> 0</span> of 64
+
+  collapsed router:   factor 1.0   capacity  8  -&gt;  dropped <span class="hl">56</span> of 64
+  collapsed router:   factor 1.25  capacity 10  -&gt;  dropped 54 of 64
+  collapsed router:   factor 2.0   capacity 16  -&gt;  dropped 48 of 64</code></pre>
+
+  <p>
+    जिस router को किसी ने छुआ तक नहीं था, उस पर factor 1.0 पर 64 में से पंद्रह
+    tokens चुपचाप layer छोड़कर निकल गए। Paper की capacity table वाला trade-off
+    यही है: ज़्यादा factor कम tokens drop करता है, पर हर expert का batch cap तक
+    भर देता है, यानी खाली slots का compute भी आप ही चुकाते हैं। Switch 1.0 से
+    1.25 पर ठहरता है; "dropless" MoE (MegaBlocks) बाद में आया।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -442,6 +997,37 @@ def switch_balance_loss(gates, probs):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

@@ -15,9 +15,9 @@ A single author explaining ML papers as runnable code, for engineers who'd rathe
 The audience is one person: a working engineer, self-taught, skeptical of hype, who wants the idea distilled honestly. Not a research audience. Not a lead-gen audience. Not a SaaS audience.
 
 Pages that exist:
-- **Homepage** — bio + list of papers (1 live, N "coming soon")
+- **Homepage** — bio + the paper list, grouped by theme
 - **Papers index** — same list, standalone
-- **Paper page** (Attention) — the essay, in English/Tamil/Hindi via in-page tabs, runnable Python script alongside
+- **Paper pages** — sixteen of them, each an essay with a runnable Python script alongside. Fifteen carry English, Tamil and Hindi via in-page tabs; the KV-caching page is English only so far
 
 Design the system so a new paper page is easy to add by copying the template — no CMS, no data layer, just a new HTML file.
 
@@ -72,6 +72,7 @@ Decided and implemented (replacing an earlier Cayman-theme pass, which read as "
 - `.main-content` — the single column. `.title-block` opens it: `h1`, optional `.paper-meta` (authors/year), `.lede`
 - `.paper-list` / `.paper` — the paper index: `.paper-link` wrapping `.paper-title` + `.paper-meta`, then `.paper-pitch`, then `.paper-langs` (links to `?lang=`, or a single "English" link when that is all there is). `.paper.soon` for unwritten entries: muted, not a link. `.papers-group` is the mono folder heading above each list; with more than a handful of papers the lists are grouped by theme (`ai-ml/transformers/`, `ai-ml/fine-tuning/`, …) in dependency order within a group
 - Pages that exist only in English carry no `.langbar` and no tab script. Tabs appear when a second language is written, never before
+- A translated page keeps the essay in all three languages inside `<section data-panel="en|ta|hi">`, and leaves everything from the `<hr>` onward (The code, Now break it, On the maths anxiety, Where to go next, footer) in English outside the panels. Understanding in Tamil or Hindi, vocabulary in English: technical terms, library names and code stay in Latin script, and only `#` comments inside code blocks are translated. Printed program output is never translated, only the annotation after an arrow. Tamil carries two or three `.thanglish` romanised recaps after the hardest sections; Hindi carries none
 - `.hero-code` — a `pre` promoted to the page's opening visual (homepage only)
 - `.langbar` — text tabs with an ink underline on the active one
 - `.note`, `.formula`, `.thanglish`, `.tablewrap`, `table.breaks` — content blocks on paper pages

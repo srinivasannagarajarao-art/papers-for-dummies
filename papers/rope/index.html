@@ -7,7 +7,7 @@
 <meta name="description" content="RoPE explained as code. Position is a clock hand you turn, not a vector you add, so attention only sees the gap between two tokens. Runnable NumPy, seven demos, every claim a printed dot product.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Tamil:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -34,6 +34,14 @@
       — everything below runs from it. NumPy only.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
 
   <p>
     I'd been serving LLaMA-family models for a year before I could say what
@@ -280,6 +288,556 @@ slow hand, base 100000: reaches the base-10000 pos-4096 angle at pos 39513</code
     this page goes.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    LLaMA-family models-ஐ ஒரு வருடம் serve செய்த பிறகும், config-ல் இருக்கும்
+    <code>rope_theta</code> என்ன செய்கிறது என்று என்னால் சொல்ல முடியவில்லை.
+    <a href="../attention/">2017 paper</a> ஒவ்வொரு token-உடனும் ஒரு position
+    vector-ஐக் <em>கூட்டுகிறது</em> என்று தெரியும். LLaMA அப்படிச் செய்வதில்லை
+    என்பதும் தெரியும். ஆனால் அதற்குப் பதிலாக வந்தது இன்னும் <em>சிறியது</em>
+    என்பதை யாரும் சொல்லவில்லை: ஒவ்வொரு query-யையும் key-யையும் ஒரு angle-ல்
+    திருப்புங்கள், dot product-க்கு வாக்கியம் எங்கே தொடங்கியது என்பதே
+    மறந்துவிடும்.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (rotation, angle,
+    frequency, dot product, base, position interpolation…) அப்படியே
+    வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற papers-லும் நீங்கள் அந்த
+    வார்த்தைகளைத்தான் பார்ப்பீர்கள். <strong>புரிதல் தமிழில், சொல்லகராதி
+    English-ல்.</strong>
+  </div>
+
+  <h2>Position என்பது ஒரு கடிகார முள்</h2>
+  <p>Attention page <code>+ pe</code>-உடன் முடிகிறது. இது உங்களுக்குத் தெரியும்:</p>
+
+<pre><code>x = embed(token) + pe[pos]     # 2017: position ஒரு vector, அதைக் கூட்டு
+q = x @ W_q
+k = x @ W_k
+score = q @ k                  # lookup-க்கு முன்பே position உள்ளே</code></pre>
+
+  <p>
+    RoPE position-ஐ embedding-லிருந்து எடுத்து lookup-க்குள்ளேயே வைக்கிறது.
+    முதலில் project. <em>பிறகு</em> திருப்பு:
+  </p>
+
+<pre><code>q = embed(token) @ W_q         # இன்னும் position இல்லை
+k = embed(token) @ W_k
+q = turn(q, by=pos * theta)    # 2021: position ஒரு angle, அதில் rotate செய்
+k = turn(k, by=pos * theta)
+score = q @ k                  # q-க்கும் k-க்கும் இடையேயான angle மட்டுமே</code></pre>
+
+  <p>
+    அவ்வளவுதான் paper. RoPE <strong>பெருக்குகிறது</strong>; கூட்டுவதில்லை.
+    பலன் பள்ளிக்கூட trigonometry: திருப்பப்பட்ட இரு vector-களின் dot product
+    அவற்றுக்கு <em>இடையேயான</em> angle-ஐ மட்டுமே சார்ந்தது. q-ஐ 3θ-லும் k-ஐ
+    7θ-லும் திருப்புங்கள், அல்லது 13θ-லும் 17θ-லும் — score ஒன்றுதான்.
+    Relative position இலவசம், parameters பூஜ்யம்.
+  </p>
+
+  <p>
+    d/2 முட்கள் உள்ள ஒரு கடிகாரத்தை நினைத்துக் கொள்ளுங்கள். q-ல் ஒவ்வொரு
+    dimension ஜோடியும் ஒரு முள், position என்பது அது எவ்வளவு திரும்பியிருக்கிறது
+    என்பது, attention பார்ப்பது ஒரே ஒரு விஷயம்: q-வின் முள்ளுக்கும் k-வின்
+    முள்ளுக்கும் இடையேயான angle. Script-லிருந்து ஒரு முள்:
+  </p>
+
+<pre><code>one hand, 30 deg per position, starting at [1. 0.]
+  pos 0: turned   0.0 deg -&gt; [1. 0.]   length 1.0000
+  pos 1: turned  30.0 deg -&gt; [0.866 0.5  ]   length 1.0000
+  pos 2: turned  60.0 deg -&gt; [0.5   0.866]   length 1.0000
+  pos 3: turned  90.0 deg -&gt; [0. 1.]   length <span class="ok">1.0000</span>   ← மாறவே மாறாது</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>கடிகார ஒப்புமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Pair i</strong> = dims (2i, 2i+1)</td><td>q-வின் ஒரு 2D துண்டு</td><td>ஒரு முள்</td></tr>
+      <tr><td><strong>θ<sub>i</sub></strong></td><td>ஒரு position-க்கு pair i திரும்பும் radians</td><td>அந்த முள் எவ்வளவு வேகமாக நகர்கிறது</td></tr>
+      <tr><td><strong>m θ<sub>i</sub></strong></td><td>Position m-ல் pair i-ன் angle</td><td>முள் எங்கே காட்டுகிறது</td></tr>
+      <tr><td><strong>(n − m) θ<sub>i</sub></strong></td><td>Score பார்க்கும் ஒரே விஷயம்</td><td>இரு முட்களுக்கு இடையேயான angle</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="thanglish">
+    Ovvoru dimension jodi-yum oru kadigaara mul. Position enbadhu andha mul
+    evvalavu thirumbi irukku. Attention paakkuradhu onnu dhaan: q-oda mullukkum
+    k-oda mullukkum idaila angle.
+  </p>
+
+  <h2>Vector கூட்டுவதை இது ஏன் வென்றது</h2>
+  <p>
+    கூட்டல் கசிகிறது. (q + pe[m]) · (k + pe[n]) என்பதை விரித்தால் வரும் cross
+    terms q·pe[n] மற்றும் pe[m]·k absolute position-ஐச் சுமக்கின்றன. எனவே
+    "the cat sat" ஒரு document-ன் தொடக்கத்தில் ஒரு score-ம், நடுவில் வேறு
+    score-ம் பெறும். RoPE-க்கு முந்தைய relative தீர்வுகள் score matrix-உடன்
+    ஒரு learned bias-per-gap table-ஐ ஒட்டின: parameters, memory, மேலும் அந்த
+    matrix-ஐயே கட்டாத linear-attention variants-ல் ஒட்ட இடமே இல்லை. RoPE-க்கு
+    table இல்லை, parameter இல்லை, அமைப்பாலேயே relative, எந்த dot-product
+    attention-லும் அப்படியே பொருந்தும். அதனால்தான் LLaMA, PaLM, GPT-NeoX,
+    Mistral, அதற்குப் பின் வந்த பெரும்பாலான models இதைப் பயன்படுத்துகின்றன.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+  <div class="formula">q<sub>m</sub> = R(m) q,&nbsp; k<sub>n</sub> = R(n) k&nbsp; ⇒&nbsp; q<sub>m</sub> · k<sub>n</sub> = q<sup>T</sup> R(m)<sup>T</sup> R(n) k = q<sup>T</sup> R(n − m) k</div>
+
+  <p>
+    q = W<sub>q</sub>x<sub>m</sub> மற்றும் k = W<sub>k</sub>x<sub>n</sub>
+    என்பவை வழக்கமான projections; R(m) என்பது rotation. இதை pipeline
+    stages-ஆகப் படியுங்கள்:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>θ<sub>i</sub> = 10000<sup>−2i/d</sup></code></td><td>(d/2,)</td><td>ஒரு ஜோடிக்கு ஒரு வேகம். Pair 0 ஒரு position-க்கு 1 rad; கடைசி pair ≈ 1/10000</td></tr>
+      <tr><td><code>m θ<sub>i</sub></code></td><td>(d/2,)</td><td>Position m-ல் ஒவ்வொரு முள்ளும் எவ்வளவு திரும்பியிருக்கிறது</td></tr>
+      <tr><td><code>R(m)</code></td><td>(d, d), block-diagonal</td><td>d/2 தனித்தனி 2×2 rotations. Matrix-ஆக ஒருபோதும் கட்டப்படுவதில்லை — அது ஒரு cos/sin பெருக்கல்</td></tr>
+      <tr><td><code>R(m) q</code></td><td>(d,)</td><td>Position உள்ளடங்கிய q. அதே நீளம், புதிய திசை</td></tr>
+      <tr><td><code>q<sub>m</sub> · k<sub>n</sub></code></td><td>scalar</td><td><strong>q<sup>T</sup> R(n − m) k-க்குச் சமம்.</strong> இடைவெளி மட்டுமே எஞ்சுகிறது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    நடுப்படிதான் முழு நிரூபணம். Rotations angle-களைக் கூட்டிச் சேர்கின்றன,
+    ஒன்றை transpose செய்தால் அது தலைகீழாகிறது, எனவே
+    R(m)<sup>T</sup> R(n) = R(n − m). அந்த identity-தான் paper; மீதி எல்லாம்
+    கணக்கு வழக்கு.
+  </p>
+
+  <h2>வேகமான முட்கள், மெதுவான முட்கள்</h2>
+  <p>
+    ஒவ்வொரு ஜோடிக்கும் அதற்கே உரிய வேகம், நான்கு அளவு வரிசைகள் வரை பரவுகிறது.
+    d = 8 என்றால் வேகங்கள் நல்ல வட்ட எண்கள், அதனால்தான் script இதைத்தான்
+    அச்சிடுகிறது:
+  </p>
+
+<pre><code>d = 8, so 4 hands. theta_i = 10000^(-2i/d) = [1.    0.1   0.01  0.001]
+
+  at position 10, each hand has turned:
+    pair 0:  10.0000 rad =   572.96 deg = <span class="hl">1.5915 turns</span>   ← ஏற்கனவே சுற்றியாச்சு
+    pair 1:   1.0000 rad =    57.30 deg = 0.1592 turns
+    pair 2:   0.1000 rad =     5.73 deg = 0.0159 turns
+    pair 3:   0.0100 rad =     0.57 deg = <span class="ok">0.0016 turns</span>   ← நகரவே இல்லை</code></pre>
+
+  <p>
+    Pair 0 என்பது வினாடி முள்: பக்கத்து tokens-ஐப் பிரித்துக் காட்டும், ஆனால்
+    ஏறக்குறைய ஆறு positions-க்கு ஒரு முறை சுற்றி முடித்துவிடும், தனியாக
+    இருந்தால் alias ஆகிவிடும். Pair 3 மணி முள்: அருகிலுள்ளவற்றுக்கு உதவாது,
+    ஆனால் position 10-ஐ position 1000-லிருந்து பிரித்துக் காட்டும். Interview
+    கேள்வி "ஏன் பல frequencies?"; பதில் — வினாடி முட்கள் மட்டுமே உள்ள ஒரு
+    கடிகாரம். Break table-ல் எண்கள் இருக்கின்றன.
+  </p>
+
+  <p class="thanglish">
+    Pair 0 vinaadi mul: pakkathu token-ai pirikkum, aana seekram lap aagidum.
+    Pair 3 mani mul: pos 10-ai pos 1000-lerundhu pirikkum. Adhaan pala
+    frequency thevai.
+  </p>
+
+  <h2>Score பார்ப்பது இடைவெளியை மட்டுமே</h2>
+  <p>
+    இதுதான் paper-ன் claim, எனவே இதற்குத்தான் மிகக் கவனமான print. அதே q, அதே
+    k, முதலில் positions (3, 7)-ல், பிறகு (13, 17)-ல்: இரண்டிலும் இடைவெளி 4.
+    பிறகு 2017 கூட்டல் முறை, அதே frequencies.
+  </p>
+
+  <p><strong>என் சொல்லை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+<pre><code>RoPE, rotate:      q@3  . k@7  = -1.261507812773
+                   q@13 . k@17 = -1.261507812773
+                   difference  = <span class="ok">2.2e-16</span>   &lt;- float noise
+
+2017, add:         q@3  . k@7  = 3.650608771116
+                   q@13 . k@17 = 3.830134199073
+                   difference  = <span class="hl">1.8e-01</span>   &lt;- absolute position leaks
+
+unrotated q . k             = -0.468002152973
+gap 0, e.g. q@5 . k@5       = -0.468002152973   &lt;- identical</code></pre>
+
+  <p>
+    கடைசி இரு வரிகள்தான் sanity check: இடைவெளி 0-ல் rotation ஒன்றையொன்று
+    ரத்து செய்து, சாதாரண dot product திரும்பக் கிடைக்கிறது. வாக்கியத்தைப்
+    பத்து இடம் நகர்த்துங்கள், RoPE கவனிக்கவே கவனிக்காது. கூட்டல் முறை
+    1.8e-01 அளவு நகர்கிறது — இது rounding இல்லை, வேறொரு score.
+  </p>
+
+  <div class="note">
+    <strong>RoPE பெருக்குகிறது. 2017 முறை கூட்டுகிறது.</strong> அதே
+    frequencies, அதே sine மற்றும் cosine, ஆனால் வேறு operation — அதனால்தான்
+    ஒன்று absolute position-ஐக் கசியவிடுகிறது, மற்றொன்றால் கசியவிட முடியாது.
+  </div>
+
+  <h2>தூரமானவை குறைவாக score செய்யும் — சராசரியாக</h2>
+  <p>
+    Paper-ன் இரண்டாவது claim "long-term decay": இரு tokens எவ்வளவு தூரமோ,
+    அவற்றின் dot product அவ்வளவு சிறியதாக இருக்க முனையும். மீண்டும் அதே
+    கடிகாரம்: இடைவெளி 0-ல் எல்லா முட்களும் ஒரே திசையில்; இடைவெளி பெருகப்
+    பெருக வேகமான முட்கள் சிதறி ஒன்றையொன்று ரத்து செய்கின்றன, மெதுவான முட்கள்
+    மட்டுமே இன்னும் ஒத்துப்போகின்றன. Script q = k = எல்லாம் ஒன்று என
+    வைக்கிறது, அதனால் விடை வெறும் cosine-களின் கூட்டுத்தொகை:
+  </p>
+
+<pre><code>q = k = all ones, d = 64. dot(q at 0, k at gap):
+  gap  0:   64.000
+  gap  1:   61.834
+  gap 16:   38.746
+  gap 24:   <span class="hl">39.446</span>   ← ஏறிவிட்டது
+  gap 64:   27.812
+
+mean dot over gap buckets (the trend):
+  gaps  0- 7:   52.767
+  gaps  8-15:   42.032
+  gaps 16-23:   38.059
+  gaps 24-31:   35.912
+  gaps 32-39:   34.069
+  gaps 40-47:   34.060
+  gaps 48-55:   29.433
+  gaps 56-63:   33.098
+
+not monotonic: the dot RISES at 22 of the 64 steps, e.g.
+  gap  5 -&gt;  6: 47.008 -&gt; 47.119</code></pre>
+
+  <p>
+    இது என்ன என்பதில் நேர்மையாக இருப்போம். 64 positions-ல் 64-லிருந்து சுமார்
+    28 வரை இறங்குவது உண்மையான போக்குதான், paper-ன் figure-ம் (இதே
+    கூட்டுத்தொகைக்கான ஒரு upper bound) அதே வடிவம்தான். ஆனால் 64 படிகளில் 22-ல்
+    இது ஏறுகிறது, கடைசி bucket அதற்கு முந்தையதை விட உயரமானது. RoPE model-க்குக்
+    கொடுப்பது அருகில் பார்க்கும் ஒரு நாட்டம், ஒரு விதி அல்ல. பயிற்சி பெற்ற
+    model-க்குத் தேவைப்படும்போது தூரத்தையும் பார்க்கும்.
+  </p>
+
+  <h2>Q மற்றும் K மட்டும். V-ஐ ஒருபோதும் இல்லை.</h2>
+  <p>
+    இந்தப் பண்பு score-ல் வாழ்கிறது, எனவே rotation q மற்றும் k மீது,
+    <code>W_q</code> மற்றும் <code>W_k</code>-க்குப் பிறகு dot product-க்கு
+    முன்பு போடப்படுகிறது. V என்பது கலக்கப்படும் உள்ளடக்கம், அதைத் தொடக் கூடாது.
+    சோதனை: positions 0–4-ல் ஐந்து tokens, பிறகு அதே ஐந்து 100–104-ல். q, k
+    மீது மட்டும் RoPE இருந்தால் output சிறிதும் மாறக் கூடாது. பிறகு v-ஐயும்
+    திருப்பிப் பாருங்கள்:
+  </p>
+
+<pre><code>same 5 tokens at positions 0-4, then at 100-104
+  CORRECT (q, k only):  weights max|diff| = 2.2e-16
+                        output  max|diff| = <span class="ok">6.7e-16</span>   &lt;- shift-invariant
+  BROKEN (v too):       output  max|diff| = <span class="hl">2.0167</span>   &lt;- moves with the sentence
+                        vs correct output = 2.0803
+  token 0, correct: [ 0.564  0.904  0.593 -0.455  0.815 -0.611  0.502 -0.447]
+  token 0, v too:   [-0.437 -1.176  0.68  -0.335  0.827 -0.585  0.503 -0.445]</code></pre>
+
+  <p>
+    v-ஐயும் திருப்பினால் weights இன்னும் சரியாகவே இருக்கும் — அதே 2.2e-16 —
+    ஆனால் ஒவ்வொரு token-ன் output-ம் இப்போது வாக்கியம் எங்கே தொடங்கியது
+    என்பதைச் சார்ந்திருக்கும், அதைத்தான் RoPE நீக்க வந்தது. Softmax-க்குப்
+    <em>பிறகு</em> திருப்புவது இன்னும் மோசம்: weights எந்த position-ம்
+    இல்லாமல் கணக்கிடப்பட்டிருக்கும் (சாதாரண attention-லிருந்து max|diff|:
+    0.0000), எனவே attention page-ன் "cat ate food" = "food ate cat" பிரச்சனைக்கு
+    மீண்டும் வந்துவிடுவீர்கள், மேலே ஒரு குழப்பமும் சேர்ந்து.
+  </p>
+
+  <h2>Base-ஐ மாற்று, கடிகாரத்தை மெதுவாக்கு</h2>
+  <p>
+    ஒவ்வொரு வேகமும் 10000<sup>−2i/d</sup>. 10000-ஐ 100000 ஆக்கினால் வேகமான
+    முட்கள் கிட்டத்தட்ட கவனிக்காது (எந்த base-க்கும் pair 0 ஒரு position-க்கு
+    1 rad) ஆனால் மெதுவான முட்கள் இன்னும் மெதுவாகிவிடும். Script d = 128-ஐப்
+    பயன்படுத்துகிறது — LLaMA-வின் per-head size — மேலும் position 4096-ஐப்
+    பார்க்கிறது:
+  </p>
+
+<pre><code>base   10000: slowest hand theta = 1.155e-04 rad/pos
+              at pos 4096: 0.4730 rad = 27.10 deg = 0.0753 turns
+base  100000: slowest hand theta = 1.197e-05 rad/pos
+              at pos 4096: 0.0490 rad =  <span class="ok">2.81 deg</span> = 0.0078 turns
+
+slow hand, base 100000: reaches the base-10000 pos-4096 angle at pos 39513</code></pre>
+
+  <p>
+    இதனால்தான் context extension சாத்தியம். 4096 tokens வரை பயிற்சி பெற்ற ஒரு
+    model, தன் மெதுவான முள்ளை 0-க்கும் 27 degrees-க்கும் இடையில் மட்டுமே
+    பார்த்திருக்கும்; அதே base-உடன் position 8192 கேட்டால் அந்த முள் அது
+    ஒருபோதும் இல்லாத இடத்தைக் காட்டும், தரம் சரிந்து விழும். Base-ஐ
+    உயர்த்தினால் மெதுவான முட்கள் நீட்டப்பட்டு 8192 பயிற்சி கண்ட வரம்புக்குள்
+    வந்துவிடும், அதே சமயம் local structure-ஐக் கவனிக்கும் வேகமான முட்கள்
+    கிட்டத்தட்ட தொடப்படாமல் இருக்கும். அதுதான் NTK-aware தந்திரம், அதனால்தான்
+    LLaMA 3-ன் config-ல் <code>rope_theta</code> 10000 அல்ல, 500000.
+    <a href="https://arxiv.org/abs/2306.15595">Position interpolation</a>
+    அதற்குப் பதிலாக position/8-ஐக் கொடுக்கிறது (script அதையும் அச்சிடுகிறது),
+    ஆனால் அது வேகமான முட்கள் உட்பட ஒவ்வொரு முள்ளையும் சமமாக மெதுவாக்குகிறது,
+    அதனால்தான் அந்த paper பிறகு fine-tune செய்கிறது. இரண்டுமே
+    <code>rope_freqs</code>-ல் ஒரு வரி மாற்றம். இந்தப் பக்கம் இவ்வளவு
+    ஆழம்தான் போகிறது.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक साल तक LLaMA-family models serve कर चुका था, फिर भी बता नहीं सकता
+    था कि config में पड़ा <code>rope_theta</code> असल में करता क्या है। मुझे
+    पता था कि <a href="../attention/">2017 का paper</a> हर token में एक
+    position vector <em>जोड़ता</em> है। यह भी पता था कि LLaMA ऐसा नहीं करता।
+    जो किसी ने नहीं बताया वह यह कि उसकी जगह आई चीज़ उससे भी <em>छोटी</em> है:
+    हर query और key को एक angle से घुमा दो, और dot product भूल जाता है कि
+    वाक्य शुरू कहाँ हुआ था।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (rotation, angle,
+    frequency, dot product, base, position interpolation…) मैंने वैसे ही रखे
+    हैं। क्योंकि code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>Position घड़ी की सुई है</h2>
+  <p>Attention page <code>+ pe</code> पर ख़त्म होता है। यह आप जानते हैं:</p>
+
+<pre><code>x = embed(token) + pe[pos]     # 2017: position एक vector है, उसे जोड़ो
+q = x @ W_q
+k = x @ W_k
+score = q @ k                  # lookup से पहले ही position अंदर</code></pre>
+
+  <p>
+    RoPE position को embedding से निकालकर lookup के भीतर रख देता है। पहले
+    project करो। <em>फिर</em> घुमाओ:
+  </p>
+
+<pre><code>q = embed(token) @ W_q         # अभी position नहीं
+k = embed(token) @ W_k
+q = turn(q, by=pos * theta)    # 2021: position एक angle है, उससे rotate करो
+k = turn(k, by=pos * theta)
+score = q @ k                  # सिर्फ़ q और k के बीच का angle दिखता है</code></pre>
+
+  <p>
+    बस यही पूरा paper है। RoPE <strong>गुणा</strong> करता है; जोड़ता नहीं।
+    फ़ायदा स्कूल की trigonometry है: घुमाए गए दो vectors का dot product सिर्फ़
+    उनके <em>बीच</em> के angle पर निर्भर करता है। q को 3θ और k को 7θ घुमाओ,
+    या 13θ और 17θ — score वही रहेगा। Relative position मुफ़्त में, शून्य
+    parameters।
+  </p>
+
+  <p>
+    d/2 सुइयों वाली एक घड़ी की कल्पना कीजिए। q में dimensions की हर जोड़ी एक
+    सुई है, position यह है कि वह कितना घूम चुकी है, और attention ठीक एक ही
+    चीज़ देखता है: q की सुई और k की सुई के बीच का angle। Script से एक सुई:
+  </p>
+
+<pre><code>one hand, 30 deg per position, starting at [1. 0.]
+  pos 0: turned   0.0 deg -&gt; [1. 0.]   length 1.0000
+  pos 1: turned  30.0 deg -&gt; [0.866 0.5  ]   length 1.0000
+  pos 2: turned  60.0 deg -&gt; [0.5   0.866]   length 1.0000
+  pos 3: turned  90.0 deg -&gt; [0. 1.]   length <span class="ok">1.0000</span>   ← कभी नहीं बदलती</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>घड़ी वाली उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Pair i</strong> = dims (2i, 2i+1)</td><td>q का एक 2D टुकड़ा</td><td>एक सुई</td></tr>
+      <tr><td><strong>θ<sub>i</sub></strong></td><td>हर position पर pair i कितने radians घूमती है</td><td>वह सुई कितनी तेज़ चलती है</td></tr>
+      <tr><td><strong>m θ<sub>i</sub></strong></td><td>Position m पर pair i का angle</td><td>सुई कहाँ इशारा कर रही है</td></tr>
+      <tr><td><strong>(n − m) θ<sub>i</sub></strong></td><td>Score को सिर्फ़ यही दिखता है</td><td>दो सुइयों के बीच का angle</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Vector जोड़ने से यह बेहतर क्यों निकला</h2>
+  <p>
+    जोड़ने में रिसाव है। (q + pe[m]) · (k + pe[n]) को खोलिए और cross terms
+    q·pe[n] तथा pe[m]·k absolute position ढोते हैं, इसलिए "the cat sat"
+    document की शुरुआत में एक score पाता है और बीच में दूसरा। RoPE से पहले के
+    relative उपाय score matrix पर एक learned bias-per-gap table चिपकाते थे:
+    parameters, memory, और उन linear-attention variants में चिपकाने को कुछ
+    नहीं जो वह matrix बनाते ही नहीं। RoPE में न table है न parameters, वह
+    बनावट से ही relative है, और किसी भी dot-product attention में सीधे बैठ
+    जाता है। इसीलिए LLaMA, PaLM, GPT-NeoX, Mistral और उसके बाद के ज़्यादातर
+    models इसे इस्तेमाल करते हैं।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+  <div class="formula">q<sub>m</sub> = R(m) q,&nbsp; k<sub>n</sub> = R(n) k&nbsp; ⇒&nbsp; q<sub>m</sub> · k<sub>n</sub> = q<sup>T</sup> R(m)<sup>T</sup> R(n) k = q<sup>T</sup> R(n − m) k</div>
+
+  <p>
+    q = W<sub>q</sub>x<sub>m</sub> और k = W<sub>k</sub>x<sub>n</sub> वही
+    सामान्य projections हैं; R(m) rotation है। इसे pipeline के चरणों की तरह
+    पढ़िए:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>θ<sub>i</sub> = 10000<sup>−2i/d</sup></code></td><td>(d/2,)</td><td>हर जोड़ी की अपनी रफ़्तार। Pair 0 हर position पर 1 rad घूमती है; आख़िरी pair ≈ 1/10000</td></tr>
+      <tr><td><code>m θ<sub>i</sub></code></td><td>(d/2,)</td><td>Position m पर हर सुई कितना घूम चुकी है</td></tr>
+      <tr><td><code>R(m)</code></td><td>(d, d), block-diagonal</td><td>d/2 स्वतंत्र 2×2 rotations। Matrix कभी बनती ही नहीं — यह एक cos/sin गुणा है</td></tr>
+      <tr><td><code>R(m) q</code></td><td>(d,)</td><td>Position समाया हुआ q। वही लंबाई, नई दिशा</td></tr>
+      <tr><td><code>q<sub>m</sub> · k<sub>n</sub></code></td><td>scalar</td><td><strong>q<sup>T</sup> R(n − m) k के बराबर।</strong> सिर्फ़ फ़ासला बचता है</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    बीच वाला चरण ही पूरा प्रमाण है। Rotations angles जोड़कर मिलती हैं और एक को
+    transpose करने से वह उलट जाती है, इसलिए R(m)<sup>T</sup> R(n) = R(n − m)।
+    वही identity paper है; बाक़ी सब हिसाब-किताब।
+  </p>
+
+  <h2>तेज़ सुइयाँ, धीमी सुइयाँ</h2>
+  <p>
+    हर जोड़ी की अपनी रफ़्तार है, जो परिमाण की चार कोटियों तक फैली है। d = 8
+    पर रफ़्तारें गोल संख्याएँ बनती हैं, इसलिए script यही छापता है:
+  </p>
+
+<pre><code>d = 8, so 4 hands. theta_i = 10000^(-2i/d) = [1.    0.1   0.01  0.001]
+
+  at position 10, each hand has turned:
+    pair 0:  10.0000 rad =   572.96 deg = <span class="hl">1.5915 turns</span>   ← चक्कर पूरा कर चुकी
+    pair 1:   1.0000 rad =    57.30 deg = 0.1592 turns
+    pair 2:   0.1000 rad =     5.73 deg = 0.0159 turns
+    pair 3:   0.0100 rad =     0.57 deg = <span class="ok">0.0016 turns</span>   ← मुश्किल से हिली</code></pre>
+
+  <p>
+    Pair 0 सेकंड की सुई है: पड़ोसी tokens अलग कर देती है, पर लगभग हर छह
+    positions में चक्कर पूरा कर लेती है और अकेले alias कर जाएगी। Pair 3 घंटे
+    की सुई है: पड़ोसियों के लिए बेकार, पर position 10 और position 1000 का फ़र्क़
+    बता देती है। Interview का सवाल है "कई frequencies क्यों?"; जवाब है — सिर्फ़
+    सेकंड की सुइयों वाली घड़ी। संख्याएँ break table में हैं।
+  </p>
+
+  <h2>Score को सिर्फ़ फ़ासला दिखता है</h2>
+  <p>
+    यही paper का दावा है, इसलिए इसी की सबसे सावधान print है। वही q, वही k,
+    पहले positions (3, 7) पर और फिर (13, 17) पर: दोनों बार फ़ासला 4। उसके बाद
+    2017 वाली जोड़ने की स्कीम, उन्हीं frequencies के साथ।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+<pre><code>RoPE, rotate:      q@3  . k@7  = -1.261507812773
+                   q@13 . k@17 = -1.261507812773
+                   difference  = <span class="ok">2.2e-16</span>   &lt;- float noise
+
+2017, add:         q@3  . k@7  = 3.650608771116
+                   q@13 . k@17 = 3.830134199073
+                   difference  = <span class="hl">1.8e-01</span>   &lt;- absolute position leaks
+
+unrotated q . k             = -0.468002152973
+gap 0, e.g. q@5 . k@5       = -0.468002152973   &lt;- identical</code></pre>
+
+  <p>
+    आख़िरी दो लाइनें sanity check हैं: फ़ासला 0 पर rotation कट जाती है और आपको
+    सादा dot product वापस मिलता है। वाक्य को दस आगे खिसकाइए, RoPE को पता तक
+    नहीं चलता। जोड़ने वाली स्कीम 1.8e-01 खिसक जाती है — यह rounding नहीं,
+    अलग score है।
+  </p>
+
+  <div class="note">
+    <strong>RoPE गुणा करता है। 2017 की स्कीम जोड़ती है।</strong> वही
+    frequencies, वही sine और cosine, पर operation अलग — और इसीलिए एक absolute
+    position रिसने देता है और दूसरा रिसा ही नहीं सकता।
+  </div>
+
+  <h2>दूर वाले कम score पाते हैं — औसतन</h2>
+  <p>
+    Paper का दूसरा दावा "long-term decay" है: दो tokens जितने दूर होंगे, उनका
+    dot product उतना ही छोटा होने की प्रवृत्ति रखेगा। फिर वही घड़ी: फ़ासला 0 पर
+    हर सुई एक कतार में होती है; फ़ासला बढ़ने पर तेज़ सुइयाँ बिखरकर एक-दूसरे को
+    काट देती हैं, और सिर्फ़ धीमी सुइयाँ सहमत रह जाती हैं। Script q = k = सब एक
+    रखता है, इसलिए जवाब बस cosines का जोड़ है:
+  </p>
+
+<pre><code>q = k = all ones, d = 64. dot(q at 0, k at gap):
+  gap  0:   64.000
+  gap  1:   61.834
+  gap 16:   38.746
+  gap 24:   <span class="hl">39.446</span>   ← ऊपर चला गया
+  gap 64:   27.812
+
+mean dot over gap buckets (the trend):
+  gaps  0- 7:   52.767
+  gaps  8-15:   42.032
+  gaps 16-23:   38.059
+  gaps 24-31:   35.912
+  gaps 32-39:   34.069
+  gaps 40-47:   34.060
+  gaps 48-55:   29.433
+  gaps 56-63:   33.098
+
+not monotonic: the dot RISES at 22 of the 64 steps, e.g.
+  gap  5 -&gt;  6: 47.008 -&gt; 47.119</code></pre>
+
+  <p>
+    यह क्या है, इस बारे में ईमानदार रहिए। 64 positions में 64 से लगभग 28 तक
+    गिरना असली रुझान है, और paper का figure (इसी जोड़ पर एक upper bound) भी
+    इसी आकार का है। पर यह 64 में से 22 क़दमों पर ऊपर जाता है और आख़िरी bucket
+    अपने पिछले से ऊँचा है। RoPE model को पास देखने की एक प्रवृत्ति देता है,
+    नियम नहीं। ज़रूरत पड़ने पर trained model दूर तक भी attend करता है।
+  </p>
+
+  <h2>सिर्फ़ Q और K। V कभी नहीं।</h2>
+  <p>
+    यह गुण score में रहता है, इसलिए rotation q और k पर लगती है — ठीक
+    <code>W_q</code> और <code>W_k</code> के बाद और dot product से पहले। V वह
+    सामग्री है जो मिलाई जा रही है, उसे छेड़ा नहीं जाता। जाँच: positions 0–4 पर
+    पाँच tokens, फिर वही पाँच 100–104 पर। q और k पर ही RoPE हो तो output
+    ज़रा भी नहीं बदलना चाहिए। फिर v को भी घुमाकर देखिए:
+  </p>
+
+<pre><code>same 5 tokens at positions 0-4, then at 100-104
+  CORRECT (q, k only):  weights max|diff| = 2.2e-16
+                        output  max|diff| = <span class="ok">6.7e-16</span>   &lt;- shift-invariant
+  BROKEN (v too):       output  max|diff| = <span class="hl">2.0167</span>   &lt;- moves with the sentence
+                        vs correct output = 2.0803
+  token 0, correct: [ 0.564  0.904  0.593 -0.455  0.815 -0.611  0.502 -0.447]
+  token 0, v too:   [-0.437 -1.176  0.68  -0.335  0.827 -0.585  0.503 -0.445]</code></pre>
+
+  <p>
+    v घुमाने पर weights तब भी ठीक रहते हैं — वही 2.2e-16 — पर अब हर token का
+    output इस पर निर्भर करता है कि वाक्य कहाँ शुरू हुआ, ठीक वही जिसे मिटाने
+    के लिए RoPE है। Softmax के <em>बाद</em> घुमाना और भी बुरा है: weights तो
+    बिना किसी position के गिने गए थे (सादे attention से max|diff|: 0.0000),
+    यानी आप attention page वाली "cat ate food" बराबर "food ate cat" समस्या पर
+    लौट आए, ऊपर से एक और घालमेल के साथ।
+  </p>
+
+  <h2>Base बदलिए, घड़ी धीमी कीजिए</h2>
+  <p>
+    हर रफ़्तार 10000<sup>−2i/d</sup> है। 10000 को 100000 कीजिए और तेज़ सुइयों
+    को फ़र्क़ ही नहीं पड़ता (किसी भी base पर pair 0 हर position पर 1 rad है)
+    जबकि धीमी सुइयाँ और धीमी हो जाती हैं। Script d = 128 लेता है, जो LLaMA का
+    per-head size है, और position 4096 को देखता है:
+  </p>
+
+<pre><code>base   10000: slowest hand theta = 1.155e-04 rad/pos
+              at pos 4096: 0.4730 rad = 27.10 deg = 0.0753 turns
+base  100000: slowest hand theta = 1.197e-05 rad/pos
+              at pos 4096: 0.0490 rad =  <span class="ok">2.81 deg</span> = 0.0078 turns
+
+slow hand, base 100000: reaches the base-10000 pos-4096 angle at pos 39513</code></pre>
+
+  <p>
+    इसीलिए context extension मुमकिन है। 4096 tokens तक trained model ने अपनी
+    सबसे धीमी सुई को सिर्फ़ 0 से 27 degrees के बीच ही देखा है; उसी base के साथ
+    position 8192 माँगिए और वह सुई ऐसी जगह इशारा करेगी जहाँ वह कभी रही नहीं,
+    और quality धड़ाम से गिर जाती है। Base बढ़ाइए तो धीमी सुइयाँ इतनी खिंच जाती
+    हैं कि 8192 उसी दायरे में आ जाता है जो training ने देखा था, जबकि local
+    structure सँभालने वाली तेज़ सुइयाँ लगभग अछूती रह जाती हैं। यही NTK-aware
+    तरकीब है, और इसीलिए LLaMA 3 के config में <code>rope_theta</code> 10000
+    नहीं, 500000 है।
+    <a href="https://arxiv.org/abs/2306.15595">Position interpolation</a>
+    इसके बजाय position/8 खिलाता है (script वह भी छापता है), पर वह तेज़ सुइयों
+    समेत हर सुई को बराबर धीमा करता है, इसीलिए वह paper बाद में fine-tune करता
+    है। दोनों <code>rope_freqs</code> में एक लाइन का बदलाव हैं। यह page इतनी
+    ही गहराई तक जाता है।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -445,6 +1003,37 @@ def attention_with_rope(Q, K, V, positions, base=10000.0):
   </footer>
 
 </main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>

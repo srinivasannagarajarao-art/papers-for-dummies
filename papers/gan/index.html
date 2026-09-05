@@ -7,7 +7,7 @@
 <meta name="description" content="The GAN paper explained as code. A forger and a detective that train each other: two losses, two optimisers, taking turns. Runnable NumPy plus a tiny CPU PyTorch loop, seven demos, and the four ways training falls over.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../../assets/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
 </head>
@@ -37,6 +37,14 @@
       step. Twelve seconds on a laptop.
     </p>
   </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<section data-panel="en">
 
   <p>
     I'm an AI Engineer. I've shipped models, done the MLOps, and I still couldn't read this
@@ -315,6 +323,660 @@ p_data exactly                 0.500   0.500   <span class="ok">-1.386</span>   
     want something the other doesn't. One loss has one wish.
   </p>
 
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ஒரு AI Engineer. Models ship செய்திருக்கிறேன், MLOps செய்திருக்கிறேன் —
+    இருந்தும் இந்தக் கட்டுரையைப் படிக்க முடியவில்லை. கணிதம் பிரச்சனை இல்லை —
+    ஒரே ஒரு formula, ஒரே ஒரு proof, இரண்டும் ஒரு பக்கத்தில் அடங்கும். பிரச்சனை
+    என்னவென்றால் இந்த ஒரு விஷயத்தை யாரும் சொல்லவில்லை: <em>loss function-ஏ
+    ஒரு இரண்டாவது model</em>. அது புரிந்த பிறகு, இந்தக் கட்டுரை நீங்கள்
+    ஏற்கெனவே எழுதியிருக்கும் training loop-தான், ஒரு கூடுதல் optimiser-உடன்.
+    சுவாரஸ்யமான பகுதி — என்னென்ன தவறாகப் போகிறது என்பதுதான்.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (generator, discriminator,
+    gradient, loss, detach…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற
+    papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>Loss function-ஏ ஒரு model</h2>
+
+  <p>இந்த loop உங்களுக்குத் தெரியும்:</p>
+
+<pre><code>for x, y in data:
+    loss = criterion(model(x), y)   # criterion நிலையானது: MSE, cross-entropy
+    loss.backward(); opt.step()</code></pre>
+
+  <p>
+    Criterion ஒரு மாறாத நடுவர். அது ஒருபோதும் கற்றுக்கொள்வதில்லை. GAN அதை
+    மாற்றி, கற்றுக்கொண்டே இருக்கும் ஒரு நடுவரை வைக்கிறது — <em>உங்களுக்கு
+    எதிராக</em>:
+  </p>
+
+<pre><code>fake   = G(z)                                                 # forger-ன் முயற்சி
+loss_D = -(log(D(real)) + log(1 - D(fake.detach()))).mean()   # detective-ன் முறை
+loss_D.backward(); opt_D.step()
+
+loss_G = -log(D(G(z))).mean()                                 # forger-ன் முறை
+loss_G.backward(); opt_G.step()                               # திரும்பச் செய்</code></pre>
+
+  <p>
+    இதுதான் கட்டுரையின் இதயத் துடிப்பு. இரண்டு networks, இரண்டு losses, மாறி
+    மாறி ஒரு முறை. கட்டுரையின் உவமை கள்ளநோட்டு அடிப்பவர்கள் எதிராக போலீஸ்;
+    என்னுடையது ஒரு red team-ம் ஒரு blue team-ம், ஒவ்வொருவரும் மற்றவரின் சமீபத்திய
+    output-ஐ வைத்து மீண்டும் train ஆகிறார்கள். சூட்சுமம் என்னவென்றால்: forger
+    உண்மையான data-வை ஒருபோதும் பார்ப்பதே இல்லை. அது பார்ப்பதெல்லாம் detective-ன்
+    தீர்ப்பு மட்டுமே — detective-ஏ அதன் loss function, அந்த loss ஒவ்வொரு
+    சுற்றிலும் கூர்மையாகிறது. யாரும் p(x)-ஐ எழுதுவதில்லை. Likelihood இல்லை,
+    "இப்போது நன்றாக இருக்கிறது" என்று பொருள்படும் loss curve இல்லை: samples-ம்
+    backprop-ம் மட்டுமே. அதனால்தான் இது வேலை செய்தது, அதனால்தான் logs படிக்க
+    இவ்வளவு கடினம்.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-ன் உவமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>G</strong>, generator</td><td>Noise உள்ளே, sample வெளியே</td><td>ஒரு procedural generator: seed → level</td></tr>
+      <tr><td><strong>D</strong>, discriminator</td><td>Sample உள்ளே, P(real) வெளியே</td><td>ஒரு spam filter, ஒவ்வொரு சுற்றிலும் மீண்டும் train ஆனது</td></tr>
+      <tr><td><strong>z</strong></td><td>G-க்குக் கொடுக்கப்படும் random noise</td><td>RNG seed. வேறு seed, வேறு sample</td></tr>
+      <tr><td><strong>p<sub>g</sub></strong></td><td>எல்லா z-க்கும் G(z)-ன் distribution</td><td>உங்கள் generator உருவாக்கக்கூடிய அனைத்தும், histogram-ஆக</td></tr>
+      <tr><td><strong>.detach()</strong></td><td>வரலாறு துண்டிக்கப்பட்ட ஒரு tensor</td><td>ஒரு read-only view. Gradients இங்கே நின்றுவிடும்</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரே formula</h2>
+
+  <div class="formula">min<sub>G</sub> max<sub>D</sub> V(D, G) = E<sub>x∼p<sub>data</sub></sub>[log D(x)] + E<sub>z∼p<sub>z</sub></sub>[log(1 − D(G(z)))]</div>
+
+  <p>Equation 1. இதை ஒரு scoreboard-ஆகப் படியுங்கள் — detective அதை உயர்த்த விரும்புகிறது, forger தாழ்த்த விரும்புகிறது:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>z</code></td><td>(n, noise_dim)</td><td>n random seeds. Gaussian noise; எதுவும் கற்கப்படவில்லை</td></tr>
+      <tr><td><code>G(z)</code></td><td>(n, 1)</td><td>n போலிகள். இங்கே ஒரு கோட்டின் மேல் ஒரு புள்ளி; கட்டுரையில் ஒரு image</td></tr>
+      <tr><td><code>D(x)</code></td><td>(n, 1)</td><td>"உண்மை" என்பதற்கான probability, 0-க்கும் 1-க்கும் இடையே</td></tr>
+      <tr><td><code>log D(x)</code></td><td>n-ன் மேல் mean</td><td><strong>உண்மையான data-வில் detective-ன் மதிப்பெண்.</strong> உறுதியாக இருந்தால் 0, தவறானால் மிகவும் எதிர்மறை</td></tr>
+      <tr><td><code>log(1 − D(G(z)))</code></td><td>n-ன் மேல் mean</td><td><strong>போலிகளில் detective-ன் மதிப்பெண்.</strong> ஒவ்வொன்றையும் கண்டுபிடித்தால் 0</td></tr>
+      <tr><td><code>max<sub>D</sub></code></td><td>—</td><td>Detective-ன் முறை: இரண்டு terms-ஐயும் மேலே தள்ளு</td></tr>
+      <tr><td><code>min<sub>G</sub></code></td><td>—</td><td>Forger-ன் முறை: இரண்டாவது term-ஐ மட்டும் கீழே தள்ளு. முதல் term-ஐத் தொட முடியாது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Code-ல் இது <code>d_loss</code>-ம் <code>g_loss_saturating</code>-ம், தலா
+    இரண்டு வரிகள், கீழே code பகுதியில். D முழு விஷயத்தையும் maximise செய்கிறது,
+    எனவே அதன் loss எதிர்மறை; G இரண்டாவது term-ல் மட்டுமே வருகிறது. பிறகு
+    equation 1-க்குப் பின் வரும் paragraph-ல் கட்டுரை சேர்க்கும் ஒரே நடைமுறை
+    தந்திரம்: G-ஐ log(1 − D(G(z)))-ஐ minimise செய்யப் பயிற்றுவிக்காதீர்கள்,
+    log D(G(z))-ஐ maximise செய்யப் பயிற்றுவியுங்கள். அதே fixed point, ஆனால்
+    "much stronger gradients early in learning". அதுதான் <code>g_loss</code>,
+    non-saturating loss. இது ஒரு பரிந்துரை, theory-ன் பகுதி அல்ல — proofs
+    எல்லாம் equation 1-ஐப் பற்றியவை. ஆனால் எல்லோரும் பரிந்துரையைத்தான்
+    implement செய்கிறார்கள். ஏன் என்பதை அடுத்த இரண்டு பகுதிகள் காட்டுகின்றன.
+  </p>
+
+  <p class="thanglish">
+    Loss function-ஏ oru rendaavadhu model. Adhu ungalukku ethiraa kathukkuthu.
+    Equation 1-la D score-ai methala thallum, G kelaya thallum — aana practice-la
+    G-kku non-saturating loss dhaan velai seiyum.
+  </p>
+
+  <h2>சிறந்த detective ஒரு ratio, −log 4 தான் இறுதிக் கோடு</h2>
+  <p>
+    Section 4 இரண்டு விஷயங்களை நிரூபிக்கிறது, இரண்டுமே networks இல்லாமல் ஒரு
+    grid-ல் நீங்களே சரிபார்க்கக்கூடிய கணக்கு. Proposition 1: ஒரு நிலையான
+    forger-க்கு, சாத்தியமான சிறந்த detective
+    D<sup>*</sup>(x) = p<sub>data</sub>(x) / (p<sub>data</sub>(x) + p<sub>g</sub>(x)).
+    Theorem 1: அந்த detective-உடன் game-ன் மதிப்பு
+    −log 4 + 2·JSD(p<sub>data</sub> ‖ p<sub>g</sub>), எனவே அதன் global minimum
+    −log 4 = −1.386, forger-ன் distribution data-வுடன் சமமாகும் போது சரியாக
+    அடையப்படுகிறது. என் data என்பது −6, −2, +2-ல் மூன்று Gaussian குன்றுகள் —
+    கட்டுரையின் Figure 1-ம் இப்படி ஒரு 1-D பொம்மைதான். மூன்று forger
+    வேட்பாளர்கள், closed form-ல் மதிப்பிடப்பட்டவை:
+  </p>
+
+<pre><code>-log 4 = -1.386   &lt;- forger ஜெயித்தால் game-ன் மதிப்பு
+
+forger                        D*(-6)  D*(-2)  V(D*,G)   -log4 + 2*JSD
+only the bump at -2            <span class="hl">1.000</span>   0.250   -0.750     -0.750
+all three, twice as wide       0.667   0.667   -1.203     -1.203
+p_data exactly                 0.500   0.500   <span class="ok">-1.386</span>     -1.386</code></pre>
+
+  <p>
+    Forger ஒருபோதும் போகாத இடத்தில் (x = −6, முதல் வரிசை) detective
+    நிச்சயமாக இருக்கிறது: 1.000. Forger data-வுடன் சரியாகப் பொருந்தும் இடத்தில்,
+    detective எல்லா இடத்திலும் ஒரு நாணயச் சுழற்சி, 0.500, மதிப்பு −log 4-ல்
+    தரையிறங்குகிறது. கடைசி இரண்டு columns மூன்று தசம இடங்கள் வரை ஒத்துப்
+    போகின்றன: அதுதான் Theorem 1, எண்களால் சரிபார்க்கப்பட்டது.
+  </p>
+
+  <div class="note">
+    <strong>உங்களிடம் கேட்கப்படும் எண் −log 4.</strong> அது log ½ + log ½:
+    எல்லாவற்றுக்கும் 0.5 என்று சொல்லும் ஒரு detective, இரண்டு terms-லும்
+    மதிப்பிடப்பட்டது. இது forger-ன் வெற்றி நிலை, detective-னுடையது அல்ல —
+    அதை நோக்கிப் போகும் D loss நல்ல செய்தி.
+  </div>
+
+  <h2>இரண்டு losses, அந்தத் தந்திரம் ஏன் இருக்கிறது</h2>
+  <p>D என்பது ஒரு logit-ன் மேல் ஒரு sigmoid. ஒவ்வொரு forger loss-ஐயும் அந்த logit-ஐப் பொறுத்து differentiate செய்யுங்கள், ஒவ்வொன்றும் ஒரே ஒரு term-ஆகச் சுருங்குகிறது:</p>
+
+<pre><code>   saturating      log(1 - D)  -&gt;  d/dlogit = -D        -&gt; 0 as D -&gt; 0
+   non-saturating  -log D      -&gt;  d/dlogit = -(1 - D)  -&gt; 1 as D -&gt; 0
+
+    D(G(z))    |grad| saturating    |grad| non-sat
+      0.500                0.500             0.500
+      0.100                0.100             0.900
+      0.010                <span class="hl">0.010</span>             0.990
+      0.001                0.001             <span class="ok">0.999</span></code></pre>
+
+  <p>
+    Training-ன் ஆரம்பத்தில் forger மோசமாக இருக்கிறது, detective அதை உறுதியாக
+    அறிகிறது: D(G(z)) ≈ 0. அப்போது எழுதப்பட்ட loss-ன் gradient ≈ 0 — சரியாக
+    forger-க்கு அது மிகவும் தேவைப்படும் தருணத்தில். தந்திரம் அதைத் தலைகீழாக்குகிறது:
+    நீங்கள் எவ்வளவு மோசமாக இருக்கிறீர்களோ, அவ்வளவு பெரிய தள்ளுதல். உண்மையான
+    networks-ல் அளக்கப்பட்டது — உறைந்த forger-க்கு எதிராக detective-க்கு 1000
+    சுற்று முன்னோட்டம் கொடுத்த பிறகு:
+  </p>
+
+<pre><code>   D(G(z)) after the head start: 0.0071
+   |gradG| with saturating (eq. 1)         : <span class="hl">0.0213</span>
+   |gradG| with non-saturating (the trick) : <span class="ok">2.2216</span></code></pre>
+
+  <p>
+    அதே networks, அதே noise, அதே detective. Signal-ல் நூறில் ஒரு பங்கு.
+    "Saturating" என்றால் sigmoid saturate ஆவது — attention கட்டுரையில் scale
+    செய்யாத softmax-ன் அதே நோய். மீண்டும், numerical சுத்தம்.
+  </p>
+
+  <p class="thanglish">
+    Aarambathula D romba confident-a irukkum, adhanaala equation 1-oda loss-ku
+    gradient kidaiyaadhu. Non-saturating loss adhai thalakeezhaa maathi, mosamaa
+    irukkum podhu periya push kodukkuthu — 0.0213 vs 2.2216.
+  </p>
+
+  <h2>விளையாட்டு, சரியாக விளையாடப்பட்டது</h2>
+  <p>
+    ஒரு D step, ஒரு G step, 4000 சுற்றுகள், Adam. Script அச்சிடுவது: உண்மையான
+    மற்றும் போலி data-வில் detective-ன் accuracy, கட்டுரையின் V, forger-ன்
+    gradient-ன் norm, 1000 போலிகளின் பரவல், மற்றும் ஒவ்வொரு குன்றுக்கும் 1.0
+    தூரத்திற்குள் எத்தனை விழுகின்றன:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    500     0.83 / 0.29   -1.363    0.064      3.42      108 /  177 /  308
+   1000     0.29 / 0.67   -1.380    0.081      3.10      192 /   95 /  342
+   2000     0.64 / 0.58   -1.369    0.116      3.34      210 /  165 /  358
+   3000     0.61 / 0.41   -1.377    0.492      3.64      224 /  258 /  346
+   4000     0.94 / 0.09   <span class="ok">-1.384</span>    0.215      3.78      <span class="ok">238 /  272 /  330</span>
+  final fakes: mean -2.01  std 3.78  off every bump: 160 of 1000</code></pre>
+
+  <p>
+    மூன்று விஷயங்களைப் படியுங்கள். கடைசி column: மூன்று குன்றுகளிலும் போலிகள்,
+    சரியாகச் சமமாக இல்லை, ஆனாலும் சமன் ஆகிக்கொண்டிருக்கிறது. V: −1.38-ல்
+    நிறுத்தப்பட்டிருக்கிறது, அது இரண்டு தசம இடங்களுக்கு −log 4 — forger
+    நடைமுறையில் ஜெயித்துவிட்டது. Accuracy ஜோடி: 0.94 / 0.09 ஒருபக்கமாகத்
+    தெரிகிறது, ஆனால் கூட்டிப் பாருங்கள். Real + fake ≈ 1.03 என்பது தற்செயல் —
+    எல்லாவற்றுக்கும் "real" என்று சொல்லும் detector அந்தக் கூட்டலில் சரியாக
+    1.00 பெறும். கண்டுபிடிக்க எதுவும் மிச்சமில்லை. Detective-ன் learning rate
+    forger-னுடையதில் கால் பங்கு (5e-4 எதிராக 2e-3); சம rate-களில், இந்த
+    data-வில், நடு குன்று பட்டினி கிடக்கிறது. இந்த விளையாட்டு ஒரு சமன்பாட்டுக்
+    கலை, இந்தப் பக்கத்தின் மீதி எல்லாம் அந்தச் சமநிலை போனால் என்ன ஆகிறது
+    என்பதுதான்.
+  </p>
+
+  <h2>தோல்வி முறைகளுக்குப் பெயர்கள் உண்டு</h2>
+  <p>
+    Theory ஒவ்வொரு step-லும் detective உகந்ததாக இருக்கும் என்றும், forger-க்கு
+    வரம்பற்ற capacity இருக்கும் என்றும் கருதுகிறது. இரண்டுமே ஒருபோதும்
+    உண்மையல்ல, section 6 அதை ஒரே வாக்கியத்தில் ஒப்புக்கொள்கிறது: D-ஐ update
+    செய்யாமல் G-ஐ அதிகமாகப் பயிற்றுவிக்கக் கூடாது, "to avoid the Helvetica
+    scenario in which G collapses too many values of z to the same value of x".
+    இதைப் பயிற்றுவிக்கும் எல்லோரும் அதையும் அதன் உறவினர்களையும் சந்திக்கிறார்கள்.
+    நான்கு பேர், ஒவ்வொருவரும் ஆரோக்கியமான run-ல் இருந்து ஒரே ஒரு edit தூரம்.
+  </p>
+
+  <h3>Mode collapse: forger detective-ஐ முந்திவிடுகிறது</h3>
+  <p>Forger-க்குப் பத்து மடங்கு learning rate கொடுங்கள், <code>lr_g=2e-2</code>. ஒவ்வொரு 100 சுற்றுகளிலும்:</p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    100     1.00 / 0.00   -1.373    0.013      0.27        0 /    0 /    9
+    300     0.60 / 1.00   -1.276    0.038      <span class="hl">0.31</span>        0 /  <span class="hl">992</span> /    0
+    400     0.00 / 1.00   -1.222    0.795      4.68      116 /    1 /    0
+    600     0.53 / 0.65   -1.372    0.022      5.74       58 /   52 /  571
+    800     0.33 / 1.00   -1.275    0.009      0.24      <span class="hl">648</span> /    0 /    0
+   1000     0.54 / 0.46   -1.397    0.042      3.32      276 /   59 /  397</code></pre>
+
+  <p>
+    Fake std 0.31: ஆயிரம் samples ஒரே குவியலில். 300-வது சுற்றில் குவியல் −2-ல்,
+    600-ல் +2-ல், 800-ல் −6-ல். Detective தற்போது "real" என்று மதிப்பிடும் ஒரே
+    இடத்தை forger கண்டுபிடித்து, எல்லாவற்றையும் அங்கே நகர்த்துகிறது, detective
+    பிடித்துவிடுகிறது, அது தாவுகிறது. மூன்று இடங்களில் ஒரே நேரத்தில் இருக்க
+    அது ஒருபோதும் கற்றுக்கொள்வதில்லை, ஏனென்றால் ஒரே இடம்தான் எப்போதும்
+    மலிவான அடுத்த நகர்வு. அதுதான் Helvetica scenario, எண்களுடன். என்
+    runs-ல் <em>collapse ஆகாதவை</em>: சாதாரண rate-ல் ஒரு D step-க்கு ஐந்து G
+    steps, மற்றும் 1-dimensional z. 1-D-ல் ஒரு noise மதிப்பிலிருந்து மூன்று
+    குன்றுகளுக்கு ஒரு படிக்கட்டு கற்றுக்கொள்வது எளிது; அந்த இரண்டும் 2-D-லும்
+    images-லும் கடிக்கும்.
+  </p>
+
+  <p class="thanglish">
+    Mode collapse-nu solradhu: forger ellaa samples-aiyum oru kunru-la kuvichudum,
+    appuram adhu thaavum — 300-la -2, 600-la +2, 800-la -6. fake std 0.31 dhaan
+    adhoda kaiyoppam.
+  </p>
+
+  <h3>Detective ஜெயிக்கிறது: forger-ன் gradient மறைகிறது</h3>
+  <p>
+    இப்போது நேர்மாறு. Momentum SGD (கட்டுரை தான் பயன்படுத்தியதாகச் சொல்வது),
+    ஒரு G step-க்கு ஐந்து D steps (Algorithm 1-ன் k; கட்டுரை 1-ஐப்
+    பயன்படுத்தியது), மற்றும் equation 1 எழுதுவது போலவே G-ன் loss:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    200     <span class="hl">1.00 / 1.00</span>   -0.017    <span class="hl">0.044</span>      0.14        0 /    0 /    0
+    400     0.99 / 1.00   -0.018    0.073      0.20        <span class="hl">0 /    0 /    0</span>
+  final fakes: mean +0.18  std 0.20  off every bump: 1000 of 1000</code></pre>
+
+  <p>
+    Detective குறையற்றது. V −1.39-க்குப் பதிலாக −0.02. Forger நகரவே இல்லை: 400
+    சுற்றுகள் ஆகியும், அதன் samples இன்னும் 0-ல் 0.2 பரவலுடன் உட்கார்ந்திருக்கின்றன,
+    random init வைத்த இடத்திலேயே. குறையற்ற detective ஒரு பயனற்ற ஆசிரியர். அதே
+    run, ஒரே ஒரு மாற்றம் — non-saturating loss:
+  </p>
+
+<pre><code>    100     0.67 / 1.00   -0.729    <span class="ok">0.671</span>      1.01        0 /    0 /  604
+    400     0.67 / 1.00   -0.818    1.334      0.27        0 /    0 / <span class="ok">1000</span></code></pre>
+
+  <p>
+    Forger முதல் 100 சுற்றுகளிலேயே நகர்கிறது — நேராக ஒரே ஒரு குன்றின் மேல்,
+    ஏனென்றால் SGD-ன் கீழ் ஒரு வலிமையான detective இன்னும் ஒரு மோசமான
+    விளையாட்டுதான். ஆனால் அது நகர்கிறது. கட்டுரையின் "in practice" paragraph-ன்
+    முழு உள்ளடக்கமும் இதுதான், இரண்டு tables-ல்.
+  </p>
+
+  <div class="note">
+    <strong>நீங்கள் copy செய்த tutorial எழுதப்பட்ட loss-உடனும் ஏன் உறையவில்லை: Adam.</strong>
+    அது ஒவ்வொரு gradient-ஐயும் அதன் ஓடும் scale-ஆல் வகுக்கிறது, எனவே 0.02
+    gradient-ம் 2 gradient-ம் ஒரே அளவு step-ஐ உருவாக்குகின்றன. இந்தப் பொம்மையில்
+    அது saturation-ஐ முழுமையாக மறைக்கிறது. Images-ல் அந்தச் சிறிய gradient
+    பெரும்பாலும் noise-ம் கூட, Adam noise-ஐப் பெருக்குகிறது. எப்படியிருந்தாலும்
+    தந்திரத்தைப் பயன்படுத்துங்கள்.
+  </div>
+
+  <h3>மறந்துபோன detach</h3>
+  <p>
+    Detective-ன் முறையில் போலிகள் G-லிருந்து வருகின்றன. அவற்றை நீங்கள்
+    <code>.detach()</code> செய்யவில்லை என்றால், D-ன் loss D வழியாகவும்
+    <em>தொடர்ந்து G-க்குள்ளும்</em> backpropagate ஆகும். ஒரு D step-க்குப் பிறகு
+    உடனே G-ன் gradient-ன் norm:
+  </p>
+
+<pre><code>   detach=True   |gradG| after D's step: <span class="ok">0.0000</span>
+   detach=False  |gradG| after D's step: <span class="hl">0.0606</span>
+   cosine(leaked gradient, G's own gradient): <span class="hl">-1.000</span></code></pre>
+
+  <p>
+    Cosine −1: கசிந்த gradient forger-னுடைய சொந்த gradient-க்கு நேர் எதிராகச்
+    சுட்டுகிறது. அப்படித்தான் இருக்கும் — D-ன் loss போலிகள் <em>இன்னும்
+    அதிகமாகக்</em> கண்டுபிடிக்கக்கூடியதாக இருக்க விரும்புகிறது. அது உண்மையில்
+    apply ஆகுமா என்பது உங்கள் <code>zero_grad()</code> எங்கே இருக்கிறது என்பதைப்
+    பொறுத்தது. G-ஐ அதன் சொந்த backward-க்கு முன்பு zero செய்தால் கசிவு
+    அழிக்கப்படும்; நீங்கள் ஒரு வீணான backward pass-க்கு மட்டுமே விலை
+    கொடுத்தீர்கள் — அதனால்தான் இந்த bug பெரும்பாலும் அமைதியானது. இந்த script
+    சுற்றின் தொடக்கத்தில் இரண்டு networks-ஐயும் zero செய்கிறது, எனவே இது
+    apply ஆகிறது:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+   1000     0.33 / 1.00   -1.081    0.106      1.85      198 /  339 /    0
+   3000     0.33 / <span class="hl">1.00</span>   -1.128    0.066      2.21      430 /  430 /    <span class="hl">0</span></code></pre>
+
+  <p>ஒரு முழுக் குன்றே காணாமல் போய்விட்டது, run முழுவதும் detective போலிகளில் 1.00. கடைசி column-ஐ ஆரோக்கியமான table-உடன் ஒப்பிடுங்கள்.</p>
+
+  <h3>மாறி மாறிச் செய்ய மறப்பது: இது இனி ஒரு விளையாட்டே இல்லை</h3>
+  <p>
+    கவர்ச்சிகரமான குறுக்குவழி: இரண்டு losses-ஐயும் கூட்டு, இரண்டு networks-ன்
+    மேலும் ஒரே optimiser, ஒரே <code>backward()</code>. அது compile ஆகிறது,
+    ஓடுகிறது, ஆனால் அது adversarial அல்ல. D-ன் சொந்த term D(G(z))-ஐக் கீழே
+    தள்ளுகிறது; G-ன் term, இப்போது D-ன் weights-க்குள்ளும் பாய்ந்து, அதை மேலே
+    தள்ளுகிறது; D(G(z)) = 0.5-ல் அவை ரத்தாகின்றன. கூட்டு loss வழியாக G-ன்
+    gradient சரியாக அதே புள்ளியில் பூஜ்யம். யாரும் யாரையும் தள்ளுவதில்லை:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    600     1.00 / 0.78   -0.694    <span class="hl">0.000</span>      <span class="hl">0.00</span>        0 /    0 /    0
+   1000     1.00 / 0.77   -0.693    0.001      0.00        0 /    0 /    0
+  final fakes: mean +0.03  std 0.00  off every bump: 1000 of 1000</code></pre>
+
+  <p>
+    ஆயிரம் சுற்றுகளுக்கு fake std 0.00: forger அதன் தொடக்கப் புள்ளியை விட்டு
+    நகரவே இல்லை. V என்பது −0.693 = −log 2, அது log 1 + log ½ — detective
+    ஒவ்வொரு உண்மையான sample-க்கும் 1 என்றும் ஒவ்வொரு போலிக்கும் ½ என்றும்
+    சொல்கிறது, வேறு எதுவும் சொல்ல அதற்குக் காரணமே இல்லை. ஒரு விளையாட்டுக்கு
+    இரண்டு வீரர்கள் வேண்டும், ஒவ்வொருவரும் மற்றவர் விரும்பாத ஒன்றை
+    விரும்ப வேண்டும். ஒரே loss-க்கு ஒரே ஆசைதான்.
+  </p>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैं एक AI Engineer हूँ। मैंने models ship किए हैं, MLOps किया है — फिर भी यह
+    paper मुझसे पढ़ा नहीं जाता था। गणित की वजह से नहीं — एक ही formula है और एक
+    ही proof, दोनों एक पन्ने में आ जाते हैं। वजह यह थी कि किसी ने वह एक बात नहीं
+    बताई: <em>loss function ख़ुद एक दूसरा model है</em>। यह दिख जाने के बाद, यह
+    paper वही training loop है जो आप हज़ार बार लिख चुके हैं, बस एक अतिरिक्त
+    optimiser के साथ। दिलचस्प हिस्सा यह है कि क्या-क्या ग़लत होता है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (generator, discriminator,
+    gradient, loss, detach…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी
+    papers में आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English
+    में।</strong>
+  </div>
+
+  <h2>Loss function ख़ुद एक model है</h2>
+
+  <p>यह loop आप जानते हैं:</p>
+
+<pre><code>for x, y in data:
+    loss = criterion(model(x), y)   # criterion तय है: MSE, cross-entropy
+    loss.backward(); opt.step()</code></pre>
+
+  <p>
+    Criterion एक स्थिर जज है। वह कभी सीखता नहीं। GAN उसे बदलकर एक ऐसा जज रख देता
+    है जो ख़ुद भी सीख रहा है — <em>आपके ख़िलाफ़</em>:
+  </p>
+
+<pre><code>fake   = G(z)                                                 # forger की कोशिश
+loss_D = -(log(D(real)) + log(1 - D(fake.detach()))).mean()   # detective की बारी
+loss_D.backward(); opt_D.step()
+
+loss_G = -log(D(G(z))).mean()                                 # forger की बारी
+loss_G.backward(); opt_G.step()                               # और दोहराओ</code></pre>
+
+  <p>
+    यही पूरे paper की धड़कन है। दो networks, दो losses, बारी-बारी से। Paper की
+    अपनी उपमा है जाली नोट बनाने वाले बनाम पुलिस; मेरी उपमा है एक red team और एक
+    blue team, हर कोई दूसरे के ताज़ा output पर फिर से train होता हुआ। चतुराई की
+    बात यह है कि forger असली data कभी देखता ही नहीं। वह सिर्फ़ detective का
+    फ़ैसला देखता है — detective <em>ही</em> उसका loss function है, और वह loss हर
+    round में और तेज़ होता जाता है। कोई p(x) लिखता नहीं। न likelihood, न कोई
+    loss curve जिसका मतलब हो "अब बेहतर है": सिर्फ़ samples और backprop। इसीलिए
+    यह काम कर गया, और इसीलिए इसके logs पढ़ना इतना मुश्किल है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>G</strong>, generator</td><td>Noise अंदर, sample बाहर</td><td>एक procedural generator: seed → level</td></tr>
+      <tr><td><strong>D</strong>, discriminator</td><td>Sample अंदर, P(real) बाहर</td><td>एक spam filter, हर round में दोबारा train किया हुआ</td></tr>
+      <tr><td><strong>z</strong></td><td>G को दिया गया random noise</td><td>RNG seed. अलग seed, अलग sample</td></tr>
+      <tr><td><strong>p<sub>g</sub></strong></td><td>सभी z पर G(z) का distribution</td><td>आपका generator जो कुछ बना सकता है, histogram की तरह</td></tr>
+      <tr><td><strong>.detach()</strong></td><td>वह tensor जिसका इतिहास काट दिया गया</td><td>एक read-only view. Gradients यहीं रुक जाते हैं</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक formula</h2>
+
+  <div class="formula">min<sub>G</sub> max<sub>D</sub> V(D, G) = E<sub>x∼p<sub>data</sub></sub>[log D(x)] + E<sub>z∼p<sub>z</sub></sub>[log(1 − D(G(z)))]</div>
+
+  <p>Equation 1. इसे एक scoreboard की तरह पढ़िए जिसे detective ऊँचा चाहता है और forger नीचा:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>z</code></td><td>(n, noise_dim)</td><td>n random seeds. Gaussian noise; कुछ सीखा नहीं जाता</td></tr>
+      <tr><td><code>G(z)</code></td><td>(n, 1)</td><td>n नक़ली नमूने। यहाँ एक रेखा पर एक बिंदु; paper में एक image</td></tr>
+      <tr><td><code>D(x)</code></td><td>(n, 1)</td><td>"असली" होने की probability, 0 और 1 के बीच</td></tr>
+      <tr><td><code>log D(x)</code></td><td>n पर mean</td><td><strong>असली data पर detective का स्कोर।</strong> यक़ीन हो तो 0, ग़लत हो तो बहुत ऋणात्मक</td></tr>
+      <tr><td><code>log(1 − D(G(z)))</code></td><td>n पर mean</td><td><strong>नक़ली पर detective का स्कोर।</strong> हर एक पकड़ ले तो 0</td></tr>
+      <tr><td><code>max<sub>D</sub></code></td><td>—</td><td>Detective की बारी: दोनों terms ऊपर धकेलो</td></tr>
+      <tr><td><code>min<sub>G</sub></code></td><td>—</td><td>Forger की बारी: दूसरा term नीचे धकेलो। पहले को वह छू नहीं सकता</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Code में यह <code>d_loss</code> और <code>g_loss_saturating</code> हैं, दो-दो
+    लाइनें, नीचे code वाले हिस्से में। D पूरी चीज़ को maximise करता है, इसलिए
+    उसका loss ऋणात्मक है; G सिर्फ़ दूसरे term में आता है। फिर equation 1 के बाद
+    वाले paragraph में paper एक व्यावहारिक तरकीब जोड़ता है: G को log(1 − D(G(z)))
+    minimise करने के लिए train मत करो, log D(G(z)) maximise करने के लिए करो। वही
+    fixed point, मगर "much stronger gradients early in learning"। वही है
+    <code>g_loss</code>, non-saturating loss. यह एक सिफ़ारिश है, theory का हिस्सा
+    नहीं — proofs equation 1 के बारे में हैं। लेकिन implement हर कोई सिफ़ारिश ही
+    करता है। अगले दो हिस्से बताते हैं क्यों।
+  </p>
+
+  <h2>सबसे अच्छा detective एक ratio है, और −log 4 फ़िनिश लाइन है</h2>
+  <p>
+    Section 4 दो बातें साबित करता है, और दोनों ऐसा गणित हैं जिसे आप बिना किसी
+    network के एक grid पर जाँच सकते हैं। Proposition 1: किसी तय forger के लिए,
+    सबसे अच्छा संभव detective
+    D<sup>*</sup>(x) = p<sub>data</sub>(x) / (p<sub>data</sub>(x) + p<sub>g</sub>(x)) है।
+    Theorem 1: उस detective के साथ खेल का मान
+    −log 4 + 2·JSD(p<sub>data</sub> ‖ p<sub>g</sub>) है, इसलिए उसका global minimum
+    −log 4 = −1.386 है, जो ठीक तभी मिलता है जब forger का distribution data के
+    बराबर हो जाए। मेरा data है −6, −2 और +2 पर तीन Gaussian टीले — paper का
+    अपना Figure 1 भी ऐसा ही एक 1-D खिलौना है। तीन उम्मीदवार forgers, closed form
+    में जाँचे हुए:
+  </p>
+
+<pre><code>-log 4 = -1.386   &lt;- forger जीत जाए तो खेल का मान
+
+forger                        D*(-6)  D*(-2)  V(D*,G)   -log4 + 2*JSD
+only the bump at -2            <span class="hl">1.000</span>   0.250   -0.750     -0.750
+all three, twice as wide       0.667   0.667   -1.203     -1.203
+p_data exactly                 0.500   0.500   <span class="ok">-1.386</span>     -1.386</code></pre>
+
+  <p>
+    जहाँ forger कभी जाता ही नहीं (x = −6, पहली पंक्ति) वहाँ detective को पूरा
+    यक़ीन है: 1.000। जहाँ forger data से बिल्कुल मेल खाता है, वहाँ detective हर
+    जगह सिक्का उछालने जैसा है, 0.500, और मान −log 4 पर जाकर बैठ जाता है। आख़िरी
+    दो columns तीन दशमलव तक एक जैसे हैं: यही Theorem 1 है, संख्याओं से जाँचा हुआ।
+  </p>
+
+  <div class="note">
+    <strong>जो संख्या आपसे पूछी जाएगी वह −log 4 है।</strong> यह log ½ + log ½ है:
+    ऐसा detective जो हर चीज़ को 0.5 कहता है, दोनों terms पर जाँचा गया। यह forger
+    के जीतने की शर्त है, detective की नहीं — उधर जाता हुआ D loss अच्छी ख़बर है।
+  </div>
+
+  <h2>दो losses, और वह तरकीब है क्यों</h2>
+  <p>D एक logit पर लगा sigmoid है। हर forger loss को उसी logit के सापेक्ष differentiate कीजिए, हर एक सिमटकर एक ही term रह जाता है:</p>
+
+<pre><code>   saturating      log(1 - D)  -&gt;  d/dlogit = -D        -&gt; 0 as D -&gt; 0
+   non-saturating  -log D      -&gt;  d/dlogit = -(1 - D)  -&gt; 1 as D -&gt; 0
+
+    D(G(z))    |grad| saturating    |grad| non-sat
+      0.500                0.500             0.500
+      0.100                0.100             0.900
+      0.010                <span class="hl">0.010</span>             0.990
+      0.001                0.001             <span class="ok">0.999</span></code></pre>
+
+  <p>
+    Training की शुरुआत में forger बेकार होता है और detective को यह पक्का पता
+    होता है: D(G(z)) ≈ 0। तब जैसा लिखा है वैसे loss का gradient ≈ 0 होता है —
+    ठीक उसी वक़्त जब forger को उसकी सबसे ज़्यादा ज़रूरत है। तरकीब इसे उलट देती
+    है: आप जितना बुरा कर रहे हैं, धक्का उतना बड़ा। असली networks पर नापा गया,
+    जमे हुए forger के ख़िलाफ़ detective को 1000 round की बढ़त देने के बाद:
+  </p>
+
+<pre><code>   D(G(z)) after the head start: 0.0071
+   |gradG| with saturating (eq. 1)         : <span class="hl">0.0213</span>
+   |gradG| with non-saturating (the trick) : <span class="ok">2.2216</span></code></pre>
+
+  <p>
+    वही networks, वही noise, वही detective। संकेत का सौवाँ हिस्सा। "Saturating"
+    का मतलब है sigmoid का saturate होना — वही बीमारी जो attention paper में
+    बिना scale किए softmax की थी। फिर वही numerical सफ़ाई।
+  </p>
+
+  <h2>खेल, ठीक से खेला गया</h2>
+  <p>
+    एक D step, एक G step, 4000 rounds, Adam. Script छापता है: असली और नक़ली data
+    पर detective की accuracy, paper का V, forger के gradient का norm, 1000 नक़ली
+    नमूनों का फैलाव, और हर टीले के 1.0 के भीतर कितने गिरते हैं:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    500     0.83 / 0.29   -1.363    0.064      3.42      108 /  177 /  308
+   1000     0.29 / 0.67   -1.380    0.081      3.10      192 /   95 /  342
+   2000     0.64 / 0.58   -1.369    0.116      3.34      210 /  165 /  358
+   3000     0.61 / 0.41   -1.377    0.492      3.64      224 /  258 /  346
+   4000     0.94 / 0.09   <span class="ok">-1.384</span>    0.215      3.78      <span class="ok">238 /  272 /  330</span>
+  final fakes: mean -2.01  std 3.78  off every bump: 160 of 1000</code></pre>
+
+  <p>
+    तीन चीज़ें पढ़िए। आख़िरी column: नक़ली नमूने तीनों टीलों पर, पूरी तरह बराबर
+    नहीं, फिर भी बराबर होते हुए। V: −1.38 पर टिका हुआ, जो दो दशमलव तक −log 4 है
+    — forger असल में जीत चुका है। और accuracy की जोड़ी: 0.94 / 0.09 तब तक
+    असंतुलित लगती है जब तक आप उन्हें जोड़ न लें। Real और fake का जोड़ ≈ 1.03
+    यानी संयोग — जो detector हर चीज़ को "real" कहे उसका यह जोड़ ठीक 1.00 आता है।
+    पकड़ने को कुछ बचा ही नहीं। ध्यान दीजिए detective की learning rate forger की
+    एक-चौथाई है (5e-4 बनाम 2e-3); बराबर rates पर, इस data पर, बीच वाला टीला
+    भूखा रह जाता है। यह खेल एक संतुलन है, और इस पन्ने का बाक़ी हिस्सा यही है कि
+    संतुलन बिगड़ने पर क्या होता है।
+  </p>
+
+  <h2>असफलताओं के नाम हैं</h2>
+  <p>
+    Theory मानती है कि detective हर step पर optimal है और forger की capacity
+    असीमित है। दोनों कभी सच नहीं होतीं, और section 6 इसे एक वाक्य में मान लेता
+    है: D को update किए बिना G को ज़्यादा train नहीं करना चाहिए, "to avoid the
+    Helvetica scenario in which G collapses too many values of z to the same
+    value of x"। जो भी इन्हें train करता है वह इससे और इसके रिश्तेदारों से
+    टकराता है। चार हैं, और हर एक स्वस्थ run से बस एक edit की दूरी पर।
+  </p>
+
+  <h3>Mode collapse: forger detective से आगे निकल जाता है</h3>
+  <p>Forger को दस गुना learning rate दीजिए, <code>lr_g=2e-2</code>। हर 100 rounds पर:</p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    100     1.00 / 0.00   -1.373    0.013      0.27        0 /    0 /    9
+    300     0.60 / 1.00   -1.276    0.038      <span class="hl">0.31</span>        0 /  <span class="hl">992</span> /    0
+    400     0.00 / 1.00   -1.222    0.795      4.68      116 /    1 /    0
+    600     0.53 / 0.65   -1.372    0.022      5.74       58 /   52 /  571
+    800     0.33 / 1.00   -1.275    0.009      0.24      <span class="hl">648</span> /    0 /    0
+   1000     0.54 / 0.46   -1.397    0.042      3.32      276 /   59 /  397</code></pre>
+
+  <p>
+    Fake std 0.31: हज़ार samples एक ही ढेर में। Round 300 पर ढेर −2 पर है, 600 पर
+    +2 पर, 800 पर −6 पर। Forger वह एक जगह ढूँढ लेता है जिसे detective फ़िलहाल
+    "real" मानता है, सब कुछ वहाँ ले जाता है, detective पकड़ लेता है, और वह
+    कूद जाता है। तीन जगहों पर एक साथ होना वह कभी नहीं सीखता, क्योंकि एक जगह ही
+    हमेशा सबसे सस्ती अगली चाल होती है। यही Helvetica scenario है, गिनती के साथ।
+    मेरे runs में जो <em>collapse नहीं</em> हुआ: सामान्य rate पर एक D step के
+    लिए पाँच G steps, और 1-dimensional z। 1-D में एक noise मान से तीन टीलों तक
+    की सीढ़ी सीखना आसान है; वे दोनों 2-D में और images पर काटते हैं।
+  </p>
+
+  <h3>Detective जीत जाता है: forger का gradient ग़ायब हो जाता है</h3>
+  <p>
+    अब उल्टा। Momentum SGD (जो paper कहता है उसने इस्तेमाल किया), एक G step के
+    लिए पाँच D steps (Algorithm 1 का k; paper ने 1 रखा था), और G का loss ठीक
+    वैसा जैसा equation 1 लिखता है:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    200     <span class="hl">1.00 / 1.00</span>   -0.017    <span class="hl">0.044</span>      0.14        0 /    0 /    0
+    400     0.99 / 1.00   -0.018    0.073      0.20        <span class="hl">0 /    0 /    0</span>
+  final fakes: mean +0.18  std 0.20  off every bump: 1000 of 1000</code></pre>
+
+  <p>
+    Detective एकदम सही है। V −1.39 की जगह −0.02 है। और forger हिला ही नहीं: 400
+    round बाद भी उसके samples 0 पर, 0.2 के फैलाव के साथ बैठे हैं, जहाँ random
+    init ने उन्हें रखा था। एक परफ़ेक्ट detective बेकार शिक्षक है। वही run, एक
+    बदलाव — non-saturating loss:
+  </p>
+
+<pre><code>    100     0.67 / 1.00   -0.729    <span class="ok">0.671</span>      1.01        0 /    0 /  604
+    400     0.67 / 1.00   -0.818    1.334      0.27        0 /    0 / <span class="ok">1000</span></code></pre>
+
+  <p>
+    Forger पहले 100 rounds में ही हिलता है — सीधे एक ही टीले पर, क्योंकि SGD के
+    नीचे एक मज़बूत detective अब भी एक बुरा खेल है। लेकिन वह हिलता तो है। Paper
+    के "in practice" paragraph की पूरी बात यही है, दो tables में।
+  </p>
+
+  <div class="note">
+    <strong>आपने जो tutorial copy किया वह लिखे हुए loss के साथ भी क्यों नहीं जमता: Adam.</strong>
+    वह हर gradient को उसके running scale से भाग देता है, इसलिए 0.02 का gradient
+    और 2 का gradient एक ही आकार का step बनाते हैं। इस खिलौने पर यह saturation को
+    पूरी तरह छुपा देता है। Images पर वह नन्हा gradient ज़्यादातर noise भी होता
+    है, और Adam noise को बढ़ा देता है। तरकीब फिर भी इस्तेमाल कीजिए।
+  </div>
+
+  <h3>भूला हुआ detach</h3>
+  <p>
+    Detective की बारी में नक़ली नमूने G से आते हैं। अगर आपने उन्हें
+    <code>.detach()</code> नहीं किया, तो D का loss D से होकर <em>आगे G में भी</em>
+    backpropagate होगा। D के एक step के ठीक बाद G के gradient का norm:
+  </p>
+
+<pre><code>   detach=True   |gradG| after D's step: <span class="ok">0.0000</span>
+   detach=False  |gradG| after D's step: <span class="hl">0.0606</span>
+   cosine(leaked gradient, G's own gradient): <span class="hl">-1.000</span></code></pre>
+
+  <p>
+    Cosine −1: रिसा हुआ gradient बिल्कुल forger के अपने gradient के उल्टा इशारा
+    करता है। करेगा भी क्यों नहीं — D का loss तो चाहता है कि नक़ली नमूने और
+    <em>ज़्यादा</em> पकड़ में आएँ। यह असल में लागू होता है या नहीं, यह इस पर
+    निर्भर है कि आपका <code>zero_grad()</code> कहाँ है। G को उसके अपने backward
+    से ठीक पहले zero कीजिए और रिसाव मिट जाता है; आपने सिर्फ़ एक बेकार backward
+    pass की क़ीमत चुकाई — इसीलिए यह bug अक्सर चुपचाप रहता है। यह script round के
+    शुरू में दोनों networks को zero करती है, इसलिए यहाँ वह लागू होता है:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+   1000     0.33 / 1.00   -1.081    0.106      1.85      198 /  339 /    0
+   3000     0.33 / <span class="hl">1.00</span>   -1.128    0.066      2.21      430 /  430 /    <span class="hl">0</span></code></pre>
+
+  <p>एक पूरा टीला ग़ायब, और पूरे run भर detective नक़ली पर 1.00। आख़िरी column की तुलना स्वस्थ table से कीजिए।</p>
+
+  <h3>बारी-बारी करना भूलना: अब यह खेल ही नहीं रहा</h3>
+  <p>
+    लुभावना शॉर्टकट: दोनों losses जोड़ दो, दोनों networks पर एक optimiser, एक
+    <code>backward()</code>। यह compile होता है, चलता है, और adversarial नहीं
+    होता। D का अपना term D(G(z)) को नीचे धकेलता है; G का term, जो अब D के weights
+    में भी बह रहा है, उसे ऊपर धकेलता है; D(G(z)) = 0.5 पर दोनों कट जाते हैं। और
+    संयुक्त loss से होकर G का gradient ठीक उसी बिंदु पर शून्य है। कोई किसी को
+    नहीं धकेलता:
+  </p>
+
+<pre><code>   step  D acc real/fake     V    |gradG|  fake std   near -6 / -2 / +2
+    600     1.00 / 0.78   -0.694    <span class="hl">0.000</span>      <span class="hl">0.00</span>        0 /    0 /    0
+   1000     1.00 / 0.77   -0.693    0.001      0.00        0 /    0 /    0
+  final fakes: mean +0.03  std 0.00  off every bump: 1000 of 1000</code></pre>
+
+  <p>
+    हज़ार rounds तक fake std 0.00: forger अपनी शुरुआती जगह से हिला ही नहीं। V है
+    −0.693 = −log 2, जो log 1 + log ½ है — detective हर असली sample को 1 कहता है
+    और हर नक़ली को ½, और उसके पास कुछ और कहने की कोई वजह नहीं। खेल के लिए दो
+    खिलाड़ी चाहिए जिनमें हर एक वह चाहता हो जो दूसरा नहीं चाहता। एक loss की एक ही
+    चाहत होती है।
+  </p>
+
+</section>
+
 <hr>
 
 <h2>The code</h2>
@@ -499,6 +1161,38 @@ def train_step(G, D, opt_G, opt_D, rng, batch, noise_dim,
   </footer>
 
 </main>
+
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
 
 </body>
 </html>
