@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retrieval-Augmented Generation — for programmers</title>
+<meta name="description" content="The RAG paper explained as code. Retrieval is an open-book exam: chunk, embed, index, top-k, paste into the prompt. Runnable NumPy with no language model in the loop, eight demos that prove it by breaking it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Retrieval-Augmented Generation for Knowledge-Intensive NLP</h1>
+    <p class="paper-meta">Lewis et al., 2020</p>
+    <p class="lede">
+      The open-book exam, explained as the search engine it actually is.
+    </p>
+    <p>
+      <a href="rag_from_scratch.py" download>Download rag_from_scratch.py</a>
+      — everything below runs from it. NumPy only. There is no language model
+      in the loop: the "generation" step assembles the prompt and prints it.
+    </p>
+  </div>
+
+  <p>
+    I've shipped RAG. Twice. Embedding model, vector database, LLM, done. And
+    every time it answered wrong, I blamed the LLM. Then I read the paper and
+    found out the LLM is the small half. The half you build, tune and debug is
+    the <em>retriever</em> — and nobody had told me it's a search engine with
+    a matrix in it.
+  </p>
+
+  <h2>RAG is an open-book exam</h2>
+
+  <p>You know this:</p>
+
+<pre><code>answer = llm(question)     # closed book: whatever the weights happen to remember</code></pre>
+
+  <p>The paper's twist is to hand the model the right page first:</p>
+
+<pre><code>hits   = index.search(embed(question), k=3)   # open the book to the right pages
+prompt = f"Context:\n{hits}\n\nQuestion: {question}"
+answer = llm(prompt)                          # answer from the page, not memory</code></pre>
+
+  <p>
+    That's the whole paper's beating heart. The model is the student, the index
+    is the book, and the prompt is the page you slide across the desk. Or: a
+    cache in front of a database. The weights are the database — slow to
+    change, expensive to rebuild. The index is the cache — swap it any time.
+    The paper literally does this: swap the 2018 Wikipedia index for a 2016
+    one and the answers to "who is the current…" about world leaders change
+    to match. Nothing retrained. The book changed, the student didn't.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Exam analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Query</strong> x</td><td>The question, as typed</td><td>The exam question</td></tr>
+      <tr><td><strong>Passage</strong> z</td><td>One chunk of the corpus</td><td>One page of the textbook</td></tr>
+      <tr><td><strong>Index</strong></td><td>Every passage as a vector, stacked</td><td>The textbook's index</td></tr>
+      <tr><td><strong>Retriever</strong> p<sub>η</sub>(z | x)</td><td>Scores a passage against the question</td><td>Finding the page</td></tr>
+      <tr><td><strong>Generator</strong> p<sub>θ</sub>(y | x, z)</td><td>The LLM, given passage plus question</td><td>The student, page open</td></tr>
+      <tr><td><strong>Parametric memory</strong></td><td>What's in the weights</td><td>What the student memorised</td></tr>
+      <tr><td><strong>Non-parametric memory</strong></td><td>What's in the index</td><td>The textbook</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Before this, a closed-book model like T5 kept every fact in its weights,
+    and the extractive systems (DPR with a reader, REALM) fetched passages but
+    could only copy a span out of one. RAG fetches, then <em>generates</em>.
+    That set the state of the art on three open-domain QA benchmarks, ahead of
+    the 11-billion-parameter closed-book T5 and the extractive retrievers.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">p(y | x) ≈ Σ<sub>z ∈ top-k</sub> p<sub>η</sub>(z | x) · p<sub>θ</sub>(y | x, z),   where p<sub>η</sub>(z | x) ∝ exp(d(z)<sup>T</sup> q(x))</div>
+
+  <p>Read it as pipeline stages, retriever first:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>d(z)</code></td><td>(768,) × 21M rows</td><td>Every passage through BERT once. Frozen. Stored in FAISS.</td></tr>
+      <tr><td><code>q(x)</code></td><td>(768,)</td><td>The question through a second BERT — the only part of the retriever that trains</td></tr>
+      <tr><td><code>d(z)<sup>T</sup> q(x)</code></td><td>scalar</td><td><strong>Similarity.</strong> A dot product, the same one as attention</td></tr>
+      <tr><td><code>top-k</code></td><td>k passages</td><td>argsort, keep the best k (5 or 10 in the paper)</td></tr>
+      <tr><td><code>p<sub>η</sub>(z | x)</code></td><td>k numbers, sum to 1</td><td>Softmax over the k scores: how much to trust each page</td></tr>
+      <tr><td><code>p<sub>θ</sub>(y | x, z)</code></td><td>one answer per passage</td><td>BART, given [passage ; question], writes an answer</td></tr>
+      <tr><td><code>Σ</code></td><td>one answer</td><td>Weighted average of the k answers, weights from the retriever</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Embedding without a model</h2>
+  <p>
+    The paper's retriever is DPR: two BERT encoders (see
+    <a href="../bert/">the BERT page</a>), one for questions, one for
+    passages, trained so a question and the passage that answers it land close
+    together. I don't have a trained BERT in a NumPy script and don't want one
+    hiding the pipeline. So the script uses the oldest trick in search: count
+    the words, weight rare words higher (tf-idf), hash each word to a slot in
+    a fixed-width vector, divide by the length.
+  </p>
+  <p>
+    Honest for the shape — one fixed-size vector per chunk, compared by dot
+    product, exactly what FAISS sees. Dishonest for the meaning: DPR knows
+    "owns" and "owned" are one idea; a hash table doesn't. That costs us in a
+    minute.
+  </p>
+
+  <p><strong>Here's one chunk becoming a vector:</strong></p>
+
+<pre><code>chunk 4:  Lantern's default job timeout is 45 minutes.
+tokens:   ['lantern', 'default', 'job', 'timeout', '45', 'minutes']
+buckets:  [279, 223, 248, 402, 299, 675]
+
+vector shape: (1024,)   nonzero entries: 6 of 1024
+L2 norm: 1.000 <span class="ok">✓</span>
+  bucket  279  lantern   idf 1.38  weight 0.200
+  bucket  223  default   idf 3.40  weight 0.491
+  bucket  248  job       idf 2.01  weight 0.291
+  bucket  402  timeout   idf 2.70  weight 0.391
+  bucket  299  45        idf 3.40  weight 0.491
+  bucket  675  minutes   idf 3.40  weight 0.491
+
+vocabulary: 118 distinct tokens -&gt; 1024 buckets, 8 hash collisions</code></pre>
+
+  <p>
+    "lantern" is in 14 of the 21 chunks so it earns the smallest weight;
+    "default", "45" and "minutes" are in one chunk each so they carry the
+    vector. That's all tf-idf is. The corpus is 21 sentences about a made-up
+    job scheduler called Lantern — invented, so nothing can be fact-checked
+    against the world; consistent, so every question has one right chunk.
+  </p>
+
+  <h2>Retrieval is one matrix multiply</h2>
+  <p>
+    Stack the chunk vectors into a matrix. Embed the question the same way.
+    <code>index @ q</code> gives one score per chunk; <code>argsort</code>
+    gives the top k. That's the retriever. At 21 rows it's NumPy; at 21
+    million it's FAISS with an approximate nearest-neighbour structure so you
+    don't scan every row. Same object.
+  </p>
+
+  <p><strong>Three questions, top-3 each. <code>*</code> marks the answer chunk:</strong></p>
+
+<pre><code>Q: What is Lantern's default job timeout?
+   query tokens: ['lantern', 'default', 'job', 'timeout']
+<span class="ok">*</span> #1  0.720  chunk  4  Lantern's default job timeout is 45 minutes.
+  #2  0.315  chunk  5  A job that exceeds its timeout is retried at most twice.
+  #3  0.251  chunk  0  Lantern is the internal job scheduler at Fennel Systems...
+
+Q: Which team owns Lantern?
+   query tokens: ['team', 'owns', 'lantern']
+<span class="ok">*</span> #1  <span class="hl">0.342</span>  chunk 12  Lantern is owned by the Platform team.
+  #2  0.174  chunk 13  The Platform team's on-call rotation is one week long.
+  #3  0.172  chunk 14  Priya Raman is the current tech lead of the Platform team.
+
+Q: How long are failed jobs kept in the dead-letter table?
+   query tokens: ['long', 'failed', 'jobs', 'kept', 'dead', 'letter', 'table']
+<span class="ok">*</span> #1  0.766  chunk 19  Failed jobs are kept in the dead-letter table for 30 days.
+  #2  0.398  chunk  0  Lantern is the internal job scheduler at Fennel Systems...
+  #3  0.175  chunk 13  The Platform team's on-call rotation is one week long.</code></pre>
+
+  <p>
+    Three for three — but look at the middle one. "owns" matched nothing,
+    because the corpus says "owned". The hit came from "team" plus "lantern",
+    scored a limp 0.342, and the runners-up got there on "team" alone. That
+    gap between word overlap and meaning is the whole reason DPR exists. The
+    pipeline is identical either way.
+  </p>
+
+  <h2>The prompt is the page you slide across the desk</h2>
+  <p>
+    Take the top-k chunks, number them, put the question underneath. That
+    string is what a real system sends to the LLM. The script prints it
+    instead of sending it, because from here the LLM's job is the easy half.
+  </p>
+
+<pre><code>Answer using only the context below.
+If the answer is not in the context, say you do not know.
+
+Context:
+[1] Lantern's default job timeout is 45 minutes.
+[2] A job that exceeds its timeout is retried at most twice.
+[3] Lantern is the internal job scheduler at Fennel Systems: every batch job
+    at Fennel is submitted to Lantern, queued by Lantern, given a timeout by
+    Lantern, and retried by Lantern when it fails; failed jobs that keep
+    failing are kept by Lantern in the dead-letter table, and failed jobs stay
+    there until they expire.
+
+Question: What is Lantern's default job timeout?
+Answer:
+
+(103 words. An LLM call goes here. There is none in this script.)</code></pre>
+
+  <p>Now the same question with the retriever unplugged:</p>
+
+<pre><code>Context:
+<span class="hl">(none)</span>
+
+Question: What is Lantern's default job timeout?
+Answer:</code></pre>
+
+  <div class="note">
+    <strong>The model will answer this. Confidently. With a number.</strong>
+    Lantern is private; the weights have never seen it. That confident wrong
+    number is the "hallucination" everyone blames on the LLM. It was a
+    retrieval miss. The interview question is "why does my RAG hallucinate?"
+    and the answer, most days, is "it doesn't — your retriever does."
+  </div>
+
+  <h2>Two RAGs: the paper's and the one you'll ship</h2>
+  <p>
+    Nobody says this out loud: the system everyone calls RAG is not the system
+    in the paper. The paper trains the retriever and the generator
+    <em>together</em>. What gets shipped is a frozen pipeline.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Piece</th><th>The paper (2020)</th><th>What gets shipped</th><th>This script</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Retriever</strong></td><td>DPR bi-encoder; query side fine-tuned</td><td>A frozen embedding model, or BM25</td><td>Hashed tf-idf, no training</td></tr>
+      <tr><td><strong>Index</strong></td><td>FAISS over 21M Wikipedia passages, 100 words each</td><td>A vector database</td><td><code>np.stack</code>, 21 rows</td></tr>
+      <tr><td><strong>Generator</strong></td><td>BART-large, fine-tuned</td><td>A frozen LLM behind an API</td><td>Prints the prompt</td></tr>
+      <tr><td><strong>Passages → model</strong></td><td>One at a time, k answers averaged</td><td>All k pasted into one prompt</td><td>All k pasted into one prompt</td></tr>
+      <tr><td><strong>Training signal</strong></td><td>(question, answer) pairs; no label for which passage to fetch</td><td>None</td><td>None</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The training is the clever part. Fine-tune the query encoder and BART
+    jointly on question–answer pairs; the document encoder and the index stay
+    frozen, because re-embedding 21 million passages every step is not a
+    thing. The gradient still reaches the retriever through
+    p<sub>η</sub>(z | x): if a passage helped the generator get the answer,
+    the query encoder learns to pull that kind of passage closer. Nobody
+    labels "this was the right passage". It's learned from the answer alone.
+  </p>
+  <p>
+    Two variants. <strong>RAG-Sequence</strong> picks one passage for the
+    whole answer, runs the generator once per passage, averages the k answers.
+    <strong>RAG-Token</strong> re-picks the passage at every generated token,
+    so one answer can draw on several documents. On the QA benchmarks they're
+    within a couple of points, RAG-Sequence usually ahead; RAG-Token wins
+    Jeopardy-question generation,
+    where an answer needs facts from more than one page. The frozen pipeline
+    is neither — one prompt, one call — and the script codes that, because
+    that's what you'll debug. The generator itself is a transformer decoder:
+    <a href="../attention/">the attention page</a> with a mask.
+  </p>
+
+  <h2>Three ways the retriever fails quietly</h2>
+  <p>
+    Every one of these shows up as "the LLM was wrong". None of them is the
+    LLM. The script breaks each on purpose.
+  </p>
+
+  <h3>1. Skip the normalisation and length wins</h3>
+  <p>
+    Delete the divide-by-norm and a dot product stops being a cosine. A long
+    chunk has a long vector, and a long vector wins comparisons it has no
+    business winning. The corpus has a README paragraph — 37 tokens, mentions
+    everything, answers nothing. Watch it take over:
+  </p>
+
+<pre><code>Q: What is Lantern's default job timeout?
+   cosine #1:  chunk  4  (0.720)      raw dot #1:  chunk  0  (26.88)
+Q: Which team owns Lantern?
+   cosine #1:  chunk 12  (0.342)      raw dot #1:  chunk  0  (11.48)
+Q: How long are failed jobs kept in the dead-letter table?
+   cosine #1:  chunk 19  (0.766)      raw dot #1:  <span class="hl">chunk  0  (68.36)</span></code></pre>
+
+  <p>
+    Three of three, with the biggest scores on the page. Your retriever has
+    become <code>return longest_paragraph</code>.
+  </p>
+
+  <h3>2. Ask something the corpus can't answer</h3>
+  <p>
+    <code>argsort</code> always returns k rows. There is no "I don't know" in
+    top-k. Ask about a team that doesn't exist and you get the nearest team
+    that does, with a <em>better</em> score than a real hit:
+  </p>
+
+<pre><code>Q (answer IS in corpus):  Which team owns Lantern?
+<span class="ok">*</span> #1  0.342  chunk 12  Lantern is owned by the Platform team.
+
+Q (answer NOT in corpus): Who is the tech lead of the Security team?
+  #1  <span class="hl">0.530</span>  chunk 14  Priya Raman is the current tech lead of the Platform team.
+  #2  0.201  chunk 12  Lantern is owned by the Platform team.
+  #3  0.129  chunk 13  The Platform team's on-call rotation is one week long.</code></pre>
+
+  <p>
+    A model that skims will answer "Priya Raman". A score threshold would have
+    to sit above 0.53 and below 0.34 at the same time. It can't. You need a
+    reranker, or a model that actually reads the context and refuses — and an
+    eval for it, because the retriever will never tell you.
+  </p>
+
+  <h3>3. Chunks too big: the fact is buried</h3>
+  <p>
+    Merge the 21 sentences into 3 chunks of 7. Same corpus, same questions,
+    same maths. Every chunk now mentions Lantern, so every chunk looks a bit
+    right, and the gap between hit and runner-up collapses:
+  </p>
+
+<pre><code>       #1 score  #2 score    gap   #1 is    answer in #1?
+small chunks:
+  Q1      0.720     0.315   0.405   chunk  4   yes
+  Q2      0.342     0.174   0.168   chunk 12   yes
+  Q3      0.766     0.398   0.368   chunk 19   yes
+
+big chunks:
+  Q1      0.535     0.232   0.303   chunk  0   yes, sentence 5 of 7
+  Q2      0.215     0.206   <span class="hl">0.009</span>   chunk  2   NO
+  Q3      0.226     0.200   0.026   chunk  0   <span class="hl">NO</span>
+
+prompt words for Q1, k=3:  small chunks 103  big chunks 271  (whole document: 239)</code></pre>
+
+  <p>
+    Q2's gap goes from 0.168 to 0.009 — a coin toss — and the coin lands
+    wrong. Q3 loses to the README paragraph, which has every one of its words,
+    twice. And k=3 of 3 chunks is the whole document: the retriever did
+    nothing, you pasted the wiki into the prompt and paid 271 words for a
+    six-word question. Chunk size is the most consequential knob in the
+    pipeline and the one nobody tunes.
+  </p>
+
+  <div class="note">
+    <strong>There's a fourth, in demo 8.</strong> "Which port does the Lantern
+    dashboard listen on?" needs two chunks, and the second one shares one word
+    with the question and everything with the <em>answer to hop one</em>. At
+    k=1 the prompt gets half a fact. The fix is to retrieve again after
+    reading — which is what an agent loop is, and what RAG-Token gestures at.
+  </div>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no model, no training — just the retriever, so you
+  can watch the scores move. Every function under 15 lines.
+</p>
+<p>
+  <a href="rag_from_scratch.py" download><strong>Download the full script</strong></a>
+  — nine short functions plus eight runnable demos. Then:
+</p>
+<pre><code>python3 rag_from_scratch.py</code></pre>
+
+<pre><code>D = 1024   # embedding width. DPR's is 768. Ours is a hash table, not a model.
+
+
+def bucket(token):
+    """Hashing trick: token -&gt; a fixed slot in [0, D). No vocabulary to build,
+    store or ship. crc32 rather than hash() because hash() is salted per
+    process and the index would not survive a restart."""
+    return zlib.crc32(token.encode()) % D
+
+
+def fit_idf(chunks):
+    """Inverse document frequency, one weight per bucket.
+
+    A word in most chunks ("lantern") is worth little; a word in one chunk
+    ("timeout") is worth a lot. log((N+1)/(df+1)) + 1, the smoothed textbook
+    form. Same instinct as BM25, minus the tuning knobs."""
+    df = np.zeros(D)
+    for c in chunks:
+        for b in set(bucket(t) for t in tokenise(c)):
+            df[b] += 1
+    return np.log((len(chunks) + 1) / (df + 1)) + 1
+
+
+def embed(text, idf, normalise=True):
+    """text -&gt; (D,) vector.
+
+    (1) count each bucket           -- term frequency
+    (2) multiply by idf             -- rare words count more
+    (3) divide by the L2 norm       -- so dot product == cosine, length-blind
+
+    Step 3 is the one people delete. Demo 5 shows what happens."""
+    v = np.zeros(D)
+    for t in tokenise(text):
+        v[bucket(t)] += 1
+    v *= idf
+    if normalise:
+        v /= np.linalg.norm(v) + 1e-12
+    return v
+
+
+def retrieve(question, index, idf, k=3, normalise=True):
+    """The whole retriever: one matrix-vector product and an argsort.
+
+    scores[i] = similarity(question, chunk i). Return the k best, best first.
+    There is no "nothing matched" -- argsort always returns k rows."""
+    q = embed(question, idf, normalise)
+    scores = index @ q                        # (n_chunks,)
+    top = np.argsort(-scores)[:k]
+    return [(int(i), float(scores[i])) for i in top]</code></pre>
+
+<p>
+  <code>chunk</code>, <code>tokenise</code>, <code>build_index</code> (an
+  <code>np.stack</code>) and <code>build_prompt</code> (the f-string you saw
+  above) are in the script.
+</p>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living — reverse-engineering from broken behaviour is your native mode,
+  and every row here is a bug you will one day ship.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Pass <code>normalise=False</code> to <code>build_index</code> and <code>retrieve</code></td><td>Chunk 0, the 37-token README paragraph, wins all three questions. Raw score 68.36 on a question it doesn't answer.</td></tr>
+    <tr><td><code>k=1</code> on the two-hop question in demo 8</td><td><code>hop 2 in prompt: False</code>. The prompt says "served by Beacon" and never mentions a port. At k=3 it arrives at rank 3, 0.187, next to the wrong port.</td></tr>
+    <tr><td><code>chunk(DOCUMENT, 7)</code> — 3 giant chunks instead of 21</td><td>Q2's gap drops from 0.168 to 0.009, and Q2 and Q3 both retrieve a chunk without the answer. The prompt grows from 103 words to 271.</td></tr>
+    <tr><td><code>build_prompt(q, [])</code> — no retrieval</td><td><code>Context: (none)</code>. The model answers from its weights. For a private corpus that's a guess dressed as a fact.</td></tr>
+    <tr><td>Ask "Who is the tech lead of the Security team?"</td><td>Top hit 0.530 for the <em>Platform</em> team's lead — higher than a genuine hit at 0.342. No threshold separates them.</td></tr>
+    <tr><td><code>D = 32</code> instead of 1024</td><td>The vocabulary line reports 87 hash collisions. "Which team owns Lantern?" now returns the <code>max_workers</code> sentence at 0.557 — two unrelated words share a slot.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §2, the methods section, and
+  the "Additional Results" part of §4: index hot-swapping, the retrieval
+  ablations, the effect of retrieving more documents. Skip the FEVER and
+  Jeopardy setup unless you need them. You'll find the paper is just the
+  comments you've already read, with a BERT where my hash table is.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  The retriever is a dot product and an argsort. You've done both today. The
+  tf-idf weight is a log, there for the usual reason: it squashes "in 1 chunk"
+  versus "in 14" into a sensible range. L2 normalisation is a divide. That's
+  the entire retrieval half.
+</p>
+<p>
+  The formula's Σ is a weighted average of k answers, and the weights are a
+  softmax over k similarity scores — the same softmax as attention. The
+  training loss is the negative log of that average: log so multiplication
+  becomes addition and small probabilities don't underflow.
+  <code>loss.backward()</code> does the rest, and it doesn't go through the
+  index, because the paper froze it. You would too.
+</p>
+<p>
+  What you actually need for RAG work isn't maths: a chunking strategy, an
+  embedding model, a reranker, an eval set of questions with known answers,
+  and the habit of reading the retrieved passages before blaming the model.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the retriever as a search engine you can
+  break. That's deliberately narrow. These fill in the trained version, the
+  family tree, and the real code.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2005.11401">
+      <span class="paper-title">Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks</span>
+      <span class="paper-meta">Lewis et al., 2020. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      §2 is the whole method in a few pages and reads as the stage table
+      above. Then the "Additional Results" subsection of §4 for the
+      hot-swapping experiment and the ablation that swaps DPR for BM25 —
+      the honest comparison for my hash table.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2020-10-29-odqa/">
+      <span class="paper-title">How to Build an Open-Domain Question Answering System?</span>
+      <span class="paper-meta">Lilian Weng. Survey, with the maths.</span>
+    </a>
+    <p class="paper-pitch">
+      The family tree I skipped: DrQA, ORQA, REALM, DPR, RAG, Fusion-in-Decoder,
+      side by side, with the training objectives written out. Go here to see
+      "the query encoder learns from the answer alone" as an equation.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/docs/transformers/model_doc/rag">
+      <span class="paper-title">RAG — Hugging Face Transformers documentation</span>
+      <span class="paper-meta">Hugging Face. The trained model, runnable.</span>
+    </a>
+    <p class="paper-pitch">
+      The paper's actual system as three classes: <code>RagRetriever</code>,
+      <code>RagSequenceForGeneration</code>, <code>RagTokenForGeneration</code>.
+      Where the jointly-trained version I only described becomes code you can
+      call, with the real DPR encoders and the real FAISS index.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> the paper's §2 → Weng → the Hugging
+  Face docs. Method, then the neighbours, then the code. If you only read one,
+  read §2 — it's shorter than this page.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

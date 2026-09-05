@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LoRA: Low-Rank Adaptation of Large Language Models — for programmers</title>
+<meta name="description" content="The LoRA paper explained as code. A fine-tune is a diff on the weights and the diff is low-rank, so store it as two thin matrices. Runnable NumPy, five demos that prove it by breaking it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>LoRA: Low-Rank Adaptation of Large Language Models</h1>
+    <p class="paper-meta">Hu et al., 2021</p>
+    <p class="lede">
+      Explained as a git patch, because a fine-tune is a diff and this paper is
+      about how small the diff is.
+    </p>
+    <p>
+      <a href="lora_from_scratch.py" download>Download lora_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
+
+  <p>
+    I'd shipped LoRA adapters before I understood them. <code>r=8</code>,
+    <code>lora_alpha=16</code>, <code>target_modules=["q_proj", "v_proj"]</code>, copied
+    from a blog post, and it worked. I couldn't have told you what <code>r</code> was, why
+    <code>alpha</code> existed, or why the README promised zero inference latency.
+    Nobody told me the whole paper is one observation about a diff.
+  </p>
+
+  <h2>A fine-tune is a patch, not a fork</h2>
+  <p>You know this. A full fine-tune is a fork: copy every weight, edit every weight, keep the copy.</p>
+
+<pre><code>W_task = W_base.copy()       # 4096 x 4096 floats, per matrix, per task
+W_task += learned_change     # every entry is allowed to move
+save(W_task)                 # another full copy on disk</code></pre>
+
+  <p>
+    LoRA is the branch that stores only the patch. <code>W_base</code> stays read-only;
+    the change lives next to it. And the paper's observation is that the patch is
+    <em>thin</em>: rank <code>r</code>, where <code>r</code> can be 8, or even 1, on a matrix 4096 wide.
+  </p>
+
+<pre><code>A = random(d_in, r)          # r = 8, not 4096
+B = zeros(r, d_out)          # the patch starts empty
+h = x @ W_base + (x @ A) @ B * (alpha / r)
+
+W_merged = W_base + A @ B * (alpha / r)     # ship time: apply the patch</code></pre>
+
+  <p>Two thin matrices instead of one fat one. At ship time, apply the patch and serve one matrix, as before. That's the paper.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Git analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>W<sub>0</sub></strong></td><td>The pretrained weight. Frozen.</td><td><code>main</code>, read-only</td></tr>
+      <tr><td><strong>ΔW</strong></td><td>What a fine-tune changes</td><td>The diff</td></tr>
+      <tr><td><strong>r</strong></td><td>Rank: how many independent directions the diff may have</td><td>How thin the patch is</td></tr>
+      <tr><td><strong>B, A</strong></td><td>The diff stored as two thin matrices, ΔW = BA</td><td>The patch, stored compressed</td></tr>
+      <tr><td><strong>α</strong></td><td>A constant. The patch is scaled by α/r</td><td>A learning-rate knob for the patch</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why this beat adapters and full fine-tuning</h2>
+  <p>
+    The setting is GPT-3, 175 billion parameters. A full fine-tune per task is a full
+    copy of the weights per task — the paper puts one checkpoint at 350GB — plus
+    gradients and optimiser state for all of them while you train. Adapters were the
+    existing fix: a small two-layer MLP bolted <em>after</em> each layer. But that is a
+    new layer in the sequential path with a nonlinearity inside, so it can't be folded
+    away and it costs latency on every request. The paper measures this in its "aren't
+    existing solutions good enough?" section: noticeable at batch size 1, where online inference lives.
+  </p>
+  <p>
+    LoRA's patch is linear, so it folds into the weight. Same latency as the base.
+    Switching tasks is subtract one patch, add another. The checkpoint per task is the
+    patch alone: the paper reports 35MB where a full fine-tune was 350GB.
+  </p>
+
+  <h2>The one formula</h2>
+  <div class="formula">h = W<sub>0</sub>x + ΔWx = W<sub>0</sub>x + BAx &nbsp;&nbsp;&nbsp; ΔW = BA, &nbsp;B is d×r, &nbsp;A is r×k, &nbsp;r ≪ min(d, k)</div>
+
+  <p>Read it as pipeline stages:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>W<sub>0</sub>x</code></td><td>(d,)</td><td>The frozen base. What the model already does.</td></tr>
+      <tr><td><code>Ax</code></td><td>(r,)</td><td><strong>Squeeze</strong> x down to r numbers. Random Gaussian at init.</td></tr>
+      <tr><td><code>B(Ax)</code></td><td>(d,)</td><td><strong>Expand</strong> back out. Zero at init, so the patch starts empty.</td></tr>
+      <tr><td><code>× α/r</code></td><td>scalar</td><td>Keeps the step size fixed when you change r. Not in equation 3; in the paragraph after it.</td></tr>
+      <tr><td><code>W<sub>0</sub> + BA</code></td><td>(d, k)</td><td>The merge. Done once before serving. One matrix again.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Two notes. The paper writes <code>BA</code> with column vectors; my <code>x</code> is a
+    row, so the patch reads <code>(x @ A) @ B</code>, A then B, and my <code>A @ B</code> is
+    the paper's <code>BA</code> transposed. And "rank": a rank-1 matrix is one column times
+    one row, d×k entries but d+k numbers of information; rank r is r of those added up.
+    <code>np.linalg.svd</code> lists a matrix's singular values, biggest direction first.
+  </p>
+
+  <h2>How many numbers are you training?</h2>
+  <p>
+    A full fine-tune of one d×d matrix trains d² numbers. LoRA trains r·(d + d). The
+    paper's GPT-3 numbers fall out of the same formula: 96 layers, d<sub>model</sub> 12288.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>one square weight, d = 4096. Full fine-tune trains d*d = 16,777,216
+
+    r   LoRA params   full / LoRA
+    1         8,192        2,048x
+    4        32,768          512x
+    8        65,536          256x
+   64       524,288           32x
+
+GPT-3 175B shape: 96 layers, d_model 12288. LoRA on Wq and Wv only:
+  r = 1:     4,718,592 trainable =   <span class="ok">4.7M</span>   (175,000M full, ratio 37,087x)
+  r = 8:    37,748,736 trainable =  37.7M   (175,000M full, ratio 4,636x)</code></pre>
+
+  <p>
+    4.7M and 37.7M are the two LoRA rows in the paper's GPT-3 results table; the
+    abstract's "10,000 times" is this ratio, rounded. Note what they adapted: W<sub>q</sub>
+    and W<sub>v</sub> in attention, nothing else; the MLP was frozen. Now the thing the
+    paper is honest about and blog posts are not: LoRA shrinks what you <em>train</em>,
+    not what you <em>load</em>.
+  </p>
+
+<pre><code>What LoRA does NOT shrink (d = 4096, r = 8, fp16 weights, fp32 Adam):
+  the frozen W itself ............   <span class="hl">33.6 MB  either way</span>
+  full FT  grads + Adam m, v .....  167.8 MB
+  LoRA     grads + Adam m, v .....    0.7 MB</code></pre>
+
+  <div class="note">
+    <strong>LoRA cuts gradients, optimiser state and checkpoints. The base costs the same
+    memory at inference.</strong> That is why the paper's GPU memory saving is about 3×,
+    not 10,000×. Shrinking the base is quantisation's job — QLoRA is "4-bit base plus a
+    LoRA patch".
+  </div>
+
+  <h2>The diff is low-rank — and here's what that means</h2>
+  <p>
+    I can't fine-tune GPT-3 on a laptop, so here is the honest version for one linear
+    layer. Least squares gives the ΔW a full fine-tune would converge to — closed form,
+    no training loop — and an SVD says how many directions it has. The task's true ΔW
+    is rank 4 plus a little noise, the paper's claim about real diffs. d = 64, 512 rows.
+  </p>
+
+<pre><code>  singular values of the fitted dW (first 10):
+   [3.001 2.    0.986 <span class="ok">0.512</span> 0.156 0.151 0.146 0.14  0.137 0.135]
+
+  rank r   dW error   test RMSE
+    none                 0.4852   ← the base model
+       1     0.6199      0.3026
+       2     0.3330      0.1694
+       4     0.1628      0.0907   ← the cliff
+       8     0.1432      0.0840
+      64     0.0000      0.0533   ← full fine-tune</code></pre>
+
+  <p>
+    Four real singular values — 3, 2, 1, 0.5 — then a noise floor at 0.15. The fitted
+    ΔW has 4096 entries and 4 directions that matter. Rank 4 takes the test error from
+    0.49 to 0.09; the full fine-tune gets 0.05, and the gap is 60 tiny noise directions
+    rank 8 can't reach and doesn't need. Now break it: same size of ΔW, random Gaussian.
+  </p>
+
+<pre><code>BREAK IT: same size of dW, but full-rank (random Gaussian):
+   [0.928 0.878 0.847 0.828 0.803 0.793 0.774 0.75  0.737 0.719]   ← no cliff
+
+  rank r   dW error   test RMSE
+       8     0.7909      <span class="hl">0.3828</span>   ← rank 8 barely helps
+      64     0.0000      0.0536   ← full fine-tune</code></pre>
+
+  <p>
+    No cliff, no LoRA: rank 8 leaves 79% of the diff on the floor. LoRA works because
+    real fine-tune diffs look like the first table — an empirical claim, not a theorem.
+    The paper's evidence is section 7: on a fine-tuned GPT-3 the top directions of an
+    r = 64 update overlap heavily with the r = 8 one, and r = 1 to 4 already matched
+    full fine-tuning on the tasks tested. The best part of the paper; everyone skips it.
+  </p>
+
+  <h2>Merge it and pay nothing at inference</h2>
+  <p>
+    <code>x @ (W + AB)</code> and <code>x @ W + (x @ A) @ B</code> are the same number —
+    distributivity. So before serving, add the patch into the weight once. The served
+    model is one matmul, the same one it always was.
+  </p>
+
+<pre><code>max |unmerged - merged| = 3.55e-15
+flops per token, base W alone .........  8,192
+flops per token, base + unmerged patch  10,240
+flops per token, merged ...............  <span class="ok">8,192   ← same as base</span>
+un-merge, max |W_back - W| = 5.55e-17   ← base recovered
+
+best single matrix that reproduces a LoRA layer:  residual 1.83e-15
+best single matrix that reproduces an adapter:    residual <span class="hl">5.44e-01</span></code></pre>
+
+  <p>
+    The last two lines are the whole argument against adapters. I asked least squares
+    for the one matrix that best reproduces each layer. For LoRA it finds one exactly.
+    For an adapter — two matmuls with a relu between — the best single matrix is off by
+    54%, because no linear map reproduces a relu. So it stays as extra layers, and
+    extra layers are extra latency.
+  </p>
+
+  <div class="note">
+    <strong>The interview question is "why does LoRA add no inference latency?"</strong>
+    One line: the patch is linear, so it merges into W. Bonus: un-merge is subtraction.
+  </div>
+
+  <h2>Why B starts at zero (and not A)</h2>
+  <p>
+    With B = 0 the patch is zero and step 0 of your fine-tune is bit-for-bit the base
+    model. Not close — identical. It can only move away from something that works.
+  </p>
+
+<pre><code>A random, B zero:    identical to base? <span class="ok">True</span>   max |diff| = 0.0
+A random, B random:  identical to base? False   outputs moved <span class="hl">31.5%</span>, untrained
+
+  init                  |dL/dA|  |dL/dB|   what happens
+  A random, B zero        0.000   11.009   B moves first, then A. Trains.
+  A zero,   B zero        <span class="hl">0.000    0.000</span>   both zero forever. Stuck.
+  A random, B random     10.724   11.009   trains, but step 0 is wrong.</code></pre>
+
+  <p>
+    Why zero B rather than A, or both? The second table is one gradient, by hand. dL/dA
+    is multiplied by B, so with B = 0 A sits still for one step — but B gets a real
+    gradient, and once B moves, A follows. Zero both and every gradient is zero; the patch
+    never leaves the origin. Random both and you broke the model before training started.
+  </p>
+
+  <h2>What α is for</h2>
+  <p>
+    The paper scales the patch by α/r and says: set α to the first r you try, then leave
+    it. Why that works: Adam's first step is exactly lr × sign(grad), the same size for
+    every parameter. B has r rows and the patch sums over all of them, so a bigger r
+    means a bigger step for the same learning rate — unless you divide by r.
+  </p>
+
+<pre><code>one Adam step (lr = 0.001) on B, from B = 0. alpha = 4.
+
+    r   no scale: |dh|  loss drop   alpha/r: |dh|  loss drop
+    1             0.1031    0.00014           0.4125    0.00054
+    4             0.2553    0.00063           0.2553    0.00063
+   16             0.5219    0.00246           0.1305    0.00062
+   64             1.3644    0.01066           0.0853    0.00067
+
+loss drop at r = 64 vs r = 1:  no scale <span class="hl">78x</span>   alpha/r <span class="ok">1.2x</span></code></pre>
+
+  <p>
+    Without the scale, going from r = 1 to 64 makes the same optimiser step do 78× more
+    to the loss: you silently changed your learning rate. With α/r the loss drop holds
+    within 20%. (The r = 4 row is the sanity check: α/r = 1 there, so both halves
+    match.) One honest caveat: under α/r the <em>norm</em> column still shrinks with r;
+    it is the loss change that holds, and a 2023 follow-up, rsLoRA, argues for α/√r on
+    those grounds. In practice α is a learning-rate knob for the patch — that is all
+    the common "α = 2r" rule of thumb is.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no training loop — the fine-tune is a least-squares
+  solve and the low-rank part is an SVD, so you can watch the diff get compressed.
+</p>
+<p>
+  <a href="lora_from_scratch.py" download><strong>Download the full script</strong></a>
+  — about 100 lines of mechanism, every function under 12 lines, plus five demos. Then:
+</p>
+<pre><code>python3 lora_from_scratch.py</code></pre>
+
+<pre><code>import numpy as np
+
+
+def lora_init(d_in, d_out, r, seed=0):
+    rng = np.random.default_rng(seed)
+    A = rng.normal(0, 1 / np.sqrt(d_in), (d_in, r))   # random, like any layer
+    B = np.zeros((r, d_out))                           # zero: the patch is empty
+    return A, B
+
+
+def lora_forward(x, W, A, B, alpha, r):
+    # (1) BASE: the frozen pretrained layer, untouched
+    base = x @ W
+
+    # (2) PATCH: squeeze x down to r numbers, expand back out. Two thin matmuls.
+    patch = (x @ A) @ B
+
+    # (3) SCALE by alpha/r, so changing r doesn't change how big a step is.
+    #     Section 4.1: "we simply set alpha to the first r we try".
+    return base + (alpha / r) * patch
+
+
+def merge(W, A, B, alpha, r):
+    """Fold the patch into the weight. One matrix again: zero extra latency."""
+    return W + (alpha / r) * (A @ B)
+
+
+def fit_delta(X, Y, W):
+    """What full fine-tuning would learn: the dW that best maps X to Y."""
+    residual = Y - X @ W                          # what the base gets wrong
+    dW, *_ = np.linalg.lstsq(X, residual, rcond=None)
+    return dW
+
+
+def low_rank(dW, r):
+    """Keep the top-r directions of dW. Returns A (d_in, r), B (r, d_out)."""
+    U, s, Vt = np.linalg.svd(dW, full_matrices=False)
+    A = U[:, :r] * s[:r]      # fold the singular values into A
+    B = Vt[:r]
+    return A, B, s            # A @ B is the best rank-r approximation of dW
+
+
+def lora_grads(x, A, B, G, alpha, r):
+    s = alpha / r
+    grad_A = s * x.T @ G @ B.T
+    grad_B = s * (x @ A).T @ G
+    return grad_A, grad_B</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a
+  living — reverse-engineering from broken behaviour is your native mode. Every row is a
+  one-line edit, or something the script already prints.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>lora_init</code>, replace <code>np.zeros((r, d_out))</code> with a random matrix</td><td>Demo 4: <code>identical to base? False</code>, outputs moved 31.5% before a single training step. Your fine-tune starts by breaking the model.</td></tr>
+    <tr><td>In demo 4's init table, zero A as well: <code>np.zeros_like(A)</code> for both</td><td><code>|dL/dA| = 0.000</code>, <code>|dL/dB| = 0.000</code>. Nothing ever moves. B = 0 only works because A is random.</td></tr>
+    <tr><td>In <code>lora_forward</code> and <code>merge</code>, replace <code>(alpha / r)</code> with <code>1</code></td><td>Demo 5: the same Adam step drops the loss 78× more at r = 64 than at r = 1. Every change of r is now a change of learning rate.</td></tr>
+    <tr><td>In demo 2, hand <code>make_task</code> the full-rank <code>dW_full</code> instead of <code>dW_true</code></td><td>Singular values 0.93, 0.88, 0.85… no cliff. Rank 8 leaves the test error at 0.38 against 0.05 for the full fine-tune. No small r saves a full-rank task.</td></tr>
+    <tr><td>In demo 3, delete the <code>np.maximum(…, 0)</code> from the adapter</td><td>The adapter residual falls from 5.44e-01 to float precision. Remove the relu and an adapter <em>is</em> a LoRA — it folds into W.</td></tr>
+    <tr><td>In demo 1, read the "every matrix" block: attention, MLP, embeddings, LM head</td><td>37.7M becomes 170.9M trainable, 4.5×. The paper adapted W<sub>q</sub> and W<sub>v</sub> only and froze the MLP; under a fixed budget, section 7 found W<sub>q</sub> + W<sub>v</sub> at r = 4 beat W<sub>q</sub> alone at r = 8.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only section 4 (equation 3 and the two
+  paragraphs after it are this page) and section 7 (what the update looks like on GPT-3).
+  Skip the GLUE and E2E tables in section 5 except the GPT-3 one, skip section 6. You'll
+  find the paper is just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  Matrix shapes, one outer product, and the word <em>rank</em>. Rank is the number of
+  independent directions in a matrix; the SVD is the library call that measures it.
+  Least squares is <code>np.linalg.lstsq</code>, another library call. That is the whole
+  paper. The one gradient I wrote by hand is the chain rule for a linear layer — two
+  matmuls — and you never need to write it again; <code>loss.backward()</code> does it,
+  the same way you don't hand-roll TCP.
+</p>
+<p>
+  What this page did give you is a habit: look at a weight matrix and ask how many of its
+  directions matter. That question comes back in quantisation, pruning, KV-cache
+  compression and every "why is this model smaller" interview answer. Not research maths.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the diff is thin, in code you can break. I skipped the
+  training loop and the hyperparameter sweeps. Two other people cover those properly.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2106.09685">
+      <span class="paper-title">LoRA: Low-Rank Adaptation of Large Language Models</span>
+      <span class="paper-meta">Hu et al., 2021. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Section 4 first — equation 3 and the two paragraphs around it are this page.
+      Then section 7, the part I could only fake with a 64×64 toy: what ΔW looks like
+      on a real fine-tuned GPT-3, which matrices to adapt, and why r = 1 was enough.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://magazine.sebastianraschka.com/p/lora-and-dora-from-scratch">
+      <span class="paper-title">Improving LoRA: Implementing DoRA from Scratch</span>
+      <span class="paper-meta">Sebastian Raschka. PyTorch, from scratch.</span>
+    </a>
+    <p class="paper-pitch">
+      The training loop I refused to write. A LoRA layer as an <code>nn.Module</code>
+      wrapped around a real model and trained on real data — then DoRA, the 2024
+      refinement that splits the update into a magnitude and a direction.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://magazine.sebastianraschka.com/p/practical-tips-for-finetuning-llms">
+      <span class="paper-title">Practical Tips for Finetuning LLMs Using LoRA</span>
+      <span class="paper-meta">Sebastian Raschka. Hundreds of real runs.</span>
+    </a>
+    <p class="paper-pitch">
+      The hyperparameters, from someone who ran the sweeps: what r and α to pick,
+      where "α = 2r" comes from, whether to adapt every layer (usually yes, which is
+      not what the paper did), and how much run-to-run noise to expect.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> paper section 4 → from scratch → practical tips.
+  If you only read one, the from-scratch one — it's this page with the training loop put back.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

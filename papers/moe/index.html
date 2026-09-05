@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mixture of Experts: the Sparsely-Gated Layer — for programmers</title>
+<meta name="description" content="The sparsely-gated mixture-of-experts layer explained as a load balancer in front of eight small MLPs, plus the Switch Transformer's top-1 routing and capacity factor. Runnable NumPy; six demos that print the routing table, the FLOPs, the hot shard and the dropped tokens.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Mixture of Experts: the Sparsely-Gated Layer</h1>
+    <p class="paper-meta">Shazeer et al., 2017 — with the Switch Transformer, Fedus et al., 2021</p>
+    <p class="lede">
+      Explained as a load balancer in front of eight microservices, because that is what it is.
+    </p>
+    <p>
+      <a href="moe_from_scratch.py" download>Download moe_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
+
+  <p>
+    I'm an AI Engineer. I've served Mixtral. I read "47B parameters, 13B active" on
+    the model card, nodded, and could not have told you what "active" meant or where
+    the other 34B went while a token was being processed. Then I looked at the
+    paper's one diagram and recognised it. It's a load balancer.
+  </p>
+
+  <h2>An MoE layer is a load balancer in front of N services</h2>
+
+  <p>You've deployed the first one, and when it got too big, the second:</p>
+
+<pre><code>def handle(request):
+    return monolith(request)          # every request runs all of the code
+
+def handle(request):
+    svc = router.pick(request)        # the load balancer chooses ONE backend
+    return svc(request)               # the other N-1 backends do nothing</code></pre>
+
+  <p>
+    That's the layer. The "experts" are N copies of the transformer's feed-forward
+    block — the two-layer MLP I called "wrapping" on
+    <a href="../attention/">the attention page</a> — each with its own weights. The
+    router is one matrix and a softmax. The paper's one twist: pick the <em>top k</em>
+    backends, not one, and blend their answers by confidence.
+  </p>
+
+<pre><code>def moe(x):
+    scores = softmax(x @ W_g)                  # how well does x fit each expert?
+    top    = argsort(-scores)[:k]              # keep the k best
+    gates  = scores[top] / scores[top].sum()   # renormalise: they sum to 1 again
+    return sum(g * expert[i](x) for g, i in zip(gates, top))</code></pre>
+
+  <p>Four lines. Everything else in both papers is what goes wrong in production.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Ops analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Expert</strong></td><td>A plain 2-layer MLP. N of them, same shape, different weights</td><td>A backend service. Same code, different config</td></tr>
+      <tr><td><strong>Router</strong> (gate)</td><td><code>softmax(x @ W<sub>g</sub>)</code>: one score per expert, per token</td><td>The load balancer's routing rule, except it's learned</td></tr>
+      <tr><td><strong>Top-k</strong></td><td>Keep the k best scores, zero the rest. The kept ones are the gate values</td><td>The k backends actually called, and their weights</td></tr>
+      <tr><td><strong>Auxiliary loss</strong></td><td>A penalty for uneven routing</td><td>The alert that fires on a hot shard</td></tr>
+      <tr><td><strong>Capacity factor</strong></td><td>Max tokens per expert per batch (Switch)</td><td>A rate limit per backend. Overflow is dropped</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Shazeer's paper used this to train 137 billion parameters — between LSTM layers,
+    months before <em>Attention Is All You Need</em> — and beat the state of the art
+    on language modelling at lower compute. GShard (2020) and Switch (2021) moved it
+    into the transformer in place of the FFN; Mixtral 8x7B is a
+    <a href="../llama/">LLaMA-shaped model</a> with exactly that swap.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">y = Σ<sub>i</sub> G(x)<sub>i</sub> · E<sub>i</sub>(x)<br>G(x) = softmax(KeepTopK(x·W<sub>g</sub> + noise, k))</div>
+
+  <p>Read the second line inside-out, as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>x·W<sub>g</sub></code></td><td>(n, N)</td><td><strong>Score matrix.</strong> n tokens in, one score per expert out. Cell [t][i] = how well token t fits expert i</td></tr>
+      <tr><td><code>+ noise</code></td><td>(n, N)</td><td>Training only. N(0,1) × softplus(x·W<sub>noise</sub>): jitter, so the same k don't win every time</td></tr>
+      <tr><td><code>KeepTopK</code></td><td>(n, N)</td><td>Keep the k largest per row, set the rest to −∞</td></tr>
+      <tr><td><code>softmax</code></td><td>row-wise</td><td>The k kept become percentages summing to 1; −∞ becomes exactly 0, so no call. Softmax first and renormalise after, as my script does, gives the same numbers</td></tr>
+      <tr><td><code>E<sub>i</sub>(x)</code></td><td>(n, d)</td><td>Expert i's MLP, run only on the tokens that chose it</td></tr>
+      <tr><td><code>Σ G·E</code></td><td>(n, d)</td><td>Blend the k outputs. Same shape in and out: a drop-in for the FFN</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The router: a load balancer whose rules are learned</h2>
+  <p>Sixteen tokens, eight experts, top-2. Token 0 step by step, then the first six rows of the routing table (the script prints all sixteen).</p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>token 0, router probabilities over all 8 experts:
+    [0.012 0.052 0.093 0.232 0.021 0.036 0.39  0.163]  sum 1.000
+  top-2 = experts [6, 3], probs [0.39  0.232], sum 0.622
+  renormalised gates [0.627 0.373], sum 1.000 <span class="ok">✓</span>
+
+routing table:
+  token   1st   gate     2nd   gate
+      0   E6    0.627    E3    0.373
+      1   E6    0.545    E0    0.455
+      2   E0    0.615    E1    0.385
+      3   E4    0.650    E1    0.350
+      4   E0    0.532    E5    0.468
+      5   E4    0.728    E2    0.272
+
+tokens per expert: E0:5  E1:3  E2:4  E3:2  E4:2  E5:5  <span class="hl">E6:8</span>  E7:3
+total assignments: 32 = 16 tokens x k=2</code></pre>
+
+  <p>
+    Every token got exactly two experts; the other six got a gate of exactly 0 for it.
+    Zero gate, no call; no call, no compute. That's the whole trick. Now look at E6:
+    eight of 32 assignments at random init, before any training, while E3 and E4 got
+    two each. Hold that thought.
+  </p>
+  <p>
+    The <code>+ noise</code> in the formula is Shazeer's fix for a ranking that
+    freezes: Gaussian jitter on each logit, with a learned scale, so the same k don't
+    win every time. Like dropout, it's a training-time switch. Leave it on and:
+  </p>
+
+<pre><code>noise off, two runs: outputs identical? True
+noise on,  two runs: outputs identical? <span class="hl">False</span>
+  max |y1 - y2| = 2.199; 10 of 16 tokens changed at least one expert</code></pre>
+
+  <h2>Eight times the parameters, twice the compute</h2>
+  <p>
+    A dense FFN is two matrices of d×h. Eight experts is eight times that, plus a d×N
+    router that rounds to nothing. But a token only visits k experts, so its FLOPs
+    are k FFNs, not N. Decoupling how much the model knows from how much work each
+    token does is the entire reason the paper exists.
+  </p>
+
+<pre><code>d_model=1024, ffn hidden=4096, experts=8, top-2
+
+dense FFN params:                 8,388,608
+MoE params (8 experts):          67,117,056   8.00x
+
+FLOPs per token as k grows (params stay at 8.00x):
+  top-1:    16,793,600   1.00x
+  top-2:    33,570,816   <span class="ok">2.00x</span>
+  top-4:    67,125,248   4.00x
+  top-8:   134,234,112   <span class="hl">8.00x   &lt;- k = N: a dense layer, 8x the compute</span></code></pre>
+
+  <p>
+    The question you will be asked: "Mixtral is 8x7B, so why is it 47B and not 56B?"
+    Because only the FFN is replicated. Attention, embeddings and norms are shared,
+    and every token pays for them once. Counting Mixtral's expert weights from its
+    config (SwiGLU experts, three matrices each, 32 layers):
+  </p>
+
+<pre><code>Mixtral 8x7B config, expert weights only (SwiGLU: 3 matrices each):
+  one expert:                    176,160,768
+  all experts, all layers:    45,097,156,608   ~45.1B
+  active per token (top-2):   11,274,289,152   ~11.3B</code></pre>
+
+  <p>
+    Mistral quotes roughly 47B total and 13B active; the missing ≈1.6B in each column
+    is the shared attention, embeddings and norms. So a token does the work of a 13B
+    model but needs the <em>memory</em> of a 47B one: every expert is loaded whether
+    it runs or not. You pay for eight in VRAM and use two. That's the MLOps question
+    hiding behind the interview one. The script also checks the layer's output shape,
+    (16, 8), against the dense FFN's, and token 0's row against
+    0.627 × E6(x) + 0.373 × E3(x) done by hand: <code>True</code>.
+  </p>
+
+  <h2>Hot shards: the load-balancing loss</h2>
+  <p>
+    The failure every ops person has met. One expert is slightly better at random
+    init, so the router sends it more; it gets more gradient, gets better, gets sent
+    more. The others get no tokens, no gradient, no improvement. One hot shard, seven
+    idle machines you're still paying for. The paper calls it self-reinforcing.
+  </p>
+  <p>
+    The fix is a second loss term. Shazeer's paper uses two: <em>importance</em>, the
+    squared coefficient of variation (std ÷ mean) of each expert's summed gates over
+    the batch, and <em>load</em>, the same on a smoothed estimate of token counts.
+    Switch replaces both with one line, N × Σ<sub>i</sub> f<sub>i</sub> · P<sub>i</sub>:
+    f<sub>i</sub> the fraction of tokens sent to expert i, P<sub>i</sub> the router's
+    mean probability for it. A count has no gradient; a probability does; the product
+    pushes P down wherever the count is high. Sixty-four tokens, top-1, an untouched
+    router and then one I biased by hand towards E3:
+  </p>
+
+<pre><code>random-init router (nobody touched it):
+  tokens per expert: E0:12  E1:6  E2:1  E3:10  E4:8  E5:11  E6:14  E7:2
+  importance loss (Shazeer, CV^2):     0.301
+  balance loss (Switch, N * sum f*P):  <span class="ok">1.078</span>
+
+collapsed router (logit bias +8 on E3, nothing to stop it):
+  tokens per expert: E0:0  E1:0  E2:0  E3:64  E4:0  E5:0  E6:0  E7:0
+  importance loss (Shazeer, CV^2):     7.000
+  balance loss (Switch, N * sum f*P):  <span class="hl">7.956</span></code></pre>
+
+  <p>
+    The Switch loss is 1.0 when every f<sub>i</sub> and P<sub>i</sub> is 1/N and climbs
+    towards N when one expert takes everything. Even the untouched router sits at
+    1.078: random init is not balanced — E2 got one token, E6 got fourteen. The paper
+    scales it by α = 0.01 before adding it. And why idle experts stay idle, with no
+    autograd: add 1.0 to every weight in E5 and ask whether the output noticed.
+  </p>
+
+<pre><code>E5 received 0 tokens. Add 1.0 to every weight in E5:
+  output changed? <span class="hl">False</span>  -&gt; dLoss/dW for E5 is exactly 0. E5 never trains.</code></pre>
+
+  <div class="note">
+    <strong>The balance loss is the only term in the objective pushing the other
+    way.</strong> Delete it and the rich get richer until you have a one-expert
+    network wearing eight experts' worth of memory. DeepSeek-V3 (2024) drops the loss
+    and nudges a per-expert bias on the logits up or down each step instead — the
+    same <code>bias</code> argument I used to break the router, driven by a
+    controller rather than a gradient.
+  </div>
+
+  <h2>Switch: top-1, one loss, and a rate limit</h2>
+  <p>
+    Shazeer's paper used k between 2 and 4 and argued the router needs two experts per
+    token to compare. The <a href="https://arxiv.org/abs/2101.03961">Switch
+    Transformer</a> (Fedus, Zoph and Shazeer, 2021) tried k=1 anyway, found quality
+    held, and kept it: half the expert compute per token, simpler dispatch, the single
+    loss above. With the same FLOPs per token as T5-Base it reaches the same quality
+    up to 7× faster, and the recipe scaled to 1.6 trillion parameters. Every modern
+    MoE LLM descends from this version, with k back at 2 for Mixtral.
+  </p>
+  <p>
+    Its second contribution is the rate limit. Experts run as fixed-size batches on
+    fixed hardware, so each gets a <strong>capacity</strong>: (tokens ÷ N) × a capacity
+    factor. Tokens beyond it are dropped from the layer — 0 from the experts; the
+    residual connection carries them through. Nothing raises. Nothing logs.
+  </p>
+
+<pre><code>64 tokens, 8 experts, top-1.  capacity = floor(factor * 64 / 8)
+
+  random-init router: factor 1.0   capacity  8  -&gt;  dropped 15 of 64
+  random-init router: factor 1.25  capacity 10  -&gt;  dropped  7 of 64
+  random-init router: factor 2.0   capacity 16  -&gt;  dropped <span class="ok"> 0</span> of 64
+
+  collapsed router:   factor 1.0   capacity  8  -&gt;  dropped <span class="hl">56</span> of 64
+  collapsed router:   factor 1.25  capacity 10  -&gt;  dropped 54 of 64
+  collapsed router:   factor 2.0   capacity 16  -&gt;  dropped 48 of 64</code></pre>
+
+  <p>
+    Fifteen of 64 tokens silently skipped the layer at factor 1.0, on a router nobody
+    had biased. That's the trade-off in the paper's capacity table: a higher factor
+    drops fewer tokens but pads every expert's batch to the cap, so you pay compute for
+    empty slots. Switch settles on 1.0 to 1.25; "dropless" MoE (MegaBlocks) came later.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">Pure NumPy. No torch, no autograd, no training — the forward pass, the routing, the FLOP count and the two balance losses. Every function under 20 lines.</p>
+<p><a href="moe_from_scratch.py" download><strong>Download the full script</strong></a> — twelve short functions plus six runnable demos. Then:</p>
+<pre><code>python3 moe_from_scratch.py</code></pre>
+
+<pre><code>def expert_forward(x, W1, W2):
+    return np.maximum(0, x @ W1) @ W2        # (n, d) -&gt; (n, h) -&gt; (n, d)
+
+def router(x, W_g, k, W_noise=None, rng=None, bias=None, renormalise=True):
+    # (1) SCORE: one logit per expert.  (n, d) @ (d, N) -&gt; (n, N)
+    logits = x @ W_g
+    if bias is not None:                     # only used to fake a hot shard
+        logits = logits + bias
+
+    # (2) NOISE (training only): jitter the scores so the same k experts do
+    #     not win every time. Learned scale, kept positive by softplus.
+    if W_noise is not None:
+        scale = softplus(x @ W_noise)
+        logits = logits + rng.standard_normal(logits.shape) * scale
+
+    # (3) PERCENTAGES over all N experts. The balance loss reads these.
+    probs = softmax(logits)
+
+    # (4) TOP-K: sort descending, keep the first k expert ids per token.
+    top = np.argsort(-logits, axis=-1)[:, :k]            # (n, k), best first
+    gates = np.zeros_like(probs)
+    np.put_along_axis(gates, top, np.take_along_axis(probs, top, -1), -1)
+
+    # (5) RENORMALISE the kept gates so they sum to 1 again. Identical to the
+    #     paper's softmax-after-KeepTopK; this order is easier to debug.
+    if renormalise:
+        gates = gates / gates.sum(axis=-1, keepdims=True)
+    return gates, top, probs
+
+def moe_forward(x, gates, experts, capacity=None):
+    y = np.zeros_like(x)
+    dropped = 0
+    for i, (W1, W2) in enumerate(experts):
+        sent = np.flatnonzero(gates[:, i] &gt; 0)          # tokens routed to i
+        if capacity is not None and len(sent) &gt; capacity:
+            dropped += len(sent) - capacity
+            sent = sent[:capacity]                      # first come, first served
+        if len(sent) == 0:
+            continue                                    # idle expert: no FLOPs
+        y[sent] += gates[sent, i][:, None] * expert_forward(x[sent], W1, W2)
+    return y, dropped
+
+def importance_loss(gates):
+    importance = gates.sum(axis=0)                   # (N,) load in gate units
+    cv = importance.std() / importance.mean()
+    return cv ** 2
+
+def switch_balance_loss(gates, probs):
+    N = gates.shape[1]
+    f = (gates &gt; 0).mean(axis=0)                     # share of tokens per expert
+    P = probs.mean(axis=0)                           # mean probability per expert
+    return N * np.sum(f * P)</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a
+  living — reverse-engineering from broken behaviour is your native mode, and every
+  row below is one argument to <code>router()</code> or <code>moe_forward()</code>.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Ask for <code>moe_flops_per_token(d, h, 8, k=8)</code> — k equal to N</td><td>134,234,112 FLOPs per token, 8.00×. You've built a dense layer that costs eight FFNs and called it sparse.</td></tr>
+    <tr><td>Call <code>router(x, W_g, k, renormalise=False)</code></td><td>Mean |y| climbs 0.728 → 1.495 as k goes 1 → 8. Renormalised, it's 1.495 at every k. Change k after training and every layer downstream sees a different scale.</td></tr>
+    <tr><td>Pass <code>bias</code> with <code>bias[3] = 8.0</code> and add no balance loss</td><td>E3 takes all 64 tokens. Add 1.0 to all of E5's weights: <code>output changed? False</code>. Its gradient is exactly zero; it will never train.</td></tr>
+    <tr><td>Set <code>capacity = int(1.0 * 64 / N)</code> in <code>moe_forward</code></td><td>15 of 64 tokens dropped on the untouched router, 56 on the collapsed one. No exception, no log line — they just skip the layer.</td></tr>
+    <tr><td>Keep <code>W_noise=W_noise</code> when you call <code>router()</code> at inference</td><td>The same batch twice: max |y1 − y2| = 2.199, and 10 of 16 tokens change an expert. Your endpoint is now nondeterministic.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §2 (the layer and its gate) and §4
+  (balancing). Skip §3, the batching and network engineering, unless you're the one
+  sharding it. Then §2 of the Switch paper: single-expert routing, capacity factor,
+  balance loss. You'll find the papers are just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  Honestly: this one is easier than attention. Matrix shapes, a softmax you already
+  own, an <code>argsort</code>, an integer count per expert, and a standard deviation
+  divided by a mean. That's both papers' method sections.
+</p>
+<p>
+  The one place it looks harder than it is: Shazeer's "load" loss, in the appendix,
+  uses the normal CDF. All it asks is "if I re-rolled the noise, would this expert
+  still make the top k?" — a smooth stand-in for a count, because a count has no
+  gradient. Switch does the same with less machinery: count × probability.
+</p>
+<p>
+  What an interview actually probes is the systems side: why active parameters
+  aren't memory, why a hot expert is a latency problem on a multi-GPU box, what a
+  dropped token costs you. All of it falls out of the counts you just printed.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the layer as a load balancer, in code you can break.
+  It skipped the history, the fine-tuning quirks and the all-to-all plumbing that
+  runs it across GPUs. These fill those in.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1701.06538">
+      <span class="paper-title">Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer</span>
+      <span class="paper-meta">Shazeer, Mirhoseini, Maziarz, Davis, Le, Hinton, Dean, 2017. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      §2 is <code>router()</code> and <code>moe_forward()</code> with a diagram; §4
+      is the two losses. §3 is the part I called plumbing — keeping each expert's
+      batch large enough, and the network cost — worth a skim if you serve these.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/moe">
+      <span class="paper-title">Mixture of Experts Explained</span>
+      <span class="paper-meta">Hugging Face blog. Survey, with history and practical notes.</span>
+    </a>
+    <p class="paper-pitch">
+      Everything I skipped on purpose: the 1991 origins, GShard, what Mixtral does per
+      layer, why MoEs are awkward to fine-tune, and the serving and quantisation
+      trade-offs. Read this for the map; this page was one road on it.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2021-09-25-train-large/">
+      <span class="paper-title">How to Train Really Large Models on Many GPUs?</span>
+      <span class="paper-meta">Lilian Weng. Systems, with diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      The plumbing. My script loops over experts in one process; on real hardware each
+      expert lives on a different device and tokens cross the network twice per layer.
+      Her MoE section covers expert parallelism and the all-to-all behind it.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> the Hugging Face survey → Shazeer §2 and §4
+  → the Switch paper's §2 → Weng. The survey tells you where each paper sits, the
+  papers are shorter than they look once you've run the script, and Weng is for the
+  day you deploy one across a box.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

@@ -70,7 +70,8 @@ Decided and implemented (replacing an earlier Cayman-theme pass, which read as "
 **Structure** — reuse these classes, don't rename them:
 - `.masthead` — a slim bar on the Cayman gradient, white text: site name left, `Home / Papers / GitHub` right. Same on every page. This is the whole of the "hero"; there is no tall band
 - `.main-content` — the single column. `.title-block` opens it: `h1`, optional `.paper-meta` (authors/year), `.lede`
-- `.paper-list` / `.paper` — the paper index: `.paper-link` wrapping `.paper-title` + `.paper-meta`, then `.paper-pitch`, then `.paper-langs` (links to `?lang=`). `.paper.soon` for unwritten entries: muted, not a link. `.papers-group` is the mono folder heading above a list
+- `.paper-list` / `.paper` — the paper index: `.paper-link` wrapping `.paper-title` + `.paper-meta`, then `.paper-pitch`, then `.paper-langs` (links to `?lang=`, or a single "English" link when that is all there is). `.paper.soon` for unwritten entries: muted, not a link. `.papers-group` is the mono folder heading above each list; with more than a handful of papers the lists are grouped by theme (`ai-ml/transformers/`, `ai-ml/fine-tuning/`, …) in dependency order within a group
+- Pages that exist only in English carry no `.langbar` and no tab script. Tabs appear when a second language is written, never before
 - `.hero-code` — a `pre` promoted to the page's opening visual (homepage only)
 - `.langbar` — text tabs with an ink underline on the active one
 - `.note`, `.formula`, `.thanglish`, `.tablewrap`, `table.breaks` — content blocks on paper pages

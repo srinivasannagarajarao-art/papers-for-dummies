@@ -340,6 +340,7 @@ th:last-child, td:last-child { padding-right: 0; }
   color: var(--muted);
 }
 .site-footer-owner { display: block; color: var(--text); margin-bottom: .3rem; }
+.site-footer-credits { display: block; }
 .site-footer a { color: var(--text); }
 .site-footer a:hover { color: var(--accent); }
 

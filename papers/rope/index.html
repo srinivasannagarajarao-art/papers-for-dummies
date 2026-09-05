@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoFormer: Rotary Position Embedding (RoPE) — for programmers</title>
+<meta name="description" content="RoPE explained as code. Position is a clock hand you turn, not a vector you add, so attention only sees the gap between two tokens. Runnable NumPy, seven demos, every claim a printed dot product.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+  <div class="title-block">
+    <h1>RoFormer: Rotary Position Embedding (RoPE)</h1>
+    <p class="paper-meta">Su et al., 2021</p>
+    <p class="lede">
+      Position as a rotation, not an addition. Explained with a clock, because that is what it is.
+    </p>
+    <p>
+      <a href="rope_from_scratch.py" download>Download rope_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
+
+  <p>
+    I'd been serving LLaMA-family models for a year before I could say what
+    <code>rope_theta</code> in the config actually did. I knew the
+    <a href="../attention/">2017 paper</a> adds a position vector to every
+    token. I knew LLaMA doesn't. What nobody told me is that the replacement
+    is <em>smaller</em> than the thing it replaced: turn each query and key by
+    an angle, and the dot product forgets where the sentence started.
+  </p>
+
+  <h2>Position is a clock hand</h2>
+  <p>The attention page ends with <code>+ pe</code>. You know this:</p>
+
+<pre><code>x = embed(token) + pe[pos]     # 2017: position is a vector you ADD
+q = x @ W_q
+k = x @ W_k
+score = q @ k                  # position baked in before the lookup</code></pre>
+
+  <p>
+    RoPE takes position out of the embedding and puts it into the lookup
+    itself. Project first. <em>Then</em> turn:
+  </p>
+
+<pre><code>q = embed(token) @ W_q         # no position yet
+k = embed(token) @ W_k
+q = turn(q, by=pos * theta)    # 2021: position is an ANGLE you rotate by
+k = turn(k, by=pos * theta)
+score = q @ k                  # only sees the angle BETWEEN q and k</code></pre>
+
+  <p>
+    That's the paper. RoPE <strong>multiplies</strong>; it does not add. The
+    payoff is school trigonometry: the dot product of two turned vectors
+    depends only on the angle <em>between</em> them. Turn q by 3θ and k by 7θ,
+    or by 13θ and 17θ — same score. Relative position for free, zero parameters.
+  </p>
+
+  <p>
+    Picture a clock with d/2 hands. Each pair of dimensions in q is one hand,
+    position is how far it has turned, and attention sees exactly one thing:
+    the angle between q's hand and k's hand. One hand, from the script:
+  </p>
+
+<pre><code>one hand, 30 deg per position, starting at [1. 0.]
+  pos 0: turned   0.0 deg -&gt; [1. 0.]   length 1.0000
+  pos 1: turned  30.0 deg -&gt; [0.866 0.5  ]   length 1.0000
+  pos 2: turned  60.0 deg -&gt; [0.5   0.866]   length 1.0000
+  pos 3: turned  90.0 deg -&gt; [0. 1.]   length <span class="ok">1.0000</span>   ← never changes</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Clock analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Pair i</strong> = dims (2i, 2i+1)</td><td>One 2D slice of q</td><td>One hand</td></tr>
+      <tr><td><strong>θ<sub>i</sub></strong></td><td>Radians pair i turns per position</td><td>How fast that hand ticks</td></tr>
+      <tr><td><strong>m θ<sub>i</sub></strong></td><td>Pair i's angle at position m</td><td>Where the hand points</td></tr>
+      <tr><td><strong>(n − m) θ<sub>i</sub></strong></td><td>The only thing the score sees</td><td>The angle between two hands</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why this beat adding a vector</h2>
+  <p>
+    Adding leaks. Expand (q + pe[m]) · (k + pe[n]) and the cross terms
+    q·pe[n] and pe[m]·k carry absolute position, so "the cat sat" scores one
+    way at the start of a document and another way in the middle. The relative
+    fixes before RoPE bolted a learned bias-per-gap table onto the score matrix:
+    parameters, memory, and nothing to attach to in the linear-attention
+    variants that never build that matrix. RoPE has no table and no parameters,
+    is relative by construction, and drops into any dot-product attention. That
+    is why LLaMA, PaLM, GPT-NeoX, Mistral and most models since use it.
+  </p>
+
+  <h2>The one formula</h2>
+  <div class="formula">q<sub>m</sub> = R(m) q,&nbsp; k<sub>n</sub> = R(n) k&nbsp; ⇒&nbsp; q<sub>m</sub> · k<sub>n</sub> = q<sup>T</sup> R(m)<sup>T</sup> R(n) k = q<sup>T</sup> R(n − m) k</div>
+
+  <p>
+    q = W<sub>q</sub>x<sub>m</sub> and k = W<sub>k</sub>x<sub>n</sub> are the
+    ordinary projections; R(m) is the rotation. Read it as pipeline stages:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>θ<sub>i</sub> = 10000<sup>−2i/d</sup></code></td><td>(d/2,)</td><td>One tick rate per pair. Pair 0 turns 1 rad per position; the last pair ≈ 1/10000</td></tr>
+      <tr><td><code>m θ<sub>i</sub></code></td><td>(d/2,)</td><td>How far each hand has turned at position m</td></tr>
+      <tr><td><code>R(m)</code></td><td>(d, d), block-diagonal</td><td>d/2 independent 2×2 rotations. Never built as a matrix — it's a cos/sin multiply</td></tr>
+      <tr><td><code>R(m) q</code></td><td>(d,)</td><td>q with position baked in. Same length, new direction</td></tr>
+      <tr><td><code>q<sub>m</sub> · k<sub>n</sub></code></td><td>scalar</td><td><strong>Equals q<sup>T</sup> R(n − m) k.</strong> Only the gap survives</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The middle step is the whole proof. Rotations compose by adding angles and
+    transposing one reverses it, so R(m)<sup>T</sup> R(n) = R(n − m). That
+    identity is the paper; the rest is bookkeeping.
+  </p>
+
+  <h2>Fast hands, slow hands</h2>
+  <p>
+    Every pair gets its own tick rate, spanning four orders of magnitude. With
+    d = 8 the rates are round numbers, so that's what the script prints:
+  </p>
+
+<pre><code>d = 8, so 4 hands. theta_i = 10000^(-2i/d) = [1.    0.1   0.01  0.001]
+
+  at position 10, each hand has turned:
+    pair 0:  10.0000 rad =   572.96 deg = <span class="hl">1.5915 turns</span>   ← already lapped
+    pair 1:   1.0000 rad =    57.30 deg = 0.1592 turns
+    pair 2:   0.1000 rad =     5.73 deg = 0.0159 turns
+    pair 3:   0.0100 rad =     0.57 deg = <span class="ok">0.0016 turns</span>   ← barely moved</code></pre>
+
+  <p>
+    Pair 0 is the second hand: it resolves neighbours, but laps roughly every
+    six positions and alone would alias. Pair 3 is the hour hand: useless for
+    neighbours, but it tells position 10 from position 1000. The interview
+    question is "why multiple frequencies?"; the answer is a clock with only
+    second hands. The break table has the numbers.
+  </p>
+
+  <h2>The score only sees the gap</h2>
+  <p>
+    The paper's claim, so it gets the most careful print. Same q, same k, at
+    positions (3, 7) and then at (13, 17): gap 4 both times. Then the 2017 add
+    scheme, same frequencies.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+<pre><code>RoPE, rotate:      q@3  . k@7  = -1.261507812773
+                   q@13 . k@17 = -1.261507812773
+                   difference  = <span class="ok">2.2e-16</span>   &lt;- float noise
+
+2017, add:         q@3  . k@7  = 3.650608771116
+                   q@13 . k@17 = 3.830134199073
+                   difference  = <span class="hl">1.8e-01</span>   &lt;- absolute position leaks
+
+unrotated q . k             = -0.468002152973
+gap 0, e.g. q@5 . k@5       = -0.468002152973   &lt;- identical</code></pre>
+
+  <p>
+    The last two lines are the sanity check: at gap 0 the rotation cancels and
+    you get the plain dot product back. Shift the sentence by ten and RoPE does
+    not notice. The add scheme moves by 1.8e-01 — not rounding, a different score.
+  </p>
+
+  <div class="note">
+    <strong>RoPE multiplies. The 2017 scheme adds.</strong> Same frequencies,
+    same sines and cosines, different operation — and that is why one leaks
+    absolute position and the other cannot.
+  </div>
+
+  <h2>Far apart scores lower — on average</h2>
+  <p>
+    The paper's second claim is "long-term decay": the further apart two
+    tokens, the smaller their dot product tends to be. It's the clock again: at
+    gap 0 every hand lines up; as the gap grows the fast hands scatter and
+    cancel, and only the slow hands still agree. The script sets q = k = all
+    ones so the answer is just a sum of cosines:
+  </p>
+
+<pre><code>q = k = all ones, d = 64. dot(q at 0, k at gap):
+  gap  0:   64.000
+  gap  1:   61.834
+  gap 16:   38.746
+  gap 24:   <span class="hl">39.446</span>   ← went up
+  gap 64:   27.812
+
+mean dot over gap buckets (the trend):
+  gaps  0- 7:   52.767
+  gaps  8-15:   42.032
+  gaps 16-23:   38.059
+  gaps 24-31:   35.912
+  gaps 32-39:   34.069
+  gaps 40-47:   34.060
+  gaps 48-55:   29.433
+  gaps 56-63:   33.098
+
+not monotonic: the dot RISES at 22 of the 64 steps, e.g.
+  gap  5 -&gt;  6: 47.008 -&gt; 47.119</code></pre>
+
+  <p>
+    Be honest about what this is. From 64 down to about 28 over 64 positions is
+    a real trend, and the paper's figure (an upper bound on this same sum) has
+    the same shape. But it rises at 22 of 64 steps and the last bucket is higher
+    than the one before. RoPE gives the model a tendency to look nearby, not a
+    rule. A trained model attends far away whenever it needs to.
+  </p>
+
+  <h2>Q and K only. Never V.</h2>
+  <p>
+    The property lives in the score, so the rotation goes on q and k, right
+    after <code>W_q</code> and <code>W_k</code> and before the dot product. V is
+    the content being blended and is left alone. The test: five tokens at
+    positions 0–4, then the same five at 100–104. With RoPE on q and k only the
+    output must not change at all. Then rotate v as well:
+  </p>
+
+<pre><code>same 5 tokens at positions 0-4, then at 100-104
+  CORRECT (q, k only):  weights max|diff| = 2.2e-16
+                        output  max|diff| = <span class="ok">6.7e-16</span>   &lt;- shift-invariant
+  BROKEN (v too):       output  max|diff| = <span class="hl">2.0167</span>   &lt;- moves with the sentence
+                        vs correct output = 2.0803
+  token 0, correct: [ 0.564  0.904  0.593 -0.455  0.815 -0.611  0.502 -0.447]
+  token 0, v too:   [-0.437 -1.176  0.68  -0.335  0.827 -0.585  0.503 -0.445]</code></pre>
+
+  <p>
+    With v rotated the weights are still fine — same 2.2e-16 — but each token's
+    output now depends on where the sentence started, precisely what RoPE
+    exists to remove. Rotating <em>after</em> the softmax is worse: the weights
+    were computed with no position at all (max|diff| from plain attention:
+    0.0000), so you are back to the attention page's "cat ate food" equals
+    "food ate cat" problem, with a scramble on top.
+  </p>
+
+  <h2>Change the base, slow the clock</h2>
+  <p>
+    Every rate is 10000<sup>−2i/d</sup>. Change 10000 to 100000 and the fast
+    hands barely notice (pair 0 is 1 rad per position for any base) while the
+    slow hands slow right down. The script uses d = 128, LLaMA's per-head size,
+    and looks at position 4096:
+  </p>
+
+<pre><code>base   10000: slowest hand theta = 1.155e-04 rad/pos
+              at pos 4096: 0.4730 rad = 27.10 deg = 0.0753 turns
+base  100000: slowest hand theta = 1.197e-05 rad/pos
+              at pos 4096: 0.0490 rad =  <span class="ok">2.81 deg</span> = 0.0078 turns
+
+slow hand, base 100000: reaches the base-10000 pos-4096 angle at pos 39513</code></pre>
+
+  <p>
+    This is why context extension is possible. A model trained to 4096 tokens
+    has only ever seen its slowest hand between 0 and 27 degrees; ask for
+    position 8192 with the same base and that hand points somewhere it never
+    has, and quality falls off a cliff. Raise the base and the slow hands are
+    stretched so 8192 lands inside the range training covered, while the fast
+    hands that handle local structure are left almost untouched. That is the
+    NTK-aware trick, and why <code>rope_theta</code> in LLaMA 3's config is
+    500000 rather than 10000.
+    <a href="https://arxiv.org/abs/2306.15595">Position interpolation</a> feeds
+    position/8 instead (the script prints that too), but it slows every hand
+    equally, fast ones included, which is why that paper fine-tunes afterwards.
+    Both are one-line changes to <code>rope_freqs</code>. That's as deep as
+    this page goes.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no training — just dot products, so you
+  can watch the angle between two hands. Every function under 10 lines. The
+  script also has <code>rope_half</code> (the half-split pairing),
+  <code>sinusoidal_pe</code> (the 2017 add scheme) and the attention page's
+  <code>softmax</code>; they're short and not repeated here.
+</p>
+<p>
+  <a href="rope_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 39 lines of core functions plus seven runnable demos. Then:
+</p>
+<pre><code>python3 rope_from_scratch.py</code></pre>
+
+<pre><code>import numpy as np
+
+# STAGE 1 -- the tick rates. One per PAIR of dims, so d/2 of them:
+#     theta_i = base^(-2i/d),   i = 0 .. d/2 - 1
+# Pair 0 turns 1 radian per position (the fast hand); the last pair about
+# 1/base (the slow hand). Same frequencies as the 2017 sinusoidal encoding.
+# RoPE reuses them and does something different with them.
+def rope_freqs(d, base=10000.0):
+    i = np.arange(d // 2)
+    return base ** (-2.0 * i / d)
+
+# STAGE 2 -- THE WHOLE PAPER. Turn each 2D pair of dims by its own angle:
+#     [x1']   [cos a  -sin a] [x1]
+#     [x2'] = [sin a   cos a] [x2]
+# Pair (0,1) gets angles[0], pair (2,3) gets angles[1], and so on. That is
+# the paper's block-diagonal matrix R, never materialised: just a cos/sin
+# multiply. No parameters. Nothing learned.
+def rotate_pairs(x, angles):
+    """x: (d,), angles: (d/2,). Pair i = dims (2i, 2i+1), turned by angles[i]."""
+    c, s = np.cos(angles), np.sin(angles)
+    x1, x2 = x[0::2], x[1::2]
+    out = np.empty_like(x)
+    out[0::2] = x1 * c - x2 * s
+    out[1::2] = x1 * s + x2 * c
+    return out
+
+def rope(x, pos, base=10000.0):
+    """Rotary embedding of vector x at integer position pos. Same shape out."""
+    return rotate_pairs(x, pos * rope_freqs(x.shape[-1], base))
+
+# STAGE 3 -- attention with RoPE. The attention page's function plus two
+# lines: turn each row of Q and K by its own position, right after the
+# projections and before the dot product. V is left alone.
+def attention_with_rope(Q, K, V, positions, base=10000.0):
+    Qr = np.stack([rope(q, m, base) for q, m in zip(Q, positions)])
+    Kr = np.stack([rope(k, n, base) for k, n in zip(K, positions)])
+    scores = Qr @ Kr.T / np.sqrt(Q.shape[-1])
+    weights = softmax(scores, axis=-1)
+    return weights @ V, weights</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug
+  for a living, and every row below is already wired into a demo.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>attention_with_rope</code>, rotate V as well: <code>V = np.stack([rope(v, m) for v, m in zip(V, positions)])</code></td><td>Demo 4. The same five tokens at 0–4 and at 100–104 now give outputs that differ by 2.0167. Correct version: 6.7e-16.</td></tr>
+    <tr><td>Add instead of turn. In demo 2 replace <code>rope(q, 3)</code> with <code>q + sinusoidal_pe(3, d)</code>, and likewise for k</td><td>The gap-4 score moves by 1.8e-01 when the sentence shifts by ten. The relative property is gone; you have rebuilt the 2017 scheme.</td></tr>
+    <tr><td>Mix pairing conventions: <code>rope(q, 3) @ rope_half(k, 7)</code> (demo 6 does this on its last line)</td><td>11.62921 at (3, 7) but 0.55906 at (13, 17). Either convention alone gives identical numbers under the shift. Hugging Face LLaMA uses <code>rope_half</code>; Meta's code uses adjacent pairs; the weight converter permutes W<sub>q</sub>, W<sub>k</sub> to match.</td></tr>
+    <tr><td>One tick rate for every pair: make <code>rope_freqs</code> return <code>np.full(d // 2, 2 * np.pi / 8)</code> (demo 7 does this locally)</td><td>Gap 1, gap 9 and gap 17 all score 2.242033. Positions alias every 8 tokens; the model cannot tell one token back from nine.</td></tr>
+    <tr><td>Rotate after the softmax: leave Q, K alone and apply <code>rope</code> to the rows of <code>weights @ V</code></td><td>Demo 4, second block. The attention weights are identical to plain no-position attention, max|diff| 0.0000. Order-blind again, with the outputs scrambled by absolute position for good measure.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only the background section on
+  absolute versus relative embeddings, then the 2D case and the general form in
+  the method section, and the long-term decay figure now that you've printed
+  the curve yourself. Skip linear attention and the experiments. You'll find
+  the paper is just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  This paper needs less maths than the attention one. A 2×2 rotation matrix is
+  four numbers made of one cos and one sin. "Rotations compose by adding angles"
+  is the only fact used, and you have known it since you first turned a dial.
+  The dot product as similarity, from the attention page, does the rest.
+</p>
+<p>
+  The paper writes the rotation as a complex number, q · e<sup>imθ</sup>. That
+  is the same 2×2 rotation in shorter notation; read every e<sup>imθ</sup> as
+  "turn by mθ" and you lose nothing. The one part you can genuinely skip is the
+  Abel-transform bound in the decay section: it proves the trend from demo 3
+  and adds no mechanism.
+</p>
+<p>
+  What matters for the job: the rotation goes on q and k, not v; know which
+  pairing convention your checkpoint uses before you port it; and
+  <code>rope_theta</code> and <code>rope_scaling</code> in a config are the two
+  knobs from the last section. None of that is research maths.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: RoPE as a clock, in code you can break. Two
+  other pieces cover what I skipped, each better at its angle than I'd be.
+</p>
+
+<ul class="paper-list">
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2104.09864">
+      <span class="paper-title">RoFormer: Enhanced Transformer with Rotary Position Embedding</span>
+      <span class="paper-meta">Su, Lu, Pan, Murtadha, Wen and Liu, 2021. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read the 2D case first: half a page, and it is demo 1. The general form is
+      demo 2 written as a block-diagonal matrix; the long-term decay figure is
+      demo 3. Everything after that is linear attention and benchmarks.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://blog.eleuther.ai/rotary-embeddings/">
+      <span class="paper-title">Rotary Embeddings: A Relative Revolution</span>
+      <span class="paper-meta">EleutherAI. Derivation plus code in three frameworks.</span>
+    </a>
+    <p class="paper-pitch">
+      The team that put RoPE into GPT-NeoX and GPT-J. It does the
+      complex-number derivation I waved at, shows the <code>rotate_half</code>
+      trick production code uses instead of my pairwise loop, and has the
+      training curves against the alternatives that I did not reproduce.
+    </p>
+  </li>
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/designing-positional-encoding">
+      <span class="paper-title">You could have designed state of the art positional encoding</span>
+      <span class="paper-meta">Christopher Fleetwood, Hugging Face. A derivation from first principles.</span>
+    </a>
+    <p class="paper-pitch">
+      Starts from "what properties would you want?" and arrives at RoPE by
+      elimination: integer positions, then binary, then sinusoids, then the
+      rotation. It is the <em>why</em> behind the frequency set I simply asserted.
+    </p>
+  </li>
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Fleetwood → EleutherAI → the paper.
+  Fleetwood makes the design feel inevitable, EleutherAI makes it concrete, the
+  paper is then a formality. Then the <a href="../llama/">LLaMA page</a> is
+  where this gets used.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

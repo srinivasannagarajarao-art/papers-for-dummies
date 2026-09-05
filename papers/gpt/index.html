@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPT: Generative Pre-trained Transformers (GPT-1 to GPT-3) — for programmers</title>
+<meta name="description" content="GPT-1, GPT-2 and GPT-3 explained as one while loop: predict the next token, feed it back in, then scale. Runnable NumPy decoder block and generation loop, a tiny PyTorch model trained on CPU in seconds, seven demos that prove it by breaking it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>GPT: Generative Pre-trained Transformers (GPT-1 to GPT-3)</h1>
+    <p class="paper-meta">Radford et al., 2018 · Radford et al., 2019 · Brown et al., 2020</p>
+    <p class="lede">
+      Three papers, one <code>while</code> loop. Explained as a program, because the program is the whole idea.
+    </p>
+    <p>
+      <a href="gpt_from_scratch.py" download>Download gpt_from_scratch.py</a>
+      — everything below runs from it. NumPy, plus a tiny CPU PyTorch model for the training step.
+    </p>
+  </div>
+
+  <p>
+    I'm an AI Engineer. I've shipped models, done the MLOps, and I've called the GPT API more
+    times than I've called my mother. I still couldn't have told you what the three papers
+    actually <em>claim</em>, or why one title says "unsupervised multitask" and the next says
+    "few-shot". Nobody told me they are one idea with three headlines, and that the idea is a
+    loop I've written a hundred times.
+  </p>
+
+  <h2>Autocomplete that got so good it became an interface</h2>
+
+  <p>You know this:</p>
+
+<pre><code>text = "the model "
+while len(text) &lt; 100:
+    text += most_likely_next_char(text)    # feed the output back in</code></pre>
+
+  <p>
+    That's GPT. All three of them. The only thing that changed between 2018 and 2020 is what
+    lives inside <code>most_likely_next_char</code> — a stack of decoder blocks from the
+    <a href="../attention/">attention page</a>, causal mask on — and how many of them:
+  </p>
+
+<pre><code>def most_likely_next_char(text):
+    ctx = encode(text)[-block_size:]      # crop to the context window
+    logits, _ = gpt_forward(ctx, p)       # (T, vocab): a guess for EVERY row
+    return decode([argmax(logits[-1])])   # keep only the last row</code></pre>
+
+  <p>
+    Type a question and it types the answer, because the answer is the likeliest continuation
+    of a question. The model doesn't know it's answering. It's finishing your sentence.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Token</strong></td><td>The unit of text. A character in my script, a word-piece in the real thing</td><td>The key type of the dict</td></tr>
+      <tr><td><strong>Context window</strong></td><td>The most tokens the model can see at once (<code>block_size</code>)</td><td>A ring buffer. Old tokens fall off the back</td></tr>
+      <tr><td><strong>Causal mask</strong></td><td>No position may read a later position</td><td>A read-lock on the future</td></tr>
+      <tr><td><strong>Temperature</strong></td><td>Divide the logits before softmax</td><td>A knob between <code>argmax</code> and dice</td></tr>
+      <tr><td><strong>In-context learning</strong></td><td>Worked examples in the prompt, weights frozen</td><td>Configuration by input, not by redeploy</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>One idea, three headlines</h2>
+
+  <p>
+    Before GPT-1 you built one architecture per task and paid for a labelled dataset for each.
+    GPT-1's pitch: the labels are free if the task is "predict the next token". GPT-2 dropped
+    the fine-tuning. GPT-3 put the examples in the prompt. Same block, same loss, same loop,
+    more of everything. Two details you'll meet in any GPT codebase: position embeddings are
+    <em>learned</em>, not sine waves, and from GPT-2 on the LayerNorm sits at the
+    <em>input</em> of each sub-layer. Neither is the idea.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Paper</th><th>Size</th><th>Data</th><th>The headline claim</th></tr></thead>
+    <tbody>
+      <tr><td><strong><a href="https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf">GPT-1</a></strong>, 2018</td><td>12 layers, d<sub>model</sub> 768, 117M params</td><td>BooksCorpus, ~7,000 unpublished books</td><td>Pretrain on next-token, then fine-tune per task by rewriting the task's inputs as one token sequence with delimiters. <strong>Pretraining transfers.</strong></td></tr>
+      <tr><td><strong><a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">GPT-2</a></strong>, 2019</td><td>48 layers, d<sub>model</sub> 1600, 1.5B params</td><td>WebText, ~40 GB of pages linked from Reddit</td><td>No fine-tuning at all. Phrase the task as text ("TL;DR:") and read the continuation. <strong>Zero-shot from scale.</strong></td></tr>
+      <tr><td><strong><a href="https://arxiv.org/abs/2005.14165">GPT-3</a></strong>, 2020</td><td>96 layers, d<sub>model</sub> 12288, 96 heads, 175B params</td><td>~300B tokens: filtered Common Crawl, WebText2, books, Wikipedia</td><td>Put a few worked examples in the prompt and the frozen model uses them. <strong>In-context learning, no gradient updates.</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">L(θ) = −Σ<sub>t</sub> log p<sub>θ</sub>(x<sub>t</sub> | x<sub>t−k</sub>, …, x<sub>t−1</sub>)</div>
+
+  <p>
+    GPT-1's Equation 1 with the sign flipped, so it's a loss to minimise rather than a
+    likelihood to maximise. k is the context window. Everything else in three papers is this
+    sum, made bigger. Read it as pipeline stages:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>tokens</code></td><td>(T,)</td><td>Integers. The text is its own label — nobody annotated anything</td></tr>
+      <tr><td><code>tok_emb[tokens] + pos_emb[:T]</code></td><td>(T, d)</td><td>What each token is, plus where it sits. Both learned</td></tr>
+      <tr><td><code>decoder_block</code> × N</td><td>(T, d)</td><td>Causal attention (tokens talk, backwards only), then an MLP (each token thinks alone). Shape unchanged → stackable</td></tr>
+      <tr><td><code>layer_norm @ W_out</code></td><td>(T, V)</td><td><strong>Logits.</strong> One guess for every position, all at once — one matrix multiply scores T rows. The mask makes that legal: row t is scored on tokens[t+1] and never saw it</td></tr>
+      <tr><td><code>softmax</code>, row-wise</td><td>(T, V)</td><td>Percentages</td></tr>
+      <tr><td><code>−log p[target]</code></td><td>(T,)</td><td>How surprised each row was by the real next token. 0 if certain and right</td></tr>
+      <tr><td><code>mean</code></td><td>scalar</td><td>The loss. ln(V) for a uniform guess; the floor is the data's own randomness</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The loop: feed the output back in</h2>
+  <p>
+    Demo 1 runs the NumPy block with random weights. Nothing is learned; I just want you to
+    see the shapes. Four tokens in, a (4, 28) matrix out — one guess per position — and the
+    loop keeps only the last row:
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>logits                        : (4, 28)  (one row PER position)
+we keep only logits[-1]       : (28,)  (the next-token guess)
+
+the loop, 5 steps, greedy:
+  step 0: T=4 tokens -&gt; logits(4, 28) -&gt; argmax of last row = 23 = 't'
+  step 1: T=5 tokens -&gt; logits(5, 28) -&gt; argmax of last row = 16 = 'l'
+  step 2: T=6 tokens -&gt; logits(6, 28) -&gt; argmax of last row =  0 = '\n'
+  step 3: T=7 tokens -&gt; logits(7, 28) -&gt; argmax of last row = 23 = 't'
+  step 4: T=8 tokens -&gt; logits(8, 28) -&gt; argmax of last row = 23 = 't'
+result: 'the tl\ntt'
+
+causal: logits for position 0 identical at ctx=4 and ctx=8? <span class="ok">True</span>
+no mask: logits for position 0 identical at ctx=4 and ctx=8? <span class="hl">False</span></code></pre>
+
+  <p>
+    The last two lines are a bonus the mask gives you for free. With it on, row 0's output
+    never changes as the sequence grows, so a server can cache every earlier row instead of
+    recomputing it. That's the KV cache. Without it, nothing can be cached.
+  </p>
+
+  <h3>The context window</h3>
+  <p>
+    The loop has no memory past <code>block_size</code>; GPT-3's is 2048 tokens. Demo 5 gets
+    it wrong both ways, on the trained model:
+  </p>
+
+<pre><code>torch: 33 tokens into the block_size=32 trained model, no crop:
+  <span class="hl">IndexError: index out of range in self</span>   (pos_emb has only 32 rows)
+
+crop from the wrong end -- idx[:, :block_size] instead of idx[:, -block_size:]:
+  <span class="hl">the model hides the answer again......................................</span>
+  every token after the window filled is the same one? True
+  vs the right crop, same model, same prompt:
+  <span class="ok">the model hides the answer again. the prompt hides the answer again. t</span></code></pre>
+
+  <p>
+    Forget to crop and the crash is the good outcome. Crop from the head and the model
+    re-reads the same stale prefix forever, never sees what it just wrote, and prints one
+    character until you kill it.
+  </p>
+
+  <h2>The shift: the label is the next character</h2>
+  <p>
+    Inputs are <code>tokens[:-1]</code>, targets are <code>tokens[1:]</code>. That one-token
+    shift is the entire labelling budget of GPT-3:
+  </p>
+
+<pre><code>text     : autocomplete
+inputs   : autocomplet   &lt;- tokens[:-1]
+targets  :  utocomplete   &lt;- tokens[1:], shifted one left
+pairs    : a-&gt;u u-&gt;t t-&gt;o o-&gt;c c-&gt;o o-&gt;m m-&gt;p p-&gt;l l-&gt;e e-&gt;t t-&gt;e</code></pre>
+
+  <p>Now break it. Set <code>targets = inputs</code> and train 200 steps next to the honest version:</p>
+
+<pre><code>honest  (targets = tokens[1:]), 200 steps:
+  step     1  loss 3.536
+  step    50  loss 1.446
+  step   200  loss <span class="ok">0.313</span>
+BROKEN  (targets = inputs)  , 200 steps:
+  step     1  loss 3.719
+  step    50  loss 0.016
+  step   200  loss <span class="hl">0.002  ← learned output[i] = input[i], nothing else</span></code></pre>
+
+  <div class="note">
+    <strong>Loss near zero is not success. It's a smell.</strong> The broken model found the
+    identity function in fifty steps and stopped. Check the shift first, every time a
+    language-model loss looks too good.
+  </div>
+
+  <h2>Train it, then let it talk</h2>
+  <p>
+    Demo 3 trains a two-layer, 105,728-parameter GPT on my laptop's CPU in about ten seconds.
+    The corpus is 400 sentences I generate from four word lists — subject, verb, object,
+    adjunct, each drawn uniformly — so the model has a grammar to learn and can't memorise.
+    That also means I know the floor: four choices of six per sentence is 4·ln 6 nats over
+    about 38 characters, roughly 0.19 per character.
+  </p>
+
+<pre><code>  step     1  loss 3.536
+  step   150  loss 0.363
+  step   300  loss 0.288
+  step   600  loss <span class="ok">0.305</span>
+  a uniform guess scores ln(28) = 3.332; the corpus's own
+  randomness puts the floor near 0.191 (4 choices of 6 per sentence)
+
+temperature 0.8, 100 chars:
+  the model feeds the future by hand. the model feeds the next token again
+  . the prompt feeds the answer at scale</code></pre>
+
+  <p>
+    Same loop as demo 1. The random weights printed <code>'the tl\ntt'</code>; the trained
+    weights print sentences in the corpus's grammar. Nothing in the loop changed. It learned
+    the structure, not the meaning — there is no meaning in my corpus to learn, and that's the
+    honest version of what a language model does.
+  </p>
+
+  <h3>Temperature</h3>
+  <p>
+    One number between the logits and the dice. Divide the last row by it before softmax:
+    below 1 sharpens toward <code>argmax</code>, above 1 flattens toward uniform. I print the
+    entropy of the distribution each character was drawn from, in nats; ln 28 ≈ 3.33 means
+    "no idea":
+  </p>
+
+<pre><code>temperature 0.2:  mean entropy 0.096 nats
+  feeds the answer again. the mask feeds the answer at scale. the mask cop
+  ies the next token at scale.
+
+temperature 2.0:  mean entropy <span class="hl">1.100</span> nats
+  feeds its own oly.\nthefix by hagan. tby\naby hok fedsy . the feeds k\nt
+  he prefix slowly.\nfeefcashi rec
+
+temperature 0 for 400 chars -- does it loop?
+  yes: the tail repeats every <span class="hl">35 chars</span>: 'r again. the prompt hides the answe'</code></pre>
+
+  <p>
+    That last line is the "repetition" bug everyone hits. Greedy decoding is deterministic, so
+    the moment it revisits a state it's in a cycle forever. Temperature 0 isn't "the most
+    accurate setting"; it's a loop with no exit condition.
+  </p>
+
+  <h2>The mask is what makes the loop honest</h2>
+  <p>
+    The attention page said: remove the mask and you have BERT. Here's what that costs if you
+    wanted to generate. Demo 6 trains the identical model with <code>causal=False</code>,
+    same data, same 600 steps:
+  </p>
+
+<pre><code>same model, same data, same steps, mask removed:
+  step     1  loss 3.540
+  step   600  loss <span class="hl">0.013  ← vs 0.305 with the mask on</span>
+
+loss per position: mean over positions 0..30, then position 31,
+the one row that has no next column to peek at:
+  causal : 0.280   last position: <span class="ok">0.190</span>
+  no mask: <span class="hl">0.001</span>   last position: <span class="hl">0.296</span>
+
+short prompt 'the model ', temperature 0.8:
+  causal :
+    the model feeds the future by hand. the model feeds the next token again
+    . the prompt feeds the answer at scale
+  no mask:
+    <span class="hl">the model ooooooomoooooooooooooooooooooooooooooooooooooooooooooooooooooo</span>
+    oooooooooooooooooooooooooooooooooooooo</code></pre>
+
+  <p>
+    Without the mask, position i can attend to position i+1 — which <em>is</em> its target.
+    So it copies, and the loss collapses to 0.001 at every row but the last, the only row
+    with nothing to copy. At sampling time the last row is the only row that matters, so 31
+    of 32 rows of training went on a trick that never fires in production, and the one honest
+    row got 1/32 of the gradient: 0.296 against the masked model's 0.190. Give it a full
+    32-character window so the last row is the honest one and it limps — run-on sentences, a
+    made-up word; the script prints that too. Train/serve skew, controlled by one flag.
+  </p>
+
+  <div class="note">
+    <strong>Lower training loss, worse model.</strong> The mask isn't there to make training
+    easier. It's there to make training the same problem as serving. Bidirectional attention
+    is <a href="../bert/">BERT</a>, and BERT doesn't generate.
+  </div>
+
+  <h2>In-context learning: the prompt is the program</h2>
+  <p>
+    GPT-3's headline. Say it plainly, because interviewers will ask: <strong>in-context
+    learning means the worked examples are in the prompt and the weights are frozen.</strong>
+    No fine-tuning, no gradient step, nothing written to disk. The paper's few-shot format is
+    exactly this shape — a few input→output pairs, then an input with no output:
+  </p>
+
+<pre><code>english: cat -&gt; french: chat
+english: dog -&gt; french: chien
+english: house -&gt; french: maison
+english: cheese -&gt; french:
+
+that prompt is 118 tokens; the model sees one integer array:
+  [10, 18, 12, 16, 14, 22, 13, 4, 1, 8, 6, 23] ... [1, 11, 21, 10, 18, 8, 13, 4]
+logits shape: (1, 32, 28)   gradient updates: <span class="ok">0</span></code></pre>
+
+  <p>
+    Nothing in the code knows what an "example" is. The three worked pairs are just more
+    prefix; few-shot is longer input, full stop. GPT-3's claim is that at 175B parameters the
+    likeliest continuation is <code>fromage</code>, and that this improves with more examples
+    and more parameters — the results section is that curve, task by task. My model has
+    105,728 parameters and a six-noun vocabulary. It won't do this, and I'm not going to
+    pretend it does. The mechanism is identical. The capability is what scale bought. What
+    came after — making the autocomplete <em>want</em> to follow instructions rather than
+    merely continue them — is <a href="../instructgpt/">InstructGPT</a>.
+  </p>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  NumPy for the mechanism. A tiny PyTorch model, CPU only, trains in about ten seconds for
+  the one part that needs gradients. Every function under 16 lines. Attention, the multi-head
+  wrapper and the causal mask are the <a href="../attention/">attention page</a>'s, with a
+  <code>causal</code> switch added so a demo can cheat.
+</p>
+<p>
+  <a href="gpt_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 130 lines of mechanism plus seven runnable demos. Then:
+</p>
+<pre><code>python3 gpt_from_scratch.py</code></pre>
+
+<pre><code>def decoder_block(x, p, causal=True):
+    a, weights = multi_head_attention(layer_norm(x), p, causal)
+    x = x + a                                        # tokens talk (backwards only)
+    x = x + gelu(layer_norm(x) @ p["W_1"]) @ p["W_2"]  # each token thinks alone
+    return x, weights                                # shape unchanged -&gt; stackable
+
+
+def gpt_forward(tokens, p, causal=True):
+    T = len(tokens)
+    assert T &lt;= p["block_size"], f"context {T} &gt; block_size {p['block_size']}"
+    x = p["tok_emb"][tokens] + p["pos_emb"][:T]      # (T, d): what + where
+    x, weights = decoder_block(x, p, causal)         # a real GPT stacks 12..96
+    logits = layer_norm(x) @ p["W_out"]              # (T, vocab): a guess PER row
+    return logits, weights
+
+
+def generate(p, prefix, n_new, temperature=0.0, rng=None, trace=False):
+    tokens = list(prefix)
+    for step in range(n_new):
+        ctx = tokens[-p["block_size"]:]              # crop: no memory past this
+        logits, _ = gpt_forward(np.array(ctx), p)
+        row = logits[-1]                             # only the LAST row matters
+        if temperature == 0:
+            nxt = int(np.argmax(row))                # greedy
+        else:
+            nxt = int(rng.choice(len(row), p=softmax(row / temperature)))
+        tokens.append(nxt)                           # feed it back in
+        if trace:
+            print(f"  step {step}: T={len(ctx)} tokens -&gt; logits{logits.shape}"
+                  f" -&gt; argmax of last row = {nxt:2d} = {decode([nxt])!r}")
+    return tokens
+
+
+def get_batch(data, block_size, batch_size, gen, shift=True):
+    ix = torch.randint(len(data) - block_size - 1, (batch_size,), generator=gen)
+    x = torch.stack([data[i:i + block_size] for i in ix])
+    if shift:
+        y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])  # THE shift
+    else:
+        y = x.clone()                                # the break: label == input
+    return x, y</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a living
+  — every row below is one edit to the script and one thing to watch.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>demo_3_train_and_sample</code>, build the model with <code>causal=False</code></td><td>Training loss 0.013 instead of 0.305 — it's reading the answer off the next column. Sample from a short prompt: <code>ooooooo…</code> forever.</td></tr>
+    <tr><td>In <code>get_batch</code>, replace the shifted <code>y</code> with <code>y = x.clone()</code></td><td>Loss 0.002 by step 200. It learned <code>output[i] = input[i]</code> and nothing about the text.</td></tr>
+    <tr><td>Sample with <code>temperature=0.0</code> for 400 characters</td><td>The tail repeats every 35 characters — "the prompt hides the answer again." — until you stop it. Deterministic loop, no exit.</td></tr>
+    <tr><td>In <code>sample</code>, delete the crop: <code>model(idx)</code> instead of <code>model(idx[:, -model.block_size:])</code></td><td><code>IndexError: index out of range in self</code> on the 33rd token. <code>pos_emb</code> has 32 rows. The crash is the good outcome.</td></tr>
+    <tr><td>Crop from the head instead: <code>idx[:, :model.block_size]</code></td><td>Re-reads the same stale prefix every step and prints <code>.</code> forever once the window fills. No crash, just wrong.</td></tr>
+    <tr><td>In <code>demo_1_the_loop</code>, call <code>gpt_forward(..., causal=False)</code> and print <code>weights[0]</code></td><td>The upper triangle fills in; row 0 now reads row 3, and position 0's logits change every time you append a token, so nothing can be cached. That's an encoder block. It's <a href="../bert/">BERT</a>.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the papers — but only these bits.
+  <a href="https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf">GPT-1</a>:
+  §3.1 for the loss (Equation 1) and §3.3 with Figure 1 for how a task becomes one token
+  sequence.
+  <a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf">GPT-2</a>:
+  §2, especially the argument that a task is just a conditioning prefix.
+  <a href="https://arxiv.org/abs/2005.14165">GPT-3</a>: §2 and Figure 2.1, Table 2.1 for the
+  sizes, then §5 Limitations. Skip every benchmark table on a first pass. You'll find the
+  papers are the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  Honestly: the whole thing is one <code>−log</code>. Cross-entropy is minus the log of the
+  probability the model gave the right answer — 0 when it was sure and right, big when it was
+  sure and wrong. Softmax turns scores into percentages. Temperature divides before the
+  softmax. Entropy is "how surprised do I expect to be", the same <code>−log</code> averaged.
+  That's every symbol on this page.
+</p>
+<p>
+  You don't need to derive anything; <code>loss.backward()</code> and
+  <code>F.cross_entropy</code> are library calls. What I'd want you to do at a whiteboard is
+  write the shift, write the mask, and say why removing either one makes the loss go down
+  and the model go bad. What separates AI engineers here isn't research maths: it's knowing
+  that in-context learning is a longer input, that the KV cache exists because of the mask,
+  that context length is a hard ring buffer, and that temperature 0 loops.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: three papers as one loop you can break. It skipped byte-pair
+  tokenisation, the fine-tuning recipe, top-k and nucleus sampling, and the entire results
+  section. These cover what I cut.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2005.14165">
+      <span class="paper-title">Language Models are Few-Shot Learners</span>
+      <span class="paper-meta">Brown et al., 2020. The original GPT-3 paper.</span>
+    </a>
+    <p class="paper-pitch">
+      Now that you have the loop: §2 and Figure 2.1 first — the in-context learning
+      definition is one figure. Then §3 with a ruler: pick one task and follow its zero-, one-
+      and few-shot lines up the model sizes. Then §5, where the authors list what it can't do,
+      which is more useful than what it can.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://jalammar.github.io/illustrated-gpt2/">
+      <span class="paper-title">The Illustrated GPT-2</span>
+      <span class="paper-meta">Jay Alammar. Diagrams.</span>
+    </a>
+    <p class="paper-pitch">
+      Where I gave you <code>.shape</code>, this gives you the tensors as boxes flowing through
+      the decoder stack one token at a time. Best picture anywhere of masked self-attention and
+      of why the KV cache is what serving actually does.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://www.youtube.com/watch?v=kCc8FmEb1nY">
+      <span class="paper-title">Let's build GPT: from scratch, in code, spelled out</span>
+      <span class="paper-meta">Andrej Karpathy. Two hours of PyTorch, live.</span>
+    </a>
+    <p class="paper-pitch">
+      My torch model is a compression of this. He writes the same thing — character-level,
+      causal, tiny — in front of you, every <code>tril</code> and every shape said aloud, then
+      scales it to Shakespeare. Go here when my forty lines of torch feel like a magic trick.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Alammar → Karpathy → the paper. Pictures, then the
+  same code done properly, then the claims. If you only take one, take Karpathy — it's this
+  page with a working GPU and a better narrator.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>

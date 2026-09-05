@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLaMA: Open and Efficient Foundation Language Models — for programmers</title>
+<meta name="description" content="The LLaMA paper explained as a diff against the 2017 transformer: four config changes and seven times the data. Runnable NumPy, six demos with printed numbers you can break.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>LLaMA: Open and Efficient Foundation Language Models</h1>
+    <p class="paper-meta">Touvron et al., 2023</p>
+    <p class="lede">
+      Not a new idea. A recipe. Explained as a diff, because that is what it is.
+    </p>
+    <p>
+      <a href="llama_from_scratch.py" download>Download llama_from_scratch.py</a>
+      — everything below runs from it. NumPy only.
+    </p>
+  </div>
+
+  <p>
+    I'm an AI Engineer. I've served LLaMA-family models in production, quantised
+    them, put them behind a load balancer, and I still couldn't have told you
+    what was <em>in</em> one. I assumed there was a new mechanism. There isn't.
+    LLaMA is the 2017 transformer with four config changes and a lot more data.
+    The interview question is never "how does LLaMA work" — it's "what's
+    different from the original transformer, and why". This is that answer.
+  </p>
+
+  <h2>LLaMA is a pull request against the 2017 transformer</h2>
+
+  <p>
+    You know what a diff looks like. Here is the whole architecture as one,
+    against the decoder-only transformer — the <a href="../gpt/">GPT shape</a>,
+    causal mask and all:
+  </p>
+
+<pre><code>-norm:        layernorm, after the residual add
++norm:        rmsnorm, before each sublayer
+-activation:  relu, hidden = 4d
++activation:  swiglu, hidden = 2/3 * 4d rounded up to a multiple of 256
+-position:    sinusoid, added to the embeddings once at the bottom
++position:    rope, rotate Q and K inside every attention layer
+-bias:        true
++bias:        false
+ tokens:      1T to 1.4T, public data only     # not a hunk. The real change.</code></pre>
+
+  <p>
+    Four hunks. The attention itself is untouched — it's the lookup from
+    <a href="../attention/">the attention page</a>. Three hunks are named in the
+    paper's architecture section; the fourth (no bias) is only in the released
+    code. And the line that isn't a hunk is the one that mattered.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>RMSNorm</strong></td><td>Rescale each token's vector so its root-mean-square is 1. No mean subtraction.</td><td>Lower-casing before a string compare. Hygiene, not logic.</td></tr>
+      <tr><td><strong>Pre-norm</strong></td><td>The norm sits on the branch, not the trunk: <code>x + f(norm(x))</code></td><td>Middleware that reads a normalised copy of the request and never rewrites the request.</td></tr>
+      <tr><td><strong>SwiGLU</strong></td><td>FFN with a multiplicative gate: one branch scales the other.</td><td>A feature flag that's a float, not a bool.</td></tr>
+      <tr><td><strong>RoPE</strong></td><td>Rotate Q and K by their position before the dot product.</td><td>Fold a timestamp into the hash so equal offsets compare equal.</td></tr>
+      <tr><td><strong>1T tokens</strong></td><td>Train 7× past the compute-optimal point.</td><td>Precompute. Pay at build time so every request is cheaper.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">h = x + Attn(RMSNorm(x))<br>y = h + W<sub>down</sub>(SiLU(W<sub>gate</sub> RMSNorm(h)) ⊙ W<sub>up</sub> RMSNorm(h))</div>
+
+  <p>One block. Stack 32 for 7B, 80 for 65B. Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>RMSNorm(x)</code></td><td>(n, d)</td><td>Every token onto the same scale. Reads the trunk, doesn't write it.</td></tr>
+      <tr><td><code>Attn(·)</code></td><td>(n, d)</td><td>The lookup from <a href="../attention/">attention</a>, RoPE applied to Q and K inside</td></tr>
+      <tr><td><code>x + …</code></td><td>(n, d)</td><td><strong>The skip link.</strong> Adds. Never rescales. This is the pre-norm hunk.</td></tr>
+      <tr><td><code>W<sub>gate</sub>z, W<sub>up</sub>z</code></td><td>(n, h), h = 11008</td><td>Two branches off the same normalised input</td></tr>
+      <tr><td><code>SiLU(·) ⊙ ·</code></td><td>(n, h)</td><td><strong>The gate.</strong> One branch scales the other, elementwise</td></tr>
+      <tr><td><code>W<sub>down</sub></code></td><td>(n, d)</td><td>Back to trunk width, added to the trunk. Shape in equals shape out, so it stacks</td></tr>
+      <tr><td>after block 32</td><td>(n, 32000)</td><td>One final RMSNorm, then the output head. No bias anywhere</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>RMSNorm: LayerNorm minus the mean</h2>
+  <p>
+    LayerNorm subtracts the mean, divides by the standard deviation, then a
+    learned scale γ and shift β. RMSNorm
+    (<a href="https://arxiv.org/abs/1910.07467">Zhang and Sennrich, 2019</a>)
+    skips the mean and the shift: divide by the root-mean-square, multiply by
+    γ. Same job — every token onto the same scale before it hits a matmul —
+    with fewer passes over the vector, and no quality loss they could measure.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>x           = [1. 2. 3. 4.]   mean 2.5000
+layer_norm  = [-1.3416 -0.4472  0.4472  1.3416]   mean 0.0000
+rms_norm    = [0.3651 0.7303 1.0954 1.4606]   mean 0.9129
+same numbers? <span class="hl">False</span>   ← the mean is still in there
+
+x centred   = [-1.5 -0.5  0.5  1.5]   mean 0.0000
+layer_norm  = [-1.3416 -0.4472  0.4472  1.3416]
+rms_norm    = [-1.3416 -0.4472  0.4472  1.3416]
+same numbers? <span class="ok">True</span>    ← identical once centred</code></pre>
+
+  <p>
+    On a centred vector they are the same function; real activations aren't
+    centred, so the outputs differ by exactly the mean. What you buy, counted
+    off my implementation — seven passes over the vector versus four:
+  </p>
+
+<pre><code>elementwise ops per token per norm at d=4096:
+  layer_norm 28,672   rms_norm 16,384   saved 12,288
+  x 2 norms per layer x 32 layers = 786,432 ops saved per token
+
+rms_norm(zeros, eps=0)    = [<span class="hl">nan nan nan nan</span>]
+rms_norm(zeros, eps=1e-5) = [0. 0. 0. 0.] <span class="ok">✓</span></code></pre>
+
+  <p>
+    Nothing next to a 4096 × 11008 matmul, but it's paid on every token, on
+    every layer, for free. And <code>eps</code> is not decoration: 0/0 is NaN,
+    and one NaN in the residual stream poisons every layer above it.
+  </p>
+
+  <h2>Pre-norm: the norm goes on the branch, not the trunk</h2>
+  <p>
+    2017: <code>x = norm(x + f(x))</code>. The norm sits on the trunk; every
+    block's output is renormalised before the next block sees it. LLaMA:
+    <code>x = x + f(norm(x))</code>. The norm sits on the branch; the trunk is
+    a straight wire from embedding to output, and every block only ever
+    <em>adds</em> to it. You will read that pre-norm "keeps the activations
+    bounded". Run demo 3. It doesn't — post-norm does. What pre-norm keeps
+    bounded is something else:
+  </p>
+
+<pre><code>d=64, sqrt(d)=8.0. residual-stream norm per token:
+                     layer 1   layer 5   layer 10  layer 20   bump at 0 -&gt; out
+  pre-norm  (LLaMA)      10.8      18.9      27.7      40.7   x <span class="ok">1.77</span>
+  post-norm (2017)          8         8         8         8   x 9.71
+  no norm at all           12  6.23e+05       <span class="hl">inf</span>       nan   x nan</code></pre>
+
+  <p>
+    Post-norm pins the trunk at √d = 8 exactly. Pre-norm lets it grow, and
+    nobody cares, because no sublayer ever reads <code>x</code>, only
+    <code>rms_norm(x)</code>. Delete the norm and the trunk overflows before
+    layer 10 — which is why there's a norm in there at all.
+  </p>
+  <p>
+    The last column is the one that matters. It's a finite-difference gradient:
+    bump the input by a tiny δ, measure how far the output moves, divide — the
+    trick you'd use to unit-test a hand-written backward pass. It's how much a
+    change at layer 0 is amplified by the top, which is also how much a gradient
+    at the top is amplified on its way down to layer 0. Now go deeper:
+  </p>
+
+<pre><code>same bump at layer 0, deeper and deeper stacks:
+                      5 deep   10 deep   20 deep   32 deep
+  pre-norm  (LLaMA)  x   1.47  x   1.58  x   1.77  x   <span class="ok">1.68</span>
+  post-norm (2017)   x   1.69  x   2.74  x   9.71  x   <span class="hl">40.6</span>   ← compounds</code></pre>
+
+  <div class="note">
+    <strong>Post-norm multiplies per-layer factors down the stack; pre-norm adds
+    them.</strong> A gradient ratio that grows with depth is a training run that
+    needs warmup, a small learning rate and luck. That's the stability argument,
+    and why GPT-2 onwards, PaLM and LLaMA are all pre-norm.
+    <a href="https://arxiv.org/abs/2002.04745">Xiong et al., 2020</a> have the
+    proof; <a href="https://arxiv.org/abs/2004.08249">Liu et al., 2020</a> call
+    it the amplification effect. The exact ratios depend on the init scale; the
+    compounding doesn't.
+  </div>
+
+  <h2>SwiGLU: a gate in the FFN, paid for with a narrower hidden layer</h2>
+  <p>
+    The 2017 FFN is <code>relu(x @ W1) @ W2</code>, hidden width 4d. SwiGLU
+    (<a href="https://arxiv.org/abs/2002.05202">Shazeer, 2020</a>) replaces it
+    with <code>(silu(x @ W_gate) * (x @ W_up)) @ W_down</code>. Two branches see
+    the same input; one is squashed through SiLU and multiplies the other,
+    elementwise. A gate. Three matrices instead of two, so to keep the parameter
+    count level the hidden width is cut to two-thirds, then rounded up to a
+    multiple of 256 because GPUs like that. Hence 11008, not 10923.
+  </p>
+
+<pre><code>d = 4096
+  vanilla ReLU FFN:  hidden = 4d   = 16384   params = 2*d*h = 134,217,728
+  LLaMA SwiGLU FFN:  hidden = 2/3*4d = 11008   params = 3*d*h = 135,266,304
+  ratio SwiGLU / ReLU = <span class="ok">1.008</span>
+
+BREAK: SwiGLU with hidden = 4d = 16384:   params = 201,326,592   (<span class="hl">+50.0%</span>)</code></pre>
+
+  <p>
+    Within 1%. That's the paper's point: the comparison is parameter-matched,
+    so any benchmark gain is the gate, not extra capacity. Leave the hidden at
+    4d and you've grown the FFN by half and proved nothing. Demo 2 also runs a
+    toy forward pass: ReLU switches 49.0% of hidden units exactly off, SwiGLU
+    0.0% — a switch versus a dimmer. Why does the dimmer help? Nobody knows.
+    Shazeer's paper says so: "we attribute their success, as all else, to
+    divine benevolence". Don't let an interviewer tell you there's a derivation.
+  </p>
+
+  <h2>RoPE: rotate Q and K, leave V alone</h2>
+  <p>
+    2017 added a position vector to the embeddings once, at the bottom. LLaMA
+    adds nothing there. Inside every attention layer it rotates each query and
+    key by an angle proportional to its position
+    (<a href="https://arxiv.org/abs/2104.09864">Su et al., 2021</a>). Rotate
+    both by the same rule and the dot product depends only on the gap:
+  </p>
+
+<pre><code>q at 3 . k at 1  (offset 2) = 1.7986
+q at 7 . k at 5  (offset 2) = <span class="ok">1.7986</span>   ← same offset, same score
+q at 3 . k at 0  (offset 3) = 1.7523   ← different offset
+
+where it is applied, straight from attn_sublayer's source:
+  return attention(rope(Q, pos), rope(K, pos), V) @ p["Wo"]  # rope: Q, K. Not V</code></pre>
+
+  <p>
+    It goes on Q and K because those are the two things being dotted. V is the
+    content handed over once a match is made; rotate that and the content would
+    depend on where the token sits. The pairs, the frequencies, why it
+    extrapolates: <a href="../rope/">the RoPE page</a>. Here the point is
+    <em>where it's called</em>.
+  </p>
+
+  <h2>6.7B parameters, 1T tokens: the arithmetic</h2>
+  <p>
+    Every LLaMA-1 size is one formula with four numbers from the paper's Table
+    2. Attention is 4d² (four d × d matrices — no GQA yet, that's LLaMA 2 at
+    70B), the FFN is 3dh, two norms per layer, an embedding table, an untied
+    output head:
+  </p>
+
+<pre><code>size    dim  layers     ffn      count_params   paper
+  7B   4096      32   11008     6,738,415,616    6.7B <span class="ok">✓</span>
+ 13B   5120      40   13824    13,015,864,320   13.0B
+ 33B   6656      60   17920    32,528,943,616   32.5B
+ 65B   8192      80   22016    65,285,660,672   65.2B
+
+BREAK: put every bias term back (bias=True):
+  6,740,037,632 vs 6,738,415,616: +1,622,016 = <span class="hl">+0.024%</span></code></pre>
+
+  <p>
+    Within rounding of every row in the paper. The FFN is <em>twice</em> the
+    attention — which is why <a href="../moe/">mixture-of-experts</a> goes
+    after the FFN. Dropping the biases was a simplicity decision, not a savings
+    one: 0.024%. The paper doesn't mention it. Now the tokens. Chinchilla
+    (<a href="https://arxiv.org/abs/2203.15556">Hoffmann et al., 2022</a>)
+    answered one question: for a fixed training budget, what model size and how
+    many tokens minimise the loss? About 20 tokens per parameter, so a 7B model
+    "should" see 135B tokens. LLaMA-7B saw a trillion.
+  </p>
+
+<pre><code>LLaMA-7B parameters                 6.74e+09
+Chinchilla-optimal tokens, 20/param 1.35e+11  (135B)
+LLaMA-7B actually trained on        1e+12  (1T)   <span class="hl">7.4x more</span>
+
+inference compute ~ 2 * N per token:
+  LLaMA-7B     1.35e+10 FLOPs/token
+  GPT-3 175B   3.5e+11 FLOPs/token   26x more
+
+tokens per parameter:
+  GPT-3 175B 300B / 175.0B =   1.7
+  LLaMA-7B   1.0T /  6.7B = <span class="ok">148.4</span>
+  LLaMA-13B  1.0T / 13.0B =  76.8</code></pre>
+
+  <p>
+    The argument is a cost model you already run in your head. Training is paid
+    once. Inference is paid per token, forever, and scales with parameter count:
+    7B costs 26× less per token than 175B. Serving a billion requests, you'd
+    rather overspend training a small model than underspend and serve a big
+    one. The paper's training curves show the 7B loss still falling at a
+    trillion tokens — slower than at 135B, but falling. And that, not the four
+    hunks, is why LLaMA-13B beat GPT-3 175B on most benchmarks in the paper:
+    GPT-3 saw 1.7 tokens per parameter, LLaMA-13B saw 77.
+  </p>
+
+  <div class="note">
+    <strong>If you're asked "why did LLaMA train past compute-optimal":</strong>
+    Chinchilla optimises the training bill; LLaMA optimises the serving bill.
+    That's the "efficient" in the title. 1T tokens for 7B and 13B, 1.4T for 33B
+    and 65B, public data only; 65B took 21 days on 2048 A100s.
+  </div>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no autograd, no training — forward passes and parameter
+  arithmetic, so you can watch the numbers move. Every function under 15 lines.
+  The four deltas below; <code>count_params</code>, the post-norm block and the
+  finite-difference probe are in the script.
+</p>
+<p>
+  <a href="llama_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 130 lines plus six runnable demos. Then:
+</p>
+<pre><code>python3 llama_from_scratch.py</code></pre>
+
+<pre><code>import numpy as np
+
+
+def rms_norm(x, eps=1e-5):
+    rms = np.sqrt((x ** 2).mean(axis=-1, keepdims=True) + eps)
+    return x / rms
+
+
+def silu(x):
+    return x / (1.0 + np.exp(-x))                    # x * sigmoid(x)
+
+
+def llama_hidden(dim, multiple_of=256):
+    hidden = int(2 * (4 * dim) / 3)                  # 2/3 of the vanilla 4d
+    return multiple_of * ((hidden + multiple_of - 1) // multiple_of)
+
+
+def swiglu_ffn(x, W_gate, W_up, W_down):
+    return (silu(x @ W_gate) * (x @ W_up)) @ W_down  # (n,d)-&gt;(n,h)-&gt;(n,d)
+
+
+def rope(x, positions, base=10000.0):
+    d = x.shape[-1]
+    theta = base ** (-np.arange(0, d, 2) / d)        # (d/2,) one per pair
+    angle = positions[:, None] * theta[None, :]      # (n, d/2)
+    cos, sin = np.cos(angle), np.sin(angle)
+    x1, x2 = x[..., 0::2], x[..., 1::2]              # even dims, odd dims
+    out = np.empty_like(x)
+    out[..., 0::2] = x1 * cos - x2 * sin             # a 2-D rotation per pair
+    out[..., 1::2] = x1 * sin + x2 * cos
+    return out
+
+
+def pre_norm_block(x, p):                            # LLaMA
+    x = x + attn_sublayer(rms_norm(x), p)
+    x = x + ffn_sublayer(rms_norm(x), p)
+    return x</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that makes it stick. Reading won't do it. You debug for a
+  living — reverse-engineering from broken behaviour is your native mode.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>In <code>llama_hidden</code>, return <code>4 * dim</code></td><td>The 7B FFN goes from 135,266,304 to 201,326,592 parameters, +50.0%. The "SwiGLU is better" claim stops being parameter-matched and means nothing.</td></tr>
+    <tr><td><code>rms_norm(np.zeros(4), eps=0.0)</code></td><td><code>[nan nan nan nan]</code>. 0/0. One NaN in the residual stream poisons every layer above it. With <code>eps=1e-5</code>: zeros.</td></tr>
+    <tr><td>In <code>demo_3</code>, run the post-norm ordering on <code>blocks[:32]</code> instead of <code>[:20]</code></td><td>The bump-at-layer-0 ratio goes 9.71× → 40.6×. Pre-norm on the same 32 blocks: 1.77× → 1.68×. One compounds with depth, the other doesn't.</td></tr>
+    <tr><td>Delete both <code>rms_norm</code> calls in <code>pre_norm_block</code> (that's <code>no_norm_block</code>)</td><td>Trunk norm 12 → 6.23e+05 by layer 5 → <code>inf</code> by layer 10 → <code>nan</code>. That's why there is a norm at all.</td></tr>
+    <tr><td><code>count_params(4096, 32, 11008, bias=True)</code></td><td>+1,622,016 parameters, +0.024%. Dropping bias was for a simpler <code>model.py</code>, not for savings.</td></tr>
+    <tr><td>Set <code>tokens=1.35e11</code> in <code>LLAMA["7B"]</code> (Chinchilla-optimal)</td><td>The "7.4x more" lines print 1.0x. Training cost drops 7.4×; nothing else in a forward pass changes. What you'd lose — the loss curve past 135B tokens — is in the paper's training-loss figure, not in any script. Cheaper to train, worse to serve for the same quality.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read the paper — but only §2, the approach: the data
+  mix, the architecture section (half a page; it is this diff), the optimiser
+  paragraph, Table 2, and the training-loss figure. Skip the benchmark tables
+  in §3 and the bias, toxicity and carbon sections unless you need them. You'll
+  find the paper is just the comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  This paper needs less maths than the attention one. A mean, a root-mean-square,
+  a 2-D rotation (sine and cosine from school), and multiplying four numbers to
+  count parameters. The scaling-law part is one rule of thumb — training FLOPs
+  ≈ 6 × parameters × tokens, inference ≈ 2 × parameters per token — a cost
+  estimate, not a theorem. You don't need to derive why SwiGLU beats ReLU;
+  nobody has. You don't need the proof that pre-norm gradients behave; you need
+  the finite-difference trick above: "does this multiply or add down the stack".
+</p>
+<p>
+  What separates AI engineers on this paper is the arithmetic: count 6.7B on a
+  napkin, say why 13B is cheaper to serve than 175B, say what 20 tokens per
+  parameter means for your training budget. None of it is research maths.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you LLaMA as a diff, with the four hunks measured. It skipped
+  the tokeniser, the data pipeline, the optimiser, and running real weights.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2302.13971">
+      <span class="paper-title">LLaMA: Open and Efficient Foundation Language Models</span>
+      <span class="paper-meta">Touvron et al., 2023. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      §2.1 for the data mix, §2.2 for the diff, §2.4 for the engineering —
+      xformers attention, activation checkpointing, overlapping compute with
+      communication — that made 1.4T tokens take 21 days. With the code in
+      hand, the paper is short.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://github.com/rasbt/LLMs-from-scratch/blob/main/ch05/07_gpt_to_llama/converting-gpt-to-llama2.ipynb">
+      <span class="paper-title">Converting a GPT to Llama 2</span>
+      <span class="paper-meta">Sebastian Raschka. A notebook, PyTorch.</span>
+    </a>
+    <p class="paper-pitch">
+      The same diff applied in the other direction: starts from working GPT
+      code, swaps in RMSNorm, SiLU, RoPE and the gated FFN one cell at a time,
+      then loads the real 7B weights and generates text. What I left out —
+      actual weights doing actual work.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://github.com/meta-llama/llama/blob/main/llama/model.py">
+      <span class="paper-title">llama/model.py</span>
+      <span class="paper-meta">Meta. The authors' own code, one file.</span>
+    </a>
+    <p class="paper-pitch">
+      Every function on this page has a twin here: <code>RMSNorm</code>,
+      <code>apply_rotary_emb</code>, the <code>FeedForward</code> with the 2/3
+      and multiple-of-256 arithmetic, <code>TransformerBlock</code>. Plus the
+      two things a served model needs that I skipped: the KV cache and the
+      tensor-parallel layers.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> the paper's §2 → Raschka → model.py.
+  Text, then the diff applied live, then the production version. If you only
+  read one, read model.py — it's what you'll be serving. For the forward pass
+  with nothing to hide behind, Karpathy's
+  <a href="https://github.com/karpathy/llama2.c">llama2.c</a>: one C file,
+  <code>rmsnorm</code> as a for loop.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+</body>
+</html>
