@@ -236,6 +236,58 @@ th:last-child, td:last-child { padding-right: 0; }
   padding-left: .75rem;
 }
 
+/* ---------- diagrams ----------
+   Inline SVG only, drawn with the page's own palette so a diagram is part of
+   the type system rather than a picture dropped into it. Every diagram must
+   carry role="img" plus a <title>, and scale with the column: give the svg a
+   viewBox and no width/height attributes. A diagram earns its place by showing
+   a mechanism the prose cannot; decoration does not belong here. */
+figure.diagram {
+  margin: 1.75rem 0;
+}
+figure.diagram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+figure.diagram figcaption {
+  margin-top: .65rem;
+  font-size: .92rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+/* the diagram palette: class names an SVG uses instead of hard-coded colour */
+.diagram text        { font-family: var(--sans); font-size: 13px; fill: var(--text); }
+.diagram .d-mono     { font-family: var(--mono); font-size: 12px; }
+.diagram .d-title    { font-weight: 600; fill: var(--ink); }
+.diagram .d-muted    { fill: var(--muted); font-size: 12px; }
+.diagram .d-box      { fill: var(--paper-2); stroke: var(--rule-strong); stroke-width: 1.5; }
+.diagram .d-box-open { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; }
+.diagram .d-box-key  { fill: none; stroke: var(--brand); stroke-width: 2; }
+.diagram .d-line     { stroke: var(--rule-strong); stroke-width: 1.5; fill: none; }
+.diagram .d-line-key { stroke: var(--brand); stroke-width: 2; fill: none; }
+.diagram .d-dashed   { stroke-dasharray: 4 3; }
+.diagram .d-broke    { stroke: var(--broke); fill: none; }
+.diagram .d-broke-t  { fill: var(--broke); font-weight: 600; }
+.diagram .d-works    { stroke: var(--works); fill: none; }
+.diagram .d-works-t  { fill: var(--works); font-weight: 600; }
+.diagram .d-fill-key { fill: var(--brand); }
+.diagram .d-fill-sub { fill: var(--paper-2); }
+
+/* Narrow screens: an SVG scales its text down with the viewBox, so a 640-wide
+   drawing squeezed into a 350px column renders 13px labels at about 7px. Scroll
+   the diagram instead of shrinking it, exactly as .tablewrap does for a wide
+   table, and hold it at a width where the labels stay legible. */
+@media (max-width: 44em) {
+  figure.diagram {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  figure.diagram svg { min-width: 460px; }
+  figure.diagram figcaption { position: sticky; left: 0; }
+}
+
 /* ---------- callout ---------- */
 .note {
   background: var(--paper-2);
@@ -349,12 +401,13 @@ th:last-child, td:last-child { padding-right: 0; }
    or the rail steps left. Code gains ~40px, enough for an 83-char line. */
 @media (min-width: 48em) {
   :root { --bleed: 2.25rem; }   /* 38px; side space at 48em is ~51px */
-  pre, .formula, .note, .hero-code {
+  pre, .formula, .note, .hero-code, figure.diagram {
     margin-left: calc(-1 * var(--bleed));
     margin-right: calc(-1 * var(--bleed));
     padding-left: var(--bleed);
     padding-right: var(--bleed);
   }
+  figure.diagram { padding-left: 0; padding-right: 0; }
   .note, .hero-code { padding-left: calc(var(--bleed) - 3px); }
   /* code keeps its left edge on the margin but uses the right-hand hang
      for room: +21px is what an 83-char line needs at .8rem */
