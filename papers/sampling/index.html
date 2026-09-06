@@ -1,0 +1,1558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Temperature, top-k and top-p — for programmers</title>
+<meta name="description" content="Nucleus sampling explained as code. Temperature reshapes the distribution, top-k and top-p crop it — in that order. Runnable NumPy, printed numbers, six demos.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Temperature, top-k and top-p: the three knobs on the API</h1>
+    <p class="paper-meta">Holtzman et al., 2019 · Fan et al., 2018</p>
+    <p class="lede">
+      Three parameters everyone has typed into a request body and nobody has
+      explained together. They are two operations, in a fixed order.
+    </p>
+    <p>
+      <a href="sampling_from_scratch.py" download>Download sampling_from_scratch.py</a> —
+      everything below runs from it. NumPy only, no model needed.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+
+  <p>
+    I shipped an LLM feature with <code>temperature=0.7, top_p=0.9</code> in the config for
+    about eight months before I could have told you what the second one did. I knew the
+    folklore — "lower temperature is more factual", "top_p is like temperature but
+    different" — and the folklore is wrong in a way that matters. My mental model was three
+    dials on the same box. It isn't. It's a contrast slider and a crop tool, applied in that
+    order, and once you see the order the inconsistent intuitions all resolve.
+  </p>
+
+  <h2>Temperature is contrast. Top-k and top-p are the crop.</h2>
+
+  <p>
+    At every step the model hands you one array: a score per vocabulary entry. Sixteen
+    entries in my toy vocab, fifty thousand in a real one. That's it. That array is the only
+    thing these three parameters touch.
+  </p>
+
+<pre><code>logits = model(prompt)            # one float per vocab entry, unbounded
+probs  = softmax(logits)          # percentages, summing to 1
+token  = draw_one(probs)          # weighted dice roll</code></pre>
+
+  <p>
+    Temperature goes in on line 1 — it divides the logits <em>before</em> the softmax. Top-k
+    and top-p go in on line 3 — they delete entries from <code>probs</code> and renormalise
+    what's left. Different stage, different kind of operation:
+  </p>
+
+<pre><code>logits = model(prompt) / T                     # CONTRAST: gaps stretch/squash
+probs  = softmax(logits)
+probs  = keep_top_k(probs, k)                  # CROP: a fixed count survives
+probs  = keep_top_p(probs, p)                  # CROP: a fixed mass survives
+probs  = probs / probs.sum()                   # what's left must sum to 1
+token  = draw_one(probs)</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Knob</th><th>What it actually is</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>temperature</strong></td><td>Divide the logits. Ranking is preserved; only the gaps change.</td><td>The contrast slider. Same photo, more or less separation between tones.</td></tr>
+      <tr><td><strong>top-k</strong></td><td>Keep the k highest entries. A fixed <em>count</em>.</td><td><code>LIMIT 40</code>. Blind to how good row 41 was.</td></tr>
+      <tr><td><strong>top-p</strong></td><td>Keep the smallest set whose probabilities add up to p. A fixed <em>mass</em>.</td><td>Pagination by bytes, not by rows. The row count falls out of the data.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="d1t d1d">
+      <title id="d1t">The decoding pipeline, in execution order</title>
+      <desc id="d1d">Temperature divides the raw logits above the softmax
+        boundary. Below it, on probabilities, top-k then top-p delete entries,
+        the survivors are renormalised, and one token is drawn.</desc>
+      <defs>
+        <marker id="d1a" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="0" y="16" class="d-muted">logit space — unbounded floats</text>
+      <rect x="30" y="30" width="150" height="42" rx="4" class="d-box"/>
+      <text x="105" y="56" text-anchor="middle" class="d-mono">logits</text>
+      <line x1="182" y1="51" x2="236" y2="51" class="d-line" marker-end="url(#d1a)"/>
+      <rect x="240" y="30" width="180" height="42" rx="4" class="d-box-key"/>
+      <text x="330" y="56" text-anchor="middle" class="d-mono">÷ temperature</text>
+      <text x="432" y="47" class="d-muted">ranking cannot</text><text x="432" y="63" class="d-muted">change here</text>
+      <line x1="330" y1="74" x2="330" y2="126" class="d-line" marker-end="url(#d1a)"/>
+
+      <line x1="0" y1="100" x2="640" y2="100" class="d-line d-dashed"/>
+      <text x="0" y="118" class="d-muted">probability space — after softmax, sums to 1</text>
+
+      <rect x="14" y="132" width="122" height="42" rx="4" class="d-box"/>
+      <text x="75" y="158" text-anchor="middle" class="d-mono">softmax</text>
+      <line x1="138" y1="153" x2="176" y2="153" class="d-line" marker-end="url(#d1a)"/>
+      <rect x="180" y="132" width="122" height="42" rx="4" class="d-box-key"/>
+      <text x="241" y="158" text-anchor="middle" class="d-mono">top-k</text>
+      <line x1="304" y1="153" x2="342" y2="153" class="d-line" marker-end="url(#d1a)"/>
+      <rect x="346" y="132" width="122" height="42" rx="4" class="d-box-key"/>
+      <text x="407" y="158" text-anchor="middle" class="d-mono">top-p</text>
+      <line x1="470" y1="153" x2="508" y2="153" class="d-line" marker-end="url(#d1a)"/>
+      <rect x="512" y="132" width="122" height="42" rx="4" class="d-box"/>
+      <text x="573" y="152" text-anchor="middle" class="d-mono">renormalise</text>
+      <text x="573" y="166" text-anchor="middle" class="d-muted">after, not before</text>
+
+      <line x1="573" y1="176" x2="573" y2="218" class="d-line" marker-end="url(#d1a)"/>
+      <rect x="440" y="224" width="194" height="42" rx="4" class="d-box"/>
+      <text x="537" y="250" text-anchor="middle" class="d-mono">draw one token</text>
+      <text x="14" y="240" class="d-title">Two operations, one order.</text>
+      <text x="14" y="258" class="d-muted">Temperature reshapes. k and p delete.</text><text x="14" y="276" class="d-muted">Swap them and you get a different set.</text>
+    </svg>
+    <figcaption>
+      The dashed line is the softmax. Everything a temperature setting does
+      happens above it; everything <code>top_k</code> and <code>top_p</code> do
+      happens below. That single boundary is the whole confusion.
+    </figcaption>
+  </figure>
+
+  <h2>Why Holtzman's paper is the one that matters</h2>
+
+  <p>
+    Before 2019 the received wisdom was that better decoding meant getting closer to the
+    most likely sequence: beam search, wider beams, greedy at the limit. <em>The Curious
+    Case of Neural Text Degeneration</em> is the paper that said the goal itself is wrong.
+    Maximising likelihood produces text that repeats and then locks — the same clause over
+    and over — and the authors' central observation is that human-written text does not sit
+    at the top of the model's probability distribution at all. It wanders through a
+    lower-probability band that greedy decoding never visits.
+  </p>
+
+  <p>
+    So the fix isn't a better search. It's to sample, but from a truncated distribution —
+    and to truncate by <em>mass</em> rather than by count, because the right count changes
+    at every step. That's nucleus sampling. Top-k, from Fan et al.'s story-generation paper
+    the year before, is the thing it improves on.
+  </p>
+
+  <h2>The one formula</h2>
+
+  <div class="formula">V<sup>(p)</sup> = smallest V′ ⊆ V such that Σ<sub>x∈V′</sub> P(x) ≥ p</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>logits / T</code></td><td>(V,)</td><td>Temperature. On the raw scores, before anything else.</td></tr>
+      <tr><td><code>softmax</code></td><td>(V,)</td><td>Percentages summing to 1. The boundary.</td></tr>
+      <tr><td><code>argsort(−p)</code></td><td>(V,)</td><td>Most likely first. Both crops need the ranking.</td></tr>
+      <tr><td><code>cumsum</code></td><td>(V,)</td><td>Running total. Where it crosses p, you stop.</td></tr>
+      <tr><td><code>keep, zero rest</code></td><td>(V,)</td><td>The nucleus. Everything outside it is unreachable.</td></tr>
+      <tr><td><code>/ sum</code></td><td>(V,)</td><td>Renormalise. <strong>After</strong> truncating, never before.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Temperature never reorders anything</h2>
+
+  <p>
+    Dividing every logit by the same positive number is monotonic. Whatever was the most
+    likely token stays the most likely token. Temperature cannot promote a word into first
+    place; it can only decide how big a lead first place has. That's why "raise the
+    temperature to get a different answer" works only in combination with the dice roll —
+    you widened the gap the dice have to cover, you didn't change the ranking.
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>  T=0.2  H=0.0980  Monday=0.9811  tomorrow=0.0180  next=0.0009  the=0.0001
+  T=0.5  H=0.7347  Monday=0.7743  tomorrow=0.1563  next=0.0471  the=0.0173
+  T=0.8  H=1.2322  Monday=0.5862  tomorrow=0.2156  next=0.1019  the=0.0545
+  T=1.0  H=1.4843  Monday=0.4967  tomorrow=0.2232  next=0.1225  the=0.0743
+  T=1.5  H=1.9354  Monday=0.3525  tomorrow=0.2068  next=0.1386  the=0.0993
+  T=2.0  H=2.2101  Monday=0.2717  tomorrow=0.1821  next=0.1349  the=0.1051
+
+  ranking is IDENTICAL at every temperature:
+    all six orderings equal? <span class="ok">True</span>
+    only the GAPS changed. temperature cannot promote a token.</code></pre>
+
+  <p>
+    <code>H</code> is entropy in nats — how undecided the distribution is. At T=0.2 it's
+    0.098, which is "I have already decided". At T=2.0 it's 2.21, against a ceiling of ln 16
+    ≈ 2.77 for a 16-token vocabulary, which is nearly "no idea". Same model, same prompt,
+    same ranking.
+  </p>
+
+  <h3>The trap at T = 0</h3>
+
+  <p>
+    <code>temperature=0</code> is in every API doc and it is not a temperature. Dividing by
+    zero gives you infinities, then <code>nan</code> out of the softmax, then a crash in the
+    sampler. Every real implementation branches around it:
+  </p>
+
+<pre><code>  T = 0 exactly:
+    raises: T=0: real code branches to argmax instead
+    raw numpy would give: <span class="hl">[6.0e+12 5.2e+12 4.6e+12] ... then inf/nan</span>
+    what real code does instead: argmax -&gt; 'Monday' <span class="ok">✓</span></code></pre>
+
+  <p>
+    So "temperature 0" in a request body means "skip this whole page and take the argmax".
+    It is a special case wearing a number's clothing. The interview question here is not the
+    division; it's whether you know T&nbsp;=&nbsp;0 means greedy, and that greedy means the
+    failure mode in the last section.
+  </p>
+
+  <h2>Top-k: a fixed count, blind to shape</h2>
+
+  <p>
+    Keep the k highest-probability tokens, zero the rest, renormalise. On my confident step
+    — "the meeting is scheduled for ___", where <code>Monday</code> takes half the mass —
+    small k works fine:
+  </p>
+
+<pre><code>  k=1   keeps 0.4967 of the mass | Monday=1.0000
+  k=3   keeps 0.8424 of the mass | Monday=0.5896 tomorrow=0.2649 next=0.1454
+  k=5   keeps 0.9468 of the mass | Monday=0.5246 tomorrow=0.2357 next=0.1294 ...
+  k=10  keeps 0.9952 of the mass | Monday=0.4991 tomorrow=0.2242 next=0.1231 ...</code></pre>
+
+  <p>
+    Note what renormalising does: at k=3, <code>Monday</code> goes from 0.4967 to 0.5896.
+    The survivors absorb the deleted mass in proportion to what they already had. Nothing is
+    "boosted"; the denominator shrank.
+  </p>
+
+  <p>
+    Now the same k on a second step, where the model genuinely doesn't know what comes next
+    — a flat distribution with entropy 2.7374 nats against that 2.77 ceiling:
+  </p>
+
+<pre><code>  k=3   confident step keeps 0.8424 | flat step keeps <span class="hl">0.2616</span>  (gap 0.5807)
+  k=5   confident step keeps 0.9468 | flat step keeps <span class="hl">0.4117</span>  (gap 0.5351)
+  k=10  confident step keeps 0.9952 | flat step keeps 0.7275  (gap 0.2678)</code></pre>
+
+  <p>
+    One <code>k=3</code> setting is two completely different behaviours. On the confident
+    step it keeps 84% of what the model believes — reasonable. On the flat step it keeps 26%
+    and throws away three quarters of a distribution the model was telling you was genuinely
+    open. Turn k up to fix the flat step and you have now let junk into the confident one.
+    There is no value of k that is right for both, and a real generation makes both kinds of
+    step in the same sentence.
+  </p>
+
+  <h2>Top-p: a fixed mass, so the set size adapts</h2>
+
+  <p>
+    Nucleus sampling asks a different question. Not "how many tokens?" but "how much of the
+    model's belief?". Sort, take a running total, stop when it crosses p. The size of the
+    surviving set is decided by the distribution, not by you. Same two steps, same script:
+  </p>
+
+<pre><code>  p     confident step        flat step
+  0.5    2 tokens, mass 0.7199    7 tokens, mass 0.5476
+  0.8    3 tokens, mass 0.8424   12 tokens, mass 0.8333
+  0.9   <span class="ok"> 4 tokens</span>, mass 0.9166  <span class="ok"> 14 tokens</span>, mass 0.9253
+  0.95   6 tokens, mass 0.9671   15 tokens, mass 0.9654
+  1.0   16 tokens, mass 1.0000   16 tokens, mass 1.0000</code></pre>
+
+  <p>
+    That p=0.9 row is the paper. One setting, four tokens where the model is confident and
+    fourteen where it isn't. The nucleus grew because the distribution flattened — nobody
+    adjusted anything.
+  </p>
+
+<pre><code>  at p=0.9 the nucleus is 4 tokens on the confident step and 14 on the flat one.
+    confident nucleus: Monday tomorrow next the
+    flat nucleus:      Monday tomorrow next the March later noon sometime ...</code></pre>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 216" role="img" aria-labelledby="d2t d2d">
+      <title id="d2t">One distribution, three treatments</title>
+      <desc id="d2d">Sixteen bars for the same confident step, drawn three
+        times: untouched, cropped at a fixed count of three, and cropped at a
+        cumulative mass of 0.9 which keeps four. Filled bars survive; pale bars
+        are deleted. The labels give the mass each crop keeps on this step and
+        on a flatter one.</desc>
+    <text x="14" y="44" class="d-title">untouched</text>
+    <rect x="14" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="25" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="36" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="47" y="154.6" width="9" height="13.4" class="d-fill-key"/>
+    <rect x="58" y="162.6" width="9" height="5.4" class="d-fill-key"/> <rect x="69" y="164.4" width="9" height="3.6" class="d-fill-key"/> <rect x="80" y="165.6" width="9" height="2.4" class="d-fill-key"/> <rect x="91" y="166.5" width="9" height="1.5" class="d-fill-key"/>
+    <rect x="102" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="113" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="124" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="135" y="167.0" width="9" height="1.0" class="d-fill-key"/>
+    <rect x="146" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="157" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="168" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="179" y="167.0" width="9" height="1.0" class="d-fill-key"/>
+    <line x1="11" y1="168.0" x2="190" y2="168.0" class="d-line"/>
+    <text x="14" y="186" class="d-mono">all 16 reachable</text>
+    <text x="14" y="202" class="d-muted">tail mass 0.0111</text>
+    <text x="226" y="44" class="d-title">top-k, k=3</text>
+    <rect x="226" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="237" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="248" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="259" y="154.6" width="9" height="13.4" class="d-fill-sub"/>
+    <rect x="270" y="162.6" width="9" height="5.4" class="d-fill-sub"/> <rect x="281" y="164.4" width="9" height="3.6" class="d-fill-sub"/> <rect x="292" y="165.6" width="9" height="2.4" class="d-fill-sub"/> <rect x="303" y="166.5" width="9" height="1.5" class="d-fill-sub"/>
+    <rect x="314" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="325" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="336" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="347" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <rect x="358" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="369" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="380" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="391" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <line x1="223" y1="168.0" x2="402" y2="168.0" class="d-line"/>
+    <line x1="258" y1="52" x2="258" y2="174.0" class="d-line-key d-dashed"/>
+    <text x="262" y="66" class="d-muted">cut</text>
+    <text x="226" y="186" class="d-mono">keeps 0.8424 here</text>
+    <text x="226" y="202" class="d-muted">but 0.2616 when flat</text>
+    <text x="438" y="44" class="d-title">top-p, p=0.9</text>
+    <rect x="438" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="449" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="460" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="471" y="154.6" width="9" height="13.4" class="d-fill-key"/>
+    <rect x="482" y="162.6" width="9" height="5.4" class="d-fill-sub"/> <rect x="493" y="164.4" width="9" height="3.6" class="d-fill-sub"/> <rect x="504" y="165.6" width="9" height="2.4" class="d-fill-sub"/> <rect x="515" y="166.5" width="9" height="1.5" class="d-fill-sub"/>
+    <rect x="526" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="537" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="548" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="559" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <rect x="570" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="581" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="592" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="603" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <line x1="435" y1="168.0" x2="614" y2="168.0" class="d-line"/>
+    <line x1="481" y1="52" x2="481" y2="174.0" class="d-line-key d-dashed"/>
+    <text x="485" y="66" class="d-muted">cut</text>
+    <text x="438" y="186" class="d-mono">keeps 4 tokens here</text>
+    <text x="438" y="202" class="d-muted">but 14 when flat</text>
+    <text x="14" y="26" class="d-muted">filled = survives the crop, pale = deleted then renormalised away</text>
+    </svg>
+    <figcaption>
+      Same sixteen bars every time — this is the confident step, straight from
+      the script. <code>k=3</code> cuts at a place it chose before seeing the
+      data. <code>p=0.9</code> cuts one bar later here, and ten bars later on
+      the flat step. Both crops then renormalise, so all three panels end up
+      summing to 1.
+    </figcaption>
+  </figure>
+
+  <div class="note">
+    <strong>p = 1.0 is not "off", it is "keep everything".</strong> On my
+    16-token vocab that leaves 0.0111 of mass in tokens like
+    <code>asdf</code> at 0.000167 — reachable roughly once every six thousand
+    tokens. On a 50k vocab that tail is where the genuinely bizarre outputs
+    come from. Holtzman's argument is precisely that this tail is
+    disproportionately reachable when you sample untruncated.
+  </div>
+
+  <h2>The order is part of the definition</h2>
+
+  <p>
+    Because temperature reshapes and truncation crops, running them in the other order gives
+    you a different distribution — not a rounding difference, a different <em>set of
+    reachable tokens</em>. At T=1.5 and p=0.9 on my fixed vector:
+  </p>
+
+<pre><code>  T=1.5, p=0.9
+    temp-then-p keeps 7 tokens: Monday tomorrow next the March later noon
+    p-then-temp keeps 4 tokens: Monday tomorrow next the
+    same surviving set? <span class="hl">False</span>
+       Monday  temp-then-p 0.3809   p-then-temp 0.4422   diff -0.0613
+     tomorrow  temp-then-p 0.2234   p-then-temp 0.2594   diff -0.0359
+         next  temp-then-p 0.1498   p-then-temp 0.1739   diff -0.0241
+          the  temp-then-p 0.1073   p-then-temp 0.1246   diff -0.0173
+        March  temp-then-p 0.0589   p-then-temp <span class="hl">0.0000</span>   diff +0.0589
+  max abs difference: 0.0613</code></pre>
+
+  <p>
+    <code>March</code> is reachable in one order and impossible in the other. Real
+    implementations — Hugging Face's logits processors, vLLM, the hosted APIs — do
+    <strong>temperature, then top-k, then top-p</strong>. Raising temperature flattens the
+    distribution first, which makes the nucleus <em>grow</em>, which is what you expected
+    when you turned the dial up. In the wrong order the nucleus is frozen at T=1 and
+    temperature only redistributes inside it. Same two numbers, quietly different product.
+  </p>
+
+  <p>
+    The other order mistake is renormalising before you truncate instead of after. It
+    doesn't error — it just hands the sampler a vector that no longer sums to 1:
+  </p>
+
+<pre><code>  and renormalising BEFORE truncating instead of after:
+    sum after cutting an already-normalised vector: <span class="hl">0.9807</span>
+    np.random.choice raises: probabilities do not sum to 1</code></pre>
+
+  <h2>Why greedy decoding actually fails</h2>
+
+  <p>
+    You don't need a language model to see degeneration. A first-order Markov chain over
+    eight words is enough: take the argmax at every step and the moment you revisit a state
+    you are in a cycle forever, because the argmax is deterministic. Nothing can break it.
+    This is the same mechanism as the repetition loop in a real model, minus the excuses.
+  </p>
+
+<pre><code>  greedy from 'the': the model is a model is a model is a model is ...
+  loop detected, period 3: <span class="hl">model is a</span>
+  greedy avg surprisal: 1.0670 bits/token
+
+  sampled (T=1.0, p=0.9): the model is the the data good model learns from data ...
+  loop detected? <span class="ok">no</span> -- it revisits states without getting stuck
+  sampled avg surprisal over 200 runs: 2.0463 bits/token
+  greedy is 0.9792 bits/token LESS surprising
+  -- and unreadable. maximising likelihood is not the goal.</code></pre>
+
+  <p>
+    Read those two surprisal numbers again. Surprisal is <code>−log₂ P(token)</code> under
+    the model — the number the model is trained to make small. Greedy wins on it, by a full
+    bit per token, and produces <em>"model is a model is a model is a"</em>. The sampled
+    text is twice as surprising to the model and is the one you'd ship.
+  </p>
+
+  <div class="note">
+    <strong>That gap is Holtzman's finding, in miniature.</strong> Human text
+    is not the most likely text. A decoder that optimises for likelihood
+    optimises for the wrong thing, and the failure is not subtle — it's a
+    literal loop. The paper's response is to keep the sampling and constrain
+    <em>where</em> you sample from.
+  </div>
+
+  <p>
+    And the parameter that reproduces this on purpose: <code>top_k=1</code>. Keeping exactly
+    one token means the renormalised distribution is 1.0 on the argmax, so the dice roll is
+    a formality.
+  </p>
+
+<pre><code>  top-k with k=1 is greedy wearing a hat: <span class="hl">identical to the greedy walk</span>
+    k=1 walk: the model is a model is a model is a model is ...</code></pre>
+
+  <div class="note">
+    <strong>None of this changes the model.</strong> Same weights, same logits,
+    same forward pass. Temperature, k and p are how you <em>read</em> the
+    output. That's why they're request parameters and not a fine-tune, and why
+    "the model is repeating itself" is often a decoding bug, not a training one.
+  </div>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    <code>temperature=0.7, top_p=0.9</code> என்று config-ல் எழுதி ஒரு LLM feature-ஐ
+    எட்டு மாதங்கள் production-ல் ஓட விட்டேன் — இரண்டாவது parameter என்ன செய்கிறது
+    என்று சொல்லத் தெரியாமல். எனக்குத் தெரிந்ததெல்லாம் கதைகள்தான் — "temperature
+    குறைத்தால் உண்மையாக இருக்கும்", "top_p-ம் temperature மாதிரிதான், ஆனால்
+    வேறு" — அந்தக் கதைகள் தவறு, முக்கியமான ஒரு விதத்தில். என் மனதில் ஒரே பெட்டியில்
+    மூன்று dial-கள் இருந்தன. அப்படி இல்லை. அது ஒரு contrast slider-ம் ஒரு crop
+    tool-ம், அந்த வரிசையில். வரிசையைப் பார்த்த பிறகு குழப்பங்கள் எல்லாம் தீர்ந்தன.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (temperature, top-k,
+    top-p, nucleus, logits, softmax, greedy, entropy, renormalise,
+    distribution…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால் code-லும் மற்ற
+    papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>Temperature என்பது contrast. Top-k, top-p என்பவை crop.</h2>
+
+  <p>
+    ஒவ்வொரு step-லும் model உங்களுக்குத் தருவது ஒரே ஒரு array: vocabulary-ல்
+    உள்ள ஒவ்வொரு entry-க்கும் ஒரு score. என் விளையாட்டு vocab-ல் பதினாறு entry,
+    நிஜமான ஒன்றில் ஐம்பதாயிரம். அவ்வளவுதான். இந்த மூன்று parameter-களும்
+    தொடுவது அந்த array-ஐ மட்டும்தான்.
+  </p>
+
+<pre><code>logits = model(prompt)            # ஒரு vocab entry-க்கு ஒரு float
+probs  = softmax(logits)          # சதவீதம், கூட்டினால் 1
+token  = draw_one(probs)          # எடையிட்ட பகடை உருட்டல்</code></pre>
+
+  <p>
+    Temperature வரி 1-ல் நுழைகிறது — softmax-க்கு <em>முன்</em> logits-ஐ
+    வகுக்கிறது. Top-k-ம் top-p-ம் வரி 3-ல் நுழைகின்றன — <code>probs</code>-லிருந்து
+    entry-களை அழித்துவிட்டு மீதியை renormalise செய்கின்றன. வேறு stage, வேறு
+    வகையான operation:
+  </p>
+
+<pre><code>logits = model(prompt) / T          # CONTRAST: இடைவெளி விரியும்/சுருங்கும்
+probs  = softmax(logits)
+probs  = keep_top_k(probs, k)       # CROP: நிலையான எண்ணிக்கை தப்பிக்கும்
+probs  = keep_top_p(probs, p)       # CROP: நிலையான mass தப்பிக்கும்
+probs  = probs / probs.sum()        # மீதி 1-ஆகக் கூட வேண்டும்
+token  = draw_one(probs)</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Knob</th><th>உண்மையில் என்ன</th><th>Programmer-க்கான ஒப்புமை</th></tr></thead>
+    <tbody>
+      <tr><td><strong>temperature</strong></td><td>Logits-ஐ வகுக்கிறது. வரிசை மாறாது; இடைவெளி மட்டும் மாறும்.</td><td>Contrast slider. அதே புகைப்படம், நிறங்களுக்கு இடையே அதிக அல்லது குறைந்த வேறுபாடு.</td></tr>
+      <tr><td><strong>top-k</strong></td><td>உயர்ந்த k entry-களை வைத்துக்கொள். நிலையான <em>எண்ணிக்கை</em>.</td><td><code>LIMIT 40</code>. வரிசை 41 எவ்வளவு நல்லது என்பது தெரியாது.</td></tr>
+      <tr><td><strong>top-p</strong></td><td>Probability கூட்டுத்தொகை p-ஐ எட்டும் மிகச்சிறிய தொகுப்பை வைத்துக்கொள். நிலையான <em>mass</em>.</td><td>வரிசைகளால் அல்ல, bytes-ஆல் pagination. எத்தனை வரிசை என்பது data-விலிருந்து வரும்.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="d1t-ta d1d-ta">
+      <title id="d1t-ta">Decoding pipeline, செயல்படும் வரிசையில்</title>
+      <desc id="d1d-ta">Softmax எல்லைக்கு மேலே temperature raw logits-ஐ
+        வகுக்கிறது. கீழே, probabilities மீது, top-k பிறகு top-p entry-களை
+        அழிக்கின்றன, மீதி renormalise ஆகி ஒரு token எடுக்கப்படுகிறது.</desc>
+      <defs>
+        <marker id="d1a-ta" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="0" y="16" class="d-muted">logit space — வரம்பற்ற floats</text>
+      <rect x="30" y="30" width="150" height="42" rx="4" class="d-box"/>
+      <text x="105" y="56" text-anchor="middle" class="d-mono">logits</text>
+      <line x1="182" y1="51" x2="236" y2="51" class="d-line" marker-end="url(#d1a-ta)"/>
+      <rect x="240" y="30" width="180" height="42" rx="4" class="d-box-key"/>
+      <text x="330" y="56" text-anchor="middle" class="d-mono">÷ temperature</text>
+      <text x="432" y="47" class="d-muted">வரிசை இங்கு</text><text x="432" y="63" class="d-muted">மாற முடியாது</text>
+      <line x1="330" y1="74" x2="330" y2="126" class="d-line" marker-end="url(#d1a-ta)"/>
+
+      <line x1="0" y1="100" x2="640" y2="100" class="d-line d-dashed"/>
+      <text x="0" y="118" class="d-muted">probability space — softmax பிறகு, கூட்டு 1</text>
+
+      <rect x="14" y="132" width="122" height="42" rx="4" class="d-box"/>
+      <text x="75" y="158" text-anchor="middle" class="d-mono">softmax</text>
+      <line x1="138" y1="153" x2="176" y2="153" class="d-line" marker-end="url(#d1a-ta)"/>
+      <rect x="180" y="132" width="122" height="42" rx="4" class="d-box-key"/>
+      <text x="241" y="158" text-anchor="middle" class="d-mono">top-k</text>
+      <line x1="304" y1="153" x2="342" y2="153" class="d-line" marker-end="url(#d1a-ta)"/>
+      <rect x="346" y="132" width="122" height="42" rx="4" class="d-box-key"/>
+      <text x="407" y="158" text-anchor="middle" class="d-mono">top-p</text>
+      <line x1="470" y1="153" x2="508" y2="153" class="d-line" marker-end="url(#d1a-ta)"/>
+      <rect x="512" y="132" width="122" height="42" rx="4" class="d-box"/>
+      <text x="573" y="152" text-anchor="middle" class="d-mono">renormalise</text>
+      <text x="573" y="166" text-anchor="middle" class="d-muted">பிறகு, முன் அல்ல</text>
+
+      <line x1="573" y1="176" x2="573" y2="218" class="d-line" marker-end="url(#d1a-ta)"/>
+      <rect x="440" y="224" width="194" height="42" rx="4" class="d-box"/>
+      <text x="537" y="250" text-anchor="middle" class="d-mono">ஒரு token எடு</text>
+      <text x="14" y="240" class="d-title">இரு operation, ஒரு வரிசை.</text>
+      <text x="14" y="258" class="d-muted">Temperature வடிவம் மாற்றும். k, p அழிக்கும்.</text><text x="14" y="276" class="d-muted">வரிசை மாற்றினால் வேறு தொகுப்பு.</text>
+    </svg>
+    <figcaption>
+      புள்ளிக்கோடு softmax. Temperature செய்யும் அனைத்தும் அதற்கு மேலே நடக்கிறது;
+      <code>top_k</code>, <code>top_p</code> செய்யும் அனைத்தும் கீழே. அந்த ஒரு
+      எல்லைதான் முழுக் குழப்பமும்.
+    </figcaption>
+  </figure>
+
+  <p class="thanglish">
+    Moonu knob illa — rendu operation dhaan. Temperature softmax-kku munnadi
+    logits-a divide pannudhu, top-k-um top-p-um softmax-kku appuram probs-a crop
+    pannudhu. Andha border dhaan ellaa confusion-oda moolam.
+  </p>
+
+  <h2>Holtzman-ன் paper ஏன் முக்கியம்</h2>
+
+  <p>
+    2019-க்கு முன் நம்பப்பட்டது: நல்ல decoding என்றால் மிக அதிக probability
+    உள்ள sequence-ஐ நெருங்குவது — beam search, அகலமான beam, எல்லையில் greedy.
+    <em>The Curious Case of Neural Text Degeneration</em>தான் இலக்கே தவறு என்று
+    சொன்ன paper. Likelihood-ஐ அதிகப்படுத்தினால் text திரும்பத் திரும்ப வந்து
+    பிறகு பூட்டிக்கொள்கிறது — அதே clause மீண்டும் மீண்டும். ஆசிரியர்களின்
+    மையக் கவனிப்பு: மனிதர்கள் எழுதும் text, model-ன் distribution-ன் உச்சியில்
+    இருப்பதே இல்லை. அது greedy decoding ஒருபோதும் செல்லாத, குறைந்த probability
+    உள்ள ஒரு பட்டையில் அலைகிறது.
+  </p>
+
+  <p>
+    எனவே தீர்வு சிறந்த ஒரு search அல்ல. Sample செய்ய வேண்டும், ஆனால் வெட்டப்பட்ட
+    ஒரு distribution-லிருந்து — எண்ணிக்கையால் அல்ல, <em>mass</em>-ஆல் வெட்ட
+    வேண்டும், ஏனெனில் சரியான எண்ணிக்கை ஒவ்வொரு step-லும் மாறுகிறது. அதுதான்
+    nucleus sampling. அதற்கு முந்தைய ஆண்டு Fan et al.-ன் story-generation
+    paper-ல் வந்த top-k, இது மேம்படுத்தும் விஷயம்.
+  </p>
+
+  <h2>அந்த ஒரு சூத்திரம்</h2>
+
+  <div class="formula">V<sup>(p)</sup> = smallest V′ ⊆ V such that Σ<sub>x∈V′</sub> P(x) ≥ p</div>
+
+  <p>இதை pipeline stage-களாகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>logits / T</code></td><td>(V,)</td><td>Temperature. Raw score மீது, எல்லாவற்றுக்கும் முன்.</td></tr>
+      <tr><td><code>softmax</code></td><td>(V,)</td><td>கூட்டினால் 1 ஆகும் சதவீதம். இதுதான் எல்லை.</td></tr>
+      <tr><td><code>argsort(−p)</code></td><td>(V,)</td><td>அதிக probability முதலில். இரு crop-க்கும் வரிசை தேவை.</td></tr>
+      <tr><td><code>cumsum</code></td><td>(V,)</td><td>ஓடும் கூட்டுத்தொகை. p-ஐத் தாண்டும் இடத்தில் நிறுத்து.</td></tr>
+      <tr><td><code>keep, zero rest</code></td><td>(V,)</td><td>Nucleus. அதற்கு வெளியே உள்ள அனைத்தும் எட்ட முடியாதவை.</td></tr>
+      <tr><td><code>/ sum</code></td><td>(V,)</td><td>Renormalise. வெட்டிய <strong>பிறகு</strong>, ஒருபோதும் முன் அல்ல.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Temperature ஒருபோதும் வரிசையை மாற்றுவதில்லை</h2>
+
+  <p>
+    ஒவ்வொரு logit-ஐயும் ஒரே நேர்மறை எண்ணால் வகுப்பது monotonic. முன்பு எது
+    அதிக probability கொண்ட token-ஆக இருந்ததோ அதுவே பிறகும் இருக்கும்.
+    Temperature ஒரு வார்த்தையை முதலிடத்துக்குத் தூக்க முடியாது; முதலிடத்தின்
+    முன்னிலை எவ்வளவு பெரியது என்பதை மட்டுமே தீர்மானிக்க முடியும். அதனால்தான்
+    "வேறு பதில் வேண்டுமா, temperature-ஐ ஏற்று" என்பது பகடை உருட்டலோடு
+    சேர்ந்துதான் வேலை செய்கிறது — பகடை கடக்க வேண்டிய இடைவெளியை நீங்கள்
+    அகலப்படுத்தினீர்கள், வரிசையை மாற்றவில்லை.
+  </p>
+
+  <p><strong>என் வார்த்தையை நம்ப வேண்டாம். இதோ நிஜமான output:</strong></p>
+
+<pre><code>  T=0.2  H=0.0980  Monday=0.9811  tomorrow=0.0180  next=0.0009  the=0.0001
+  T=0.5  H=0.7347  Monday=0.7743  tomorrow=0.1563  next=0.0471  the=0.0173
+  T=0.8  H=1.2322  Monday=0.5862  tomorrow=0.2156  next=0.1019  the=0.0545
+  T=1.0  H=1.4843  Monday=0.4967  tomorrow=0.2232  next=0.1225  the=0.0743
+  T=1.5  H=1.9354  Monday=0.3525  tomorrow=0.2068  next=0.1386  the=0.0993
+  T=2.0  H=2.2101  Monday=0.2717  tomorrow=0.1821  next=0.1349  the=0.1051
+
+  ranking is IDENTICAL at every temperature:
+    all six orderings equal? <span class="ok">True</span>
+    only the GAPS changed. temperature cannot promote a token.</code></pre>
+
+  <p>
+    <code>H</code> என்பது nats-ல் entropy — distribution எவ்வளவு
+    முடிவெடுக்காமல் இருக்கிறது என்பது. T=0.2-ல் அது 0.098, அதாவது "நான் ஏற்கனவே
+    முடிவு செய்துவிட்டேன்". T=2.0-ல் அது 2.21, 16-token vocabulary-க்கான உச்ச
+    வரம்பான ln 16 ≈ 2.77-க்கு எதிராக — கிட்டத்தட்ட "தெரியவே தெரியாது". அதே
+    model, அதே prompt, அதே வரிசை.
+  </p>
+
+  <h3>T = 0 என்ற பொறி</h3>
+
+  <p>
+    <code>temperature=0</code> ஒவ்வொரு API doc-லும் இருக்கிறது, அது ஒரு
+    temperature அல்ல. பூஜ்ஜியத்தால் வகுத்தால் infinity, பிறகு softmax-லிருந்து
+    <code>nan</code>, பிறகு sampler-ல் crash. நிஜமான ஒவ்வொரு implementation-ம்
+    அதைச் சுற்றி வளைக்கிறது:
+  </p>
+
+<pre><code>  T = 0 exactly:
+    raises: T=0: real code branches to argmax instead
+    raw numpy would give: <span class="hl">[6.0e+12 5.2e+12 4.6e+12] ... then inf/nan</span>
+    what real code does instead: argmax -&gt; 'Monday' <span class="ok">✓</span></code></pre>
+
+  <p>
+    எனவே request body-ல் "temperature 0" என்றால் "இந்தப் பக்கம் முழுவதையும்
+    தவிர்த்துவிட்டு argmax எடு" என்று அர்த்தம். எண்ணின் உடையணிந்த ஒரு சிறப்பு
+    வழக்கு. இங்கே interview கேள்வி வகுத்தல் அல்ல; T&nbsp;=&nbsp;0 என்றால்
+    greedy என்றும், greedy என்றால் கடைசிப் பிரிவில் உள்ள தோல்வி முறை என்றும்
+    உங்களுக்குத் தெரியுமா என்பதுதான்.
+  </p>
+
+  <h2>Top-k: நிலையான எண்ணிக்கை, வடிவம் தெரியாதது</h2>
+
+  <p>
+    அதிக probability உள்ள k token-களை வைத்துக்கொள், மீதியைப் பூஜ்ஜியமாக்கு,
+    renormalise செய். என் நம்பிக்கையான step-ல் — "the meeting is scheduled for
+    ___", அங்கு <code>Monday</code> பாதி mass-ஐ எடுத்துக்கொள்கிறது — சிறிய k
+    நன்றாக வேலை செய்கிறது:
+  </p>
+
+<pre><code>  k=1   keeps 0.4967 of the mass | Monday=1.0000
+  k=3   keeps 0.8424 of the mass | Monday=0.5896 tomorrow=0.2649 next=0.1454
+  k=5   keeps 0.9468 of the mass | Monday=0.5246 tomorrow=0.2357 next=0.1294 ...
+  k=10  keeps 0.9952 of the mass | Monday=0.4991 tomorrow=0.2242 next=0.1231 ...</code></pre>
+
+  <p>
+    Renormalise என்ன செய்கிறது என்று பாருங்கள்: k=3-ல் <code>Monday</code>
+    0.4967-லிருந்து 0.5896-க்குப் போகிறது. தப்பியவை, அழிக்கப்பட்ட mass-ஐ
+    ஏற்கனவே தங்களிடம் இருந்ததற்கு விகிதாசாரமாக உறிஞ்சிக்கொள்கின்றன. எதுவும்
+    "உயர்த்தப்படவில்லை"; வகுத்தி சுருங்கியது.
+  </p>
+
+  <p>
+    இப்போது இதே k-ஐ இரண்டாவது step-ல் — அங்கு அடுத்து என்ன வரும் என்று
+    model-க்கு உண்மையிலேயே தெரியவில்லை — 2.77 உச்ச வரம்புக்கு எதிராக 2.7374
+    nats entropy கொண்ட ஒரு தட்டையான distribution:
+  </p>
+
+<pre><code>  k=3   confident step keeps 0.8424 | flat step keeps <span class="hl">0.2616</span>  (gap 0.5807)
+  k=5   confident step keeps 0.9468 | flat step keeps <span class="hl">0.4117</span>  (gap 0.5351)
+  k=10  confident step keeps 0.9952 | flat step keeps 0.7275  (gap 0.2678)</code></pre>
+
+  <p>
+    ஒரே <code>k=3</code> அமைப்பு, முற்றிலும் வேறான இரு நடத்தைகள். நம்பிக்கையான
+    step-ல் model நம்புவதில் 84%-ஐ வைத்துக்கொள்கிறது — நியாயம். தட்டையான
+    step-ல் 26% மட்டும் வைத்துக்கொண்டு, model உண்மையிலேயே திறந்தது என்று
+    சொன்ன distribution-ன் முக்கால் பங்கைத் தூக்கி எறிகிறது. தட்டையான step-ஐச்
+    சரிசெய்ய k-ஐ ஏற்றினால், நம்பிக்கையான step-க்குள் குப்பையை அனுமதித்துவிட்டீர்கள்.
+    இரண்டுக்கும் சரியான k மதிப்பு எதுவும் இல்லை, ஒரு நிஜமான generation ஒரே
+    வாக்கியத்தில் இரு வகை step-களையும் செய்கிறது.
+  </p>
+
+  <p class="thanglish">
+    k oru fixed count dhaan, distribution-oda shape-a paakave paakadhu. Same
+    k=3 confident step-la 84% mass keep pannudhu, flat step-la 26% dhaan.
+    Rendukkum sariyaana k value-e kidaiyaadhu.
+  </p>
+
+  <h2>Top-p: நிலையான mass, எனவே தொகுப்பின் அளவு தானாக மாறும்</h2>
+
+  <p>
+    Nucleus sampling வேறு ஒரு கேள்வியைக் கேட்கிறது. "எத்தனை token?" அல்ல,
+    "model-ன் நம்பிக்கையில் எவ்வளவு?" என்று. வரிசைப்படுத்து, ஓடும்
+    கூட்டுத்தொகை எடு, p-ஐத் தாண்டும்போது நிறுத்து. தப்பிக்கும் தொகுப்பின்
+    அளவை distribution தீர்மானிக்கிறது, நீங்கள் அல்ல. அதே இரு step, அதே script:
+  </p>
+
+<pre><code>  p     confident step        flat step
+  0.5    2 tokens, mass 0.7199    7 tokens, mass 0.5476
+  0.8    3 tokens, mass 0.8424   12 tokens, mass 0.8333
+  0.9   <span class="ok"> 4 tokens</span>, mass 0.9166  <span class="ok"> 14 tokens</span>, mass 0.9253
+  0.95   6 tokens, mass 0.9671   15 tokens, mass 0.9654
+  1.0   16 tokens, mass 1.0000   16 tokens, mass 1.0000</code></pre>
+
+  <p>
+    அந்த p=0.9 வரிசைதான் paper. ஒரே அமைப்பு: model நம்பிக்கையாக இருக்கும்
+    இடத்தில் நான்கு token, இல்லாத இடத்தில் பதினான்கு. Distribution
+    தட்டையானதால் nucleus வளர்ந்தது — யாரும் எதையும் மாற்றவில்லை.
+  </p>
+
+<pre><code>  at p=0.9 the nucleus is 4 tokens on the confident step and 14 on the flat one.
+    confident nucleus: Monday tomorrow next the
+    flat nucleus:      Monday tomorrow next the March later noon sometime ...</code></pre>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 216" role="img" aria-labelledby="d2t-ta d2d-ta">
+      <title id="d2t-ta">ஒரே distribution, மூன்று நடத்தைகள்</title>
+      <desc id="d2d-ta">அதே நம்பிக்கையான step-க்கான பதினாறு bar, மூன்று முறை
+        வரையப்பட்டவை: தொடாதது, நிலையான எண்ணிக்கை மூன்றில் வெட்டப்பட்டது,
+        மற்றும் 0.9 கூட்டு mass-ல் வெட்டப்பட்டு நான்கு தங்குவது. நிரப்பிய bar
+        தப்பிக்கிறது; வெளிறிய bar அழிக்கப்படுகிறது. Label-கள் ஒவ்வொரு crop-ம்
+        இந்த step-லும் தட்டையான step-லும் வைத்துக்கொள்ளும் mass-ஐச் சொல்கின்றன.</desc>
+    <text x="14" y="44" class="d-title">தொடாதது</text>
+    <rect x="14" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="25" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="36" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="47" y="154.6" width="9" height="13.4" class="d-fill-key"/>
+    <rect x="58" y="162.6" width="9" height="5.4" class="d-fill-key"/> <rect x="69" y="164.4" width="9" height="3.6" class="d-fill-key"/> <rect x="80" y="165.6" width="9" height="2.4" class="d-fill-key"/> <rect x="91" y="166.5" width="9" height="1.5" class="d-fill-key"/>
+    <rect x="102" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="113" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="124" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="135" y="167.0" width="9" height="1.0" class="d-fill-key"/>
+    <rect x="146" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="157" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="168" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="179" y="167.0" width="9" height="1.0" class="d-fill-key"/>
+    <line x1="11" y1="168.0" x2="190" y2="168.0" class="d-line"/>
+    <text x="14" y="186" class="d-mono">16-ம் எட்டக்கூடியவை</text>
+    <text x="14" y="202" class="d-muted">tail mass 0.0111</text>
+    <text x="226" y="44" class="d-title">top-k, k=3</text>
+    <rect x="226" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="237" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="248" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="259" y="154.6" width="9" height="13.4" class="d-fill-sub"/>
+    <rect x="270" y="162.6" width="9" height="5.4" class="d-fill-sub"/> <rect x="281" y="164.4" width="9" height="3.6" class="d-fill-sub"/> <rect x="292" y="165.6" width="9" height="2.4" class="d-fill-sub"/> <rect x="303" y="166.5" width="9" height="1.5" class="d-fill-sub"/>
+    <rect x="314" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="325" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="336" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="347" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <rect x="358" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="369" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="380" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="391" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <line x1="223" y1="168.0" x2="402" y2="168.0" class="d-line"/>
+    <line x1="258" y1="52" x2="258" y2="174.0" class="d-line-key d-dashed"/>
+    <text x="262" y="66" class="d-muted">வெட்டு</text>
+    <text x="226" y="186" class="d-mono">இங்கு 0.8424</text>
+    <text x="226" y="202" class="d-muted">தட்டையில் 0.2616</text>
+    <text x="438" y="44" class="d-title">top-p, p=0.9</text>
+    <rect x="438" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="449" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="460" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="471" y="154.6" width="9" height="13.4" class="d-fill-key"/>
+    <rect x="482" y="162.6" width="9" height="5.4" class="d-fill-sub"/> <rect x="493" y="164.4" width="9" height="3.6" class="d-fill-sub"/> <rect x="504" y="165.6" width="9" height="2.4" class="d-fill-sub"/> <rect x="515" y="166.5" width="9" height="1.5" class="d-fill-sub"/>
+    <rect x="526" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="537" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="548" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="559" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <rect x="570" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="581" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="592" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="603" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <line x1="435" y1="168.0" x2="614" y2="168.0" class="d-line"/>
+    <line x1="481" y1="52" x2="481" y2="174.0" class="d-line-key d-dashed"/>
+    <text x="485" y="66" class="d-muted">வெட்டு</text>
+    <text x="438" y="186" class="d-mono">இங்கு 4 token</text>
+    <text x="438" y="202" class="d-muted">தட்டையில் 14</text>
+    <text x="14" y="26" class="d-muted">நிரப்பியது = தப்பியது, வெளிறியது = அழிக்கப்பட்டது</text>
+    </svg>
+    <figcaption>
+      ஒவ்வொரு முறையும் அதே பதினாறு bar — இது நம்பிக்கையான step, script-லிருந்து
+      நேரடியாக. <code>k=3</code> data-ஐப் பார்ப்பதற்கு முன்பே தேர்ந்தெடுத்த
+      இடத்தில் வெட்டுகிறது. <code>p=0.9</code> இங்கே ஒரு bar தாமதமாகவும்,
+      தட்டையான step-ல் பத்து bar தாமதமாகவும் வெட்டுகிறது. இரு crop-ம் பிறகு
+      renormalise செய்வதால், மூன்று பலகங்களும் கூட்டினால் 1 ஆகின்றன.
+    </figcaption>
+  </figure>
+
+  <div class="note">
+    <strong>p = 1.0 என்பது "அணைத்தது" அல்ல, "எல்லாவற்றையும் வைத்துக்கொள்"
+    என்பது.</strong> என் 16-token vocab-ல் அது 0.000167-ல் உள்ள
+    <code>asdf</code> போன்ற token-களில் 0.0111 mass-ஐ விட்டுவைக்கிறது —
+    ஏறக்குறைய ஆறாயிரம் token-க்கு ஒரு முறை எட்டக்கூடியது. 50k vocab-ல் அந்த
+    வால்தான் உண்மையிலேயே விநோதமான output-கள் வரும் இடம். வெட்டாமல் sample
+    செய்தால் இந்த வால் விகிதாசாரத்துக்கு மீறி எட்டக்கூடியதாகிறது என்பதுதான்
+    Holtzman-ன் வாதம்.
+  </div>
+
+  <h2>வரிசை என்பது வரையறையின் ஒரு பகுதி</h2>
+
+  <p>
+    Temperature வடிவத்தை மாற்றுகிறது, truncation வெட்டுகிறது — எனவே அவற்றை
+    மறுவரிசையில் ஓட்டினால் வேறு distribution கிடைக்கிறது. இது ஒரு rounding
+    வித்தியாசம் அல்ல, <em>எட்டக்கூடிய token-களின் தொகுப்பே</em> வேறு. என்
+    நிலையான vector-ல் T=1.5, p=0.9-ல்:
+  </p>
+
+<pre><code>  T=1.5, p=0.9
+    temp-then-p keeps 7 tokens: Monday tomorrow next the March later noon
+    p-then-temp keeps 4 tokens: Monday tomorrow next the
+    same surviving set? <span class="hl">False</span>
+       Monday  temp-then-p 0.3809   p-then-temp 0.4422   diff -0.0613
+     tomorrow  temp-then-p 0.2234   p-then-temp 0.2594   diff -0.0359
+         next  temp-then-p 0.1498   p-then-temp 0.1739   diff -0.0241
+          the  temp-then-p 0.1073   p-then-temp 0.1246   diff -0.0173
+        March  temp-then-p 0.0589   p-then-temp <span class="hl">0.0000</span>   diff +0.0589
+  max abs difference: 0.0613</code></pre>
+
+  <p>
+    <code>March</code> ஒரு வரிசையில் எட்டக்கூடியது, மற்றொன்றில் சாத்தியமே
+    இல்லை. நிஜமான implementation-கள் — Hugging Face-ன் logits processors, vLLM,
+    hosted API-கள் — <strong>temperature, பிறகு top-k, பிறகு top-p</strong>
+    என்றே செய்கின்றன. Temperature-ஐ ஏற்றினால் distribution முதலில்
+    தட்டையாகிறது, அதனால் nucleus <em>வளர்கிறது</em> — dial-ஐ ஏற்றும்போது
+    நீங்கள் எதிர்பார்த்தது அதுதான். தவறான வரிசையில் nucleus T=1-ல்
+    உறைந்துவிடுகிறது, temperature அதற்குள் மட்டுமே மறுபங்கீடு செய்கிறது. அதே
+    இரு எண், அமைதியாக வேறான ஒரு product.
+  </p>
+
+  <p>
+    மற்றொரு வரிசைத் தவறு: வெட்டிய பிறகு அல்லாமல், வெட்டுவதற்கு முன்
+    renormalise செய்வது. அது error தரவில்லை — sampler-க்கு கூட்டினால் 1
+    ஆகாத ஒரு vector-ஐக் கொடுக்கிறது, அவ்வளவுதான்:
+  </p>
+
+<pre><code>  and renormalising BEFORE truncating instead of after:
+    sum after cutting an already-normalised vector: <span class="hl">0.9807</span>
+    np.random.choice raises: probabilities do not sum to 1</code></pre>
+
+  <p class="thanglish">
+    Order maathinaa vera distribution dhaan varum. Temp-then-p 7 token vidudhu,
+    p-then-temp 4 dhaan — March oru order-la reachable, innoru order-la
+    impossible. Adhaan ellaa inference server-um temp munnadi vekkudhu.
+  </p>
+
+  <h2>Greedy decoding உண்மையில் ஏன் தோல்வியடைகிறது</h2>
+
+  <p>
+    Degeneration-ஐப் பார்க்க உங்களுக்கு ஒரு language model தேவையில்லை. எட்டு
+    வார்த்தைகள் மீதான ஒரு first-order Markov chain போதும்: ஒவ்வொரு step-லும்
+    argmax எடுங்கள், ஏற்கனவே பார்த்த ஒரு state-க்குத் திரும்பிய நொடியில்
+    நீங்கள் என்றென்றைக்குமான ஒரு சுழற்சியில் இருக்கிறீர்கள், ஏனெனில் argmax
+    தீர்மானகரமானது. எதுவும் அதை உடைக்க முடியாது. இது ஒரு நிஜமான model-ல் வரும்
+    repetition loop-ன் அதே இயங்குமுறை, சாக்குப்போக்குகள் இல்லாமல்.
+  </p>
+
+<pre><code>  greedy from 'the': the model is a model is a model is a model is ...
+  loop detected, period 3: <span class="hl">model is a</span>
+  greedy avg surprisal: 1.0670 bits/token
+
+  sampled (T=1.0, p=0.9): the model is the the data good model learns from data ...
+  loop detected? <span class="ok">no</span> -- it revisits states without getting stuck
+  sampled avg surprisal over 200 runs: 2.0463 bits/token
+  greedy is 0.9792 bits/token LESS surprising
+  -- and unreadable. maximising likelihood is not the goal.</code></pre>
+
+  <p>
+    அந்த இரண்டு surprisal எண்களை மீண்டும் படியுங்கள். Surprisal என்பது model-ன்
+    கீழ் <code>−log₂ P(token)</code> — model சிறியதாக்கப் பயிற்றுவிக்கப்படும்
+    எண். Greedy அதில் வெல்கிறது, token-க்கு ஒரு முழு bit-ஆல், மேலும் <em>"model
+    is a model is a model is a"</em> என்று தருகிறது. Sample செய்யப்பட்ட text
+    model-க்கு இரு மடங்கு ஆச்சரியமானது, ஆனால் நீங்கள் ship செய்வது அதுதான்.
+  </p>
+
+  <div class="note">
+    <strong>அந்த இடைவெளிதான் Holtzman-ன் கண்டுபிடிப்பு, சிறிய அளவில்.</strong>
+    மனித text என்பது மிக அதிக probability கொண்ட text அல்ல. Likelihood-க்காக
+    optimise செய்யும் ஒரு decoder, தவறான ஒன்றுக்காக optimise செய்கிறது, மேலும்
+    அந்தத் தோல்வி நுட்பமானது அல்ல — அது ஒரு நேரடியான loop. Paper-ன் பதில்:
+    sampling-ஐ வைத்துக்கொண்டு, <em>எங்கிருந்து</em> sample செய்கிறீர்கள்
+    என்பதைக் கட்டுப்படுத்துவது.
+  </div>
+
+  <p>
+    இதை வேண்டுமென்றே மீண்டும் நிகழ்த்தும் parameter: <code>top_k=1</code>.
+    சரியாக ஒரு token-ஐ வைத்துக்கொள்வது என்றால், renormalise செய்யப்பட்ட
+    distribution argmax-ல் 1.0 — எனவே பகடை உருட்டல் ஒரு சம்பிரதாயம்.
+  </p>
+
+<pre><code>  top-k with k=1 is greedy wearing a hat: <span class="hl">identical to the greedy walk</span>
+    k=1 walk: the model is a model is a model is a model is ...</code></pre>
+
+  <div class="note">
+    <strong>இவை எதுவும் model-ஐ மாற்றுவதில்லை.</strong> அதே weights, அதே
+    logits, அதே forward pass. Temperature, k, p என்பவை output-ஐ நீங்கள்
+    <em>எப்படிப் படிக்கிறீர்கள்</em> என்பதுதான். அதனால்தான் அவை request
+    parameter-கள், fine-tune அல்ல; அதனால்தான் "model திரும்பத் திரும்பச்
+    சொல்கிறது" என்பது பெரும்பாலும் ஒரு decoding bug, training bug அல்ல.
+  </div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने config में <code>temperature=0.7, top_p=0.9</code> लिखकर एक LLM feature
+    लगभग आठ महीने production में चलाया — और तब तक मैं आपको बता नहीं सकता था कि
+    दूसरा parameter करता क्या है। मुझे बस लोककथाएँ पता थीं — "temperature कम रखो
+    तो जवाब ज़्यादा सही आता है", "top_p भी temperature जैसा ही है, बस अलग" — और वे
+    कथाएँ ऐसी जगह ग़लत हैं जहाँ फ़र्क़ पड़ता है। मेरे दिमाग़ में एक ही डिब्बे पर तीन
+    dial थे। ऐसा नहीं है। यह एक contrast slider और एक crop tool है, इसी क्रम में —
+    और क्रम दिख जाने के बाद सारी उलझनें अपने आप सुलझ जाती हैं।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (temperature, top-k,
+    top-p, nucleus, logits, softmax, greedy, entropy, renormalise,
+    distribution…) मैंने वैसे ही रखे हैं। क्योंकि code में और बाक़ी papers में
+    आपको वही शब्द दिखेंगे। <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>Temperature contrast है। Top-k और top-p crop हैं।</h2>
+
+  <p>
+    हर step पर model आपको एक ही array देता है: vocabulary की हर entry के लिए एक
+    score। मेरी खिलौना vocab में सोलह entry, असली में पचास हज़ार। बस इतना ही।
+    ये तीनों parameter सिर्फ़ उसी array को छूते हैं।
+  </p>
+
+<pre><code>logits = model(prompt)            # हर vocab entry के लिए एक float
+probs  = softmax(logits)          # प्रतिशत, जिनका जोड़ 1
+token  = draw_one(probs)          # भारित पासा फेंक</code></pre>
+
+  <p>
+    Temperature line 1 पर घुसता है — यह softmax से <em>पहले</em> logits को भाग
+    देता है। Top-k और top-p line 3 पर आते हैं — वे <code>probs</code> से entry
+    मिटाते हैं और बची हुई को renormalise करते हैं। अलग stage, अलग तरह का operation:
+  </p>
+
+<pre><code>logits = model(prompt) / T          # CONTRAST: फ़ासले खिंचें/सिकुड़ें
+probs  = softmax(logits)
+probs  = keep_top_k(probs, k)       # CROP: तय गिनती बचती है
+probs  = keep_top_p(probs, p)       # CROP: तय mass बचता है
+probs  = probs / probs.sum()        # बची हुई का जोड़ 1 होना चाहिए
+token  = draw_one(probs)</code></pre>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Knob</th><th>असल में यह क्या है</th><th>Programmer वाली उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>temperature</strong></td><td>Logits को भाग देता है। क्रम वही रहता है; सिर्फ़ फ़ासले बदलते हैं।</td><td>Contrast slider। वही तस्वीर, रंगों के बीच कम या ज़्यादा फ़र्क़।</td></tr>
+      <tr><td><strong>top-k</strong></td><td>सबसे ऊपर की k entry रखो। एक तय <em>गिनती</em>।</td><td><code>LIMIT 40</code>। row 41 कितनी अच्छी थी, इससे बेख़बर।</td></tr>
+      <tr><td><strong>top-p</strong></td><td>सबसे छोटा वह समूह रखो जिसकी probability का जोड़ p तक पहुँचे। एक तय <em>mass</em>।</td><td>Rows से नहीं, bytes से pagination। गिनती data से तय होती है।</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="d1t-hi d1d-hi">
+      <title id="d1t-hi">Decoding pipeline, चलने के क्रम में</title>
+      <desc id="d1d-hi">Softmax की सीमा के ऊपर temperature कच्चे logits को भाग
+        देता है। नीचे, probabilities पर, पहले top-k फिर top-p entry मिटाते हैं,
+        बची हुई renormalise होती हैं, और एक token निकाला जाता है।</desc>
+      <defs>
+        <marker id="d1a-hi" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="0" y="16" class="d-muted">logit space — असीमित floats</text>
+      <rect x="30" y="30" width="150" height="42" rx="4" class="d-box"/>
+      <text x="105" y="56" text-anchor="middle" class="d-mono">logits</text>
+      <line x1="182" y1="51" x2="236" y2="51" class="d-line" marker-end="url(#d1a-hi)"/>
+      <rect x="240" y="30" width="180" height="42" rx="4" class="d-box-key"/>
+      <text x="330" y="56" text-anchor="middle" class="d-mono">÷ temperature</text>
+      <text x="432" y="47" class="d-muted">यहाँ क्रम बदल</text><text x="432" y="63" class="d-muted">नहीं सकता</text>
+      <line x1="330" y1="74" x2="330" y2="126" class="d-line" marker-end="url(#d1a-hi)"/>
+
+      <line x1="0" y1="100" x2="640" y2="100" class="d-line d-dashed"/>
+      <text x="0" y="118" class="d-muted">probability space — softmax के बाद, जोड़ 1</text>
+
+      <rect x="14" y="132" width="122" height="42" rx="4" class="d-box"/>
+      <text x="75" y="158" text-anchor="middle" class="d-mono">softmax</text>
+      <line x1="138" y1="153" x2="176" y2="153" class="d-line" marker-end="url(#d1a-hi)"/>
+      <rect x="180" y="132" width="122" height="42" rx="4" class="d-box-key"/>
+      <text x="241" y="158" text-anchor="middle" class="d-mono">top-k</text>
+      <line x1="304" y1="153" x2="342" y2="153" class="d-line" marker-end="url(#d1a-hi)"/>
+      <rect x="346" y="132" width="122" height="42" rx="4" class="d-box-key"/>
+      <text x="407" y="158" text-anchor="middle" class="d-mono">top-p</text>
+      <line x1="470" y1="153" x2="508" y2="153" class="d-line" marker-end="url(#d1a-hi)"/>
+      <rect x="512" y="132" width="122" height="42" rx="4" class="d-box"/>
+      <text x="573" y="152" text-anchor="middle" class="d-mono">renormalise</text>
+      <text x="573" y="166" text-anchor="middle" class="d-muted">बाद में, पहले नहीं</text>
+
+      <line x1="573" y1="176" x2="573" y2="218" class="d-line" marker-end="url(#d1a-hi)"/>
+      <rect x="440" y="224" width="194" height="42" rx="4" class="d-box"/>
+      <text x="537" y="250" text-anchor="middle" class="d-mono">एक token निकालो</text>
+      <text x="14" y="240" class="d-title">दो operation, एक क्रम।</text>
+      <text x="14" y="258" class="d-muted">Temperature आकार बदलता है। k और p मिटाते हैं।</text><text x="14" y="276" class="d-muted">क्रम बदलो तो अलग समूह मिलेगा।</text>
+    </svg>
+    <figcaption>
+      बिंदुदार रेखा softmax है। Temperature जो कुछ करता है वह सब उसके ऊपर होता
+      है; <code>top_k</code> और <code>top_p</code> जो करते हैं वह सब नीचे। वही
+      एक सीमा पूरी उलझन की जड़ है।
+    </figcaption>
+  </figure>
+
+  <h2>Holtzman का paper ही क्यों मायने रखता है</h2>
+
+  <p>
+    2019 से पहले मान्यता यह थी कि बेहतर decoding का मतलब है सबसे ज़्यादा
+    probability वाले sequence के क़रीब पहुँचना: beam search, चौड़े beam, और अंत
+    में greedy। <em>The Curious Case of Neural Text Degeneration</em> वही paper
+    है जिसने कहा कि लक्ष्य ही ग़लत है। Likelihood को अधिकतम करने पर text दोहराने
+    लगता है और फिर अटक जाता है — वही clause बार-बार। लेखकों की मूल टिप्पणी यह है
+    कि इंसान का लिखा text model के probability distribution की चोटी पर होता ही
+    नहीं। वह एक कम-probability वाली पट्टी में घूमता है, जहाँ greedy decoding कभी
+    जाता ही नहीं।
+  </p>
+
+  <p>
+    तो हल कोई बेहतर search नहीं है। हल है sample करना, पर एक काटे गए
+    distribution से — और काटना गिनती से नहीं, <em>mass</em> से, क्योंकि सही
+    गिनती हर step पर बदलती है। यही nucleus sampling है। Top-k, जो एक साल पहले
+    Fan et al. के story-generation paper से आया, वही चीज़ है जिसे यह सुधारता है।
+  </p>
+
+  <h2>वह एक सूत्र</h2>
+
+  <div class="formula">V<sup>(p)</sup> = smallest V′ ⊆ V such that Σ<sub>x∈V′</sub> P(x) ≥ p</div>
+
+  <p>इसे pipeline के चरणों की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>Shape</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>logits / T</code></td><td>(V,)</td><td>Temperature। कच्चे scores पर, सबसे पहले।</td></tr>
+      <tr><td><code>softmax</code></td><td>(V,)</td><td>प्रतिशत जिनका जोड़ 1। यही सीमा है।</td></tr>
+      <tr><td><code>argsort(−p)</code></td><td>(V,)</td><td>सबसे संभावित पहले। दोनों crop को क्रम चाहिए।</td></tr>
+      <tr><td><code>cumsum</code></td><td>(V,)</td><td>चलता जोड़। जहाँ यह p पार करे, वहाँ रुको।</td></tr>
+      <tr><td><code>keep, zero rest</code></td><td>(V,)</td><td>Nucleus। इसके बाहर सब कुछ अपहुँच है।</td></tr>
+      <tr><td><code>/ sum</code></td><td>(V,)</td><td>Renormalise। काटने के <strong>बाद</strong>, कभी पहले नहीं।</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Temperature कभी क्रम नहीं बदलता</h2>
+
+  <p>
+    हर logit को एक ही धनात्मक संख्या से भाग देना monotonic है। जो token पहले
+    सबसे संभावित था वही बाद में भी रहेगा। Temperature किसी शब्द को पहले स्थान पर
+    नहीं चढ़ा सकता; वह सिर्फ़ यह तय करता है कि पहले स्थान की बढ़त कितनी बड़ी हो।
+    इसीलिए "अलग जवाब चाहिए तो temperature बढ़ा दो" सिर्फ़ पासे के साथ मिलकर काम
+    करता है — आपने पासे के लिए फ़ासला चौड़ा किया, क्रम नहीं बदला।
+  </p>
+
+  <p><strong>मेरी बात पर मत जाइए। यह रहा असली output:</strong></p>
+
+<pre><code>  T=0.2  H=0.0980  Monday=0.9811  tomorrow=0.0180  next=0.0009  the=0.0001
+  T=0.5  H=0.7347  Monday=0.7743  tomorrow=0.1563  next=0.0471  the=0.0173
+  T=0.8  H=1.2322  Monday=0.5862  tomorrow=0.2156  next=0.1019  the=0.0545
+  T=1.0  H=1.4843  Monday=0.4967  tomorrow=0.2232  next=0.1225  the=0.0743
+  T=1.5  H=1.9354  Monday=0.3525  tomorrow=0.2068  next=0.1386  the=0.0993
+  T=2.0  H=2.2101  Monday=0.2717  tomorrow=0.1821  next=0.1349  the=0.1051
+
+  ranking is IDENTICAL at every temperature:
+    all six orderings equal? <span class="ok">True</span>
+    only the GAPS changed. temperature cannot promote a token.</code></pre>
+
+  <p>
+    <code>H</code> nats में entropy है — distribution कितना अनिर्णीत है।
+    T=0.2 पर यह 0.098 है, यानी "मैं तय कर चुका हूँ"। T=2.0 पर यह 2.21 है, जबकि
+    16-token vocabulary की छत ln 16 ≈ 2.77 है — यानी लगभग "कुछ पता नहीं"। वही
+    model, वही prompt, वही क्रम।
+  </p>
+
+  <h3>T = 0 वाला जाल</h3>
+
+  <p>
+    <code>temperature=0</code> हर API doc में है और वह temperature है ही नहीं।
+    शून्य से भाग देने पर infinity मिलती है, फिर softmax से <code>nan</code>, फिर
+    sampler में crash। हर असली implementation इसके इर्द-गिर्द branch करता है:
+  </p>
+
+<pre><code>  T = 0 exactly:
+    raises: T=0: real code branches to argmax instead
+    raw numpy would give: <span class="hl">[6.0e+12 5.2e+12 4.6e+12] ... then inf/nan</span>
+    what real code does instead: argmax -&gt; 'Monday' <span class="ok">✓</span></code></pre>
+
+  <p>
+    तो request body में "temperature 0" का मतलब है "यह पूरा पन्ना छोड़ो और
+    argmax ले लो"। यह संख्या के कपड़े पहने एक special case है। यहाँ interview
+    सवाल भाग देना नहीं है; सवाल यह है कि आपको पता है या नहीं कि
+    T&nbsp;=&nbsp;0 का मतलब greedy है, और greedy का मतलब वह failure है जो आख़िरी
+    हिस्से में है।
+  </p>
+
+  <h2>Top-k: तय गिनती, आकार से बेख़बर</h2>
+
+  <p>
+    सबसे ज़्यादा probability वाले k token रखो, बाक़ी को शून्य करो, renormalise
+    करो। मेरे आश्वस्त step पर — "the meeting is scheduled for ___", जहाँ
+    <code>Monday</code> आधा mass ले लेता है — छोटा k ठीक चलता है:
+  </p>
+
+<pre><code>  k=1   keeps 0.4967 of the mass | Monday=1.0000
+  k=3   keeps 0.8424 of the mass | Monday=0.5896 tomorrow=0.2649 next=0.1454
+  k=5   keeps 0.9468 of the mass | Monday=0.5246 tomorrow=0.2357 next=0.1294 ...
+  k=10  keeps 0.9952 of the mass | Monday=0.4991 tomorrow=0.2242 next=0.1231 ...</code></pre>
+
+  <p>
+    ध्यान दीजिए renormalise क्या करता है: k=3 पर <code>Monday</code> 0.4967 से
+    0.5896 हो जाता है। बचे हुए token मिटाए गए mass को उसी अनुपात में सोख लेते
+    हैं जो उनके पास पहले से था। किसी को "बढ़ावा" नहीं मिला; भाजक छोटा हो गया।
+  </p>
+
+  <p>
+    अब वही k एक दूसरे step पर, जहाँ model को सचमुच नहीं पता कि आगे क्या आएगा —
+    उस 2.77 की छत के मुक़ाबले 2.7374 nats entropy वाला एक सपाट distribution:
+  </p>
+
+<pre><code>  k=3   confident step keeps 0.8424 | flat step keeps <span class="hl">0.2616</span>  (gap 0.5807)
+  k=5   confident step keeps 0.9468 | flat step keeps <span class="hl">0.4117</span>  (gap 0.5351)
+  k=10  confident step keeps 0.9952 | flat step keeps 0.7275  (gap 0.2678)</code></pre>
+
+  <p>
+    एक ही <code>k=3</code> setting, दो बिल्कुल अलग बर्ताव। आश्वस्त step पर वह
+    model की 84% मान्यता रखता है — ठीक है। सपाट step पर वह 26% रखता है और उस
+    distribution का तीन-चौथाई फेंक देता है जिसे model सचमुच खुला बता रहा था।
+    सपाट step ठीक करने के लिए k बढ़ाइए, तो आपने आश्वस्त step में कचरा घुसा
+    दिया। ऐसा कोई k नहीं है जो दोनों के लिए सही हो, और असली generation एक ही
+    वाक्य में दोनों तरह के step करता है।
+  </p>
+
+  <h2>Top-p: तय mass, इसलिए समूह का आकार ख़ुद ढल जाता है</h2>
+
+  <p>
+    Nucleus sampling एक अलग सवाल पूछता है। "कितने token?" नहीं, बल्कि "model की
+    मान्यता का कितना हिस्सा?"। क्रम में लगाओ, चलता जोड़ लो, p पार होते ही रुक
+    जाओ। बचे समूह का आकार distribution तय करता है, आप नहीं। वही दो step, वही
+    script:
+  </p>
+
+<pre><code>  p     confident step        flat step
+  0.5    2 tokens, mass 0.7199    7 tokens, mass 0.5476
+  0.8    3 tokens, mass 0.8424   12 tokens, mass 0.8333
+  0.9   <span class="ok"> 4 tokens</span>, mass 0.9166  <span class="ok"> 14 tokens</span>, mass 0.9253
+  0.95   6 tokens, mass 0.9671   15 tokens, mass 0.9654
+  1.0   16 tokens, mass 1.0000   16 tokens, mass 1.0000</code></pre>
+
+  <p>
+    वह p=0.9 वाली पंक्ति ही पूरा paper है। एक ही setting: जहाँ model आश्वस्त है
+    वहाँ चार token, जहाँ नहीं है वहाँ चौदह। Nucleus इसलिए बढ़ा क्योंकि
+    distribution सपाट हुआ — किसी ने कुछ बदला नहीं।
+  </p>
+
+<pre><code>  at p=0.9 the nucleus is 4 tokens on the confident step and 14 on the flat one.
+    confident nucleus: Monday tomorrow next the
+    flat nucleus:      Monday tomorrow next the March later noon sometime ...</code></pre>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 216" role="img" aria-labelledby="d2t-hi d2d-hi">
+      <title id="d2t-hi">एक ही distribution, तीन बर्ताव</title>
+      <desc id="d2d-hi">उसी आश्वस्त step के सोलह bar, तीन बार बनाए गए: बिना
+        छेड़े, तीन की तय गिनती पर काटे गए, और 0.9 के संचित mass पर काटे गए जो
+        चार रखता है। भरे bar बचते हैं; हल्के bar मिटाए जाते हैं। Label बताते
+        हैं कि हर crop इस step पर और एक सपाट step पर कितना mass रखता है।</desc>
+    <text x="14" y="44" class="d-title">बिना छेड़े</text>
+    <rect x="14" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="25" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="36" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="47" y="154.6" width="9" height="13.4" class="d-fill-key"/>
+    <rect x="58" y="162.6" width="9" height="5.4" class="d-fill-key"/> <rect x="69" y="164.4" width="9" height="3.6" class="d-fill-key"/> <rect x="80" y="165.6" width="9" height="2.4" class="d-fill-key"/> <rect x="91" y="166.5" width="9" height="1.5" class="d-fill-key"/>
+    <rect x="102" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="113" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="124" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="135" y="167.0" width="9" height="1.0" class="d-fill-key"/>
+    <rect x="146" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="157" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="168" y="167.0" width="9" height="1.0" class="d-fill-key"/> <rect x="179" y="167.0" width="9" height="1.0" class="d-fill-key"/>
+    <line x1="11" y1="168.0" x2="190" y2="168.0" class="d-line"/>
+    <text x="14" y="186" class="d-mono">सोलहों पहुँच में</text>
+    <text x="14" y="202" class="d-muted">tail mass 0.0111</text>
+    <text x="226" y="44" class="d-title">top-k, k=3</text>
+    <rect x="226" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="237" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="248" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="259" y="154.6" width="9" height="13.4" class="d-fill-sub"/>
+    <rect x="270" y="162.6" width="9" height="5.4" class="d-fill-sub"/> <rect x="281" y="164.4" width="9" height="3.6" class="d-fill-sub"/> <rect x="292" y="165.6" width="9" height="2.4" class="d-fill-sub"/> <rect x="303" y="166.5" width="9" height="1.5" class="d-fill-sub"/>
+    <rect x="314" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="325" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="336" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="347" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <rect x="358" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="369" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="380" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="391" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <line x1="223" y1="168.0" x2="402" y2="168.0" class="d-line"/>
+    <line x1="258" y1="52" x2="258" y2="174.0" class="d-line-key d-dashed"/>
+    <text x="262" y="66" class="d-muted">कट</text>
+    <text x="226" y="186" class="d-mono">यहाँ 0.8424</text>
+    <text x="226" y="202" class="d-muted">सपाट पर 0.2616</text>
+    <text x="438" y="44" class="d-title">top-p, p=0.9</text>
+    <rect x="438" y="78.6" width="9" height="89.4" class="d-fill-key"/> <rect x="449" y="127.8" width="9" height="40.2" class="d-fill-key"/> <rect x="460" y="146.0" width="9" height="22.0" class="d-fill-key"/> <rect x="471" y="154.6" width="9" height="13.4" class="d-fill-key"/>
+    <rect x="482" y="162.6" width="9" height="5.4" class="d-fill-sub"/> <rect x="493" y="164.4" width="9" height="3.6" class="d-fill-sub"/> <rect x="504" y="165.6" width="9" height="2.4" class="d-fill-sub"/> <rect x="515" y="166.5" width="9" height="1.5" class="d-fill-sub"/>
+    <rect x="526" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="537" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="548" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="559" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <rect x="570" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="581" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="592" y="167.0" width="9" height="1.0" class="d-fill-sub"/> <rect x="603" y="167.0" width="9" height="1.0" class="d-fill-sub"/>
+    <line x1="435" y1="168.0" x2="614" y2="168.0" class="d-line"/>
+    <line x1="481" y1="52" x2="481" y2="174.0" class="d-line-key d-dashed"/>
+    <text x="485" y="66" class="d-muted">कट</text>
+    <text x="438" y="186" class="d-mono">यहाँ 4 token</text>
+    <text x="438" y="202" class="d-muted">सपाट पर 14</text>
+    <text x="14" y="26" class="d-muted">भरा = crop से बचा, हल्का = मिटाया गया</text>
+    </svg>
+    <figcaption>
+      हर बार वही सोलह bar — यह आश्वस्त step है, सीधे script से। <code>k=3</code>
+      वहाँ काटता है जो जगह उसने data देखने से पहले ही चुन ली थी।
+      <code>p=0.9</code> यहाँ एक bar बाद काटता है, और सपाट step पर दस bar बाद।
+      दोनों crop फिर renormalise करते हैं, इसलिए तीनों पैनलों का जोड़ 1 ही रहता है।
+    </figcaption>
+  </figure>
+
+  <div class="note">
+    <strong>p = 1.0 का मतलब "बंद" नहीं, "सब कुछ रखो" है।</strong> मेरी
+    16-token vocab पर यह 0.000167 वाले <code>asdf</code> जैसे token में 0.0111
+    mass छोड़ देता है — यानी लगभग हर छह हज़ार token में एक बार पहुँच में। 50k
+    vocab पर वही पूँछ है जहाँ से सचमुच अजीब output आते हैं। Holtzman का तर्क
+    ठीक यही है कि बिना काटे sample करने पर यह पूँछ अनुपात से कहीं ज़्यादा पहुँच
+    में आ जाती है।
+  </div>
+
+  <h2>क्रम परिभाषा का हिस्सा है</h2>
+
+  <p>
+    चूँकि temperature आकार बदलता है और truncation काटता है, इन्हें उल्टे क्रम
+    में चलाने पर आपको एक अलग distribution मिलता है — rounding का फ़र्क़ नहीं,
+    बल्कि <em>पहुँच में आने वाले token का अलग समूह</em>। मेरे तय vector पर
+    T=1.5 और p=0.9 पर:
+  </p>
+
+<pre><code>  T=1.5, p=0.9
+    temp-then-p keeps 7 tokens: Monday tomorrow next the March later noon
+    p-then-temp keeps 4 tokens: Monday tomorrow next the
+    same surviving set? <span class="hl">False</span>
+       Monday  temp-then-p 0.3809   p-then-temp 0.4422   diff -0.0613
+     tomorrow  temp-then-p 0.2234   p-then-temp 0.2594   diff -0.0359
+         next  temp-then-p 0.1498   p-then-temp 0.1739   diff -0.0241
+          the  temp-then-p 0.1073   p-then-temp 0.1246   diff -0.0173
+        March  temp-then-p 0.0589   p-then-temp <span class="hl">0.0000</span>   diff +0.0589
+  max abs difference: 0.0613</code></pre>
+
+  <p>
+    <code>March</code> एक क्रम में पहुँच में है और दूसरे में असंभव। असली
+    implementation — Hugging Face के logits processors, vLLM, hosted APIs —
+    <strong>temperature, फिर top-k, फिर top-p</strong> करते हैं। Temperature
+    बढ़ाने से distribution पहले सपाट होता है, जिससे nucleus <em>बढ़ता</em> है —
+    dial ऊपर करते वक़्त आपने यही उम्मीद की थी। ग़लत क्रम में nucleus T=1 पर जम
+    जाता है और temperature सिर्फ़ उसके अंदर बाँटता रहता है। वही दो संख्याएँ,
+    चुपचाप अलग product।
+  </p>
+
+  <p>
+    दूसरी क्रम-ग़लती है काटने के बाद के बजाय काटने से पहले renormalise करना। यह
+    error नहीं देता — बस sampler को एक ऐसा vector थमा देता है जिसका जोड़ 1 नहीं है:
+  </p>
+
+<pre><code>  and renormalising BEFORE truncating instead of after:
+    sum after cutting an already-normalised vector: <span class="hl">0.9807</span>
+    np.random.choice raises: probabilities do not sum to 1</code></pre>
+
+  <h2>Greedy decoding असल में क्यों नाकाम होता है</h2>
+
+  <p>
+    Degeneration देखने के लिए आपको language model की ज़रूरत नहीं। आठ शब्दों पर
+    एक first-order Markov chain काफ़ी है: हर step पर argmax लीजिए, और जिस पल आप
+    किसी देखे हुए state पर लौटे, आप हमेशा के लिए एक चक्र में हैं, क्योंकि argmax
+    निश्चयात्मक है। कोई चीज़ उसे तोड़ नहीं सकती। असली model की repetition loop
+    का यही तंत्र है, बस बहाने कम हैं।
+  </p>
+
+<pre><code>  greedy from 'the': the model is a model is a model is a model is ...
+  loop detected, period 3: <span class="hl">model is a</span>
+  greedy avg surprisal: 1.0670 bits/token
+
+  sampled (T=1.0, p=0.9): the model is the the data good model learns from data ...
+  loop detected? <span class="ok">no</span> -- it revisits states without getting stuck
+  sampled avg surprisal over 200 runs: 2.0463 bits/token
+  greedy is 0.9792 bits/token LESS surprising
+  -- and unreadable. maximising likelihood is not the goal.</code></pre>
+
+  <p>
+    उन दो surprisal संख्याओं को फिर से पढ़िए। Surprisal model के अनुसार
+    <code>−log₂ P(token)</code> है — वही संख्या जिसे छोटा करने के लिए model
+    train होता है। Greedy उसमें जीतता है, प्रति token पूरे एक bit से, और देता है
+    <em>"model is a model is a model is a"</em>। Sample किया गया text model के
+    लिए दोगुना चौंकाने वाला है और वही है जिसे आप ship करेंगे।
+  </p>
+
+  <div class="note">
+    <strong>वही फ़ासला Holtzman की खोज है, छोटे पैमाने पर।</strong> इंसानी text
+    सबसे संभावित text नहीं होता। जो decoder likelihood के लिए optimise करता है
+    वह ग़लत चीज़ के लिए optimise करता है, और यह नाकामी सूक्ष्म नहीं है — यह
+    शाब्दिक रूप से एक loop है। Paper का जवाब है: sampling बनाए रखो और यह
+    बाँधो कि आप <em>कहाँ से</em> sample करते हैं।
+  </div>
+
+  <p>
+    और वह parameter जो इसे जानबूझकर दोहराता है: <code>top_k=1</code>। ठीक एक
+    token रखने का मतलब है कि renormalise किया गया distribution argmax पर 1.0 है,
+    इसलिए पासा फेंकना बस औपचारिकता है।
+  </p>
+
+<pre><code>  top-k with k=1 is greedy wearing a hat: <span class="hl">identical to the greedy walk</span>
+    k=1 walk: the model is a model is a model is a model is ...</code></pre>
+
+  <div class="note">
+    <strong>इनमें से कुछ भी model को नहीं बदलता।</strong> वही weights, वही
+    logits, वही forward pass। Temperature, k और p यह हैं कि आप output को
+    <em>कैसे पढ़ते</em> हैं। इसीलिए ये request parameter हैं, fine-tune नहीं,
+    और इसीलिए "model ख़ुद को दोहरा रहा है" अक्सर एक decoding bug होता है,
+    training वाला नहीं।
+  </div>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">
+  Pure NumPy. No torch, no model, no training — sampling is arithmetic over a
+  probability vector, so the whole mechanism is six short functions and you can
+  watch every number move. Every function under 20 lines.
+</p>
+<p>
+  <a href="sampling_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 309 lines plus 6 runnable demos. Then:
+</p>
+<pre><code>python3 sampling_from_scratch.py</code></pre>
+
+<pre><code># ---------------------------------------------------------------------------
+# STAGE 0 -- softmax. Turns a row of logits into percentages summing to 1.
+#
+# The `- max` is not maths, it's overflow protection: exp(1000) is inf,
+# exp(1000-1000) is 1, and the ratio is unchanged.
+# ---------------------------------------------------------------------------
+def softmax(logits):
+    z = logits - np.max(logits)
+    e = np.exp(z)
+    return e / e.sum()
+
+
+# ---------------------------------------------------------------------------
+# STAGE 1 -- TEMPERATURE. It divides the LOGITS, before the softmax.
+#
+# T &lt; 1 stretches the gaps apart  -&gt; sharper, closer to argmax.
+# T &gt; 1 squashes the gaps together -&gt; flatter, closer to uniform.
+# It is monotonic, so it can never reorder the vocabulary: the most likely
+# token before is the most likely token after. It is a contrast slider.
+#
+# T = 0 is division by zero. Every real implementation special-cases it to
+# mean "greedy" instead of computing it.
+# ---------------------------------------------------------------------------
+def apply_temperature(logits, T):
+    if T == 0:
+        raise ZeroDivisionError("T=0: real code branches to argmax instead")
+    return logits / T
+
+
+# ---------------------------------------------------------------------------
+# STAGE 2 -- TOP-K (Fan et al., 2018). Keep the k highest-probability tokens,
+# throw the rest away, renormalise what is left back to sum 1.
+#
+# k is a fixed COUNT. It has no idea what shape the distribution is, so the
+# probability mass it happens to capture swings wildly step to step.
+# ---------------------------------------------------------------------------
+def top_k(p, k):
+    keep = np.argsort(-p)[:k]              # indices of the k largest
+    out = np.zeros_like(p)
+    out[keep] = p[keep]
+    return out / out.sum(), np.sort(keep)  # RENORMALISE AFTER truncating
+
+
+# ---------------------------------------------------------------------------
+# STAGE 3 -- TOP-P / nucleus sampling (Holtzman et al., 2019). Keep the
+# SMALLEST set whose cumulative probability reaches p, then renormalise.
+#
+# p is a fixed MASS, so the size of the set is decided by the distribution,
+# not by you. Confident step -&gt; a couple of tokens. Flat step -&gt; dozens.
+# That adaptivity is the whole paper.
+# ---------------------------------------------------------------------------
+def top_p(p, p_thresh):
+    order = np.argsort(-p)                 # most likely first
+    cum = np.cumsum(p[order])
+    n = int(np.searchsorted(cum, p_thresh) + 1)  # include the crossing token
+    n = min(n, len(p))
+    keep = order[:n]
+    out = np.zeros_like(p)
+    out[keep] = p[keep]
+    return out / out.sum(), np.sort(keep)
+
+
+# ---------------------------------------------------------------------------
+# STAGE 4 -- the pipeline every inference server runs, in this order:
+#     logits -&gt; temperature -&gt; softmax -&gt; top-k -&gt; top-p -&gt; renormalise -&gt; draw
+# Temperature acts on logits. Truncation acts on probabilities. Swap those
+# two and you get a different distribution, not a rounding difference.
+# ---------------------------------------------------------------------------
+def sample_once(logits, T=1.0, k=None, p_thresh=None, rng=None):
+    rng = rng or np.random.default_rng(0)
+    probs = softmax(logits) if T == 0 else softmax(apply_temperature(logits, T))
+    if T == 0:
+        return int(np.argmax(logits))      # the special case, not a division
+    if k is not None:
+        probs, _ = top_k(probs, k)
+    if p_thresh is not None:
+        probs, _ = top_p(probs, p_thresh)
+    return int(rng.choice(len(probs), p=probs))</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that actually makes it stick. Reading won't do it. You debug for a living
+  — reverse-engineering from broken behaviour is your native mode, and every one of these is
+  a bug I have watched reach production.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Delete the <code>if T == 0</code> guard in <code>apply_temperature</code> and call it with <code>0.0</code></td><td><code>logits/0</code> gives <code>inf</code>, softmax returns <code>nan</code>, <code>rng.choice</code> raises. What you wanted was <code>np.argmax</code> → <code>Monday</code>.</td></tr>
+    <tr><td>Call <code>walk(0, 60, "sample", k=1)</code></td><td>Byte-identical to the greedy walk: <code>the model is a model is a…</code>, loop of period 3. k=1 is greedy with extra steps.</td></tr>
+    <tr><td>In <code>demo_5</code>, truncate first and apply temperature to the survivors</td><td>The nucleus shrinks from 7 tokens to 4. <code>March</code> goes from 0.0589 to 0.0000 — reachable in one order, impossible in the other.</td></tr>
+    <tr><td>Set <code>p_thresh=1.0</code> in <code>top_p</code></td><td>Nothing is cut. 0.0111 of mass stays in the junk tail; <code>asdf</code> at 0.000167 is still drawable.</td></tr>
+    <tr><td>In <code>top_k</code>, swap the last line to <code>out / p.sum()</code> — normalise by the pre-cut total</td><td>The returned vector sums to 0.9468 at k=5, not 1.0. NumPy raises "probabilities do not sum to 1"; a hand-rolled sampler would just under-sample the last token silently.</td></tr>
+    <tr><td>In <code>top_p</code>, drop the <code>+ 1</code> in the <code>searchsorted</code> line</td><td>The token that crosses p is excluded, so p=0.5 on the confident step keeps 1 token, not 2 — silently greedy at every confident step.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Then</strong> read Holtzman's paper — the method section where the
+  nucleus is defined, and the analysis of why beam search degenerates. The
+  human-versus-machine probability plot early in the paper is the single image
+  worth the download. Skip the crowdsourced evaluation tables unless you care
+  about how text quality was scored in 2019. You'll find the paper is just the
+  comments you've already read.
+</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There is almost none here, and that is worth saying plainly, because "nucleus sampling"
+  sounds like it needs measure theory. It needs: division, a sort, a running total, and a
+  comparison. If you can write <code>sorted(rows, reverse=True)</code> and stop a loop when
+  a counter crosses a threshold, you have implemented the paper.
+</p>
+<p>
+  Two symbols worth owning. <strong>Entropy</strong> is the average surprisal of a
+  distribution — one number for "how undecided is the model", in nats if you use
+  <code>ln</code> and bits if you use <code>log₂</code>. Its ceiling is <code>ln V</code>
+  for a V-token vocabulary, so on my 16 tokens 2.77 means uniform and 0 means certain.
+  <strong>Surprisal</strong> is the same idea for a single token, <code>−log
+  P(token)</code>: the log turns a product of probabilities into a sum, which is the only
+  reason logs are in here at all.
+</p>
+<p>
+  What you cannot skip is the shape discipline: which array is logits and which is
+  probabilities. Almost every decoding bug I've written was applying an operation on the
+  wrong side of the softmax. That's not maths, that's types.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: the three parameters as two operations in a fixed order, in
+  code you can break. It skipped beam search entirely, skipped every benchmark in the paper,
+  and skipped the newer samplers. Here's where those live.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1904.09751">
+      <span class="paper-title">The Curious Case of Neural Text Degeneration</span>
+      <span class="paper-meta">Holtzman, Buys, Du, Forbes, Choi, 2019. The original.</span>
+    </a>
+    <p class="paper-pitch">
+      Read it for the diagnosis, not the algorithm — you already have the
+      algorithm above. The plot of human text probability against beam-search
+      text probability is the argument, and the section on why likelihood
+      maximisation produces repetition is the part nobody paraphrases well.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/1805.04833">
+      <span class="paper-title">Hierarchical Neural Story Generation</span>
+      <span class="paper-meta">Fan, Lewis, Dauphin, 2018. Where top-k comes from.</span>
+    </a>
+    <p class="paper-pitch">
+      Top-k is a couple of paragraphs in a paper that is mostly about
+      generating stories. Worth skimming for the context: it was introduced as
+      a practical fix for sampling junk, a year before anyone framed the
+      count-versus-mass problem this page is built around.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://huggingface.co/blog/how-to-generate">
+      <span class="paper-title">How to generate text</span>
+      <span class="paper-meta">Patrick von Platen, Hugging Face. Runnable, with a real model.</span>
+    </a>
+    <p class="paper-pitch">
+      The same knobs on an actual GPT-2 instead of my toy vector, plus the beam
+      search I skipped and the n-gram repetition penalty I didn't mention. Go
+      here to see the outputs as English sentences rather than as numbers.
+    </p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://mlabonne.github.io/blog/posts/2023-06-07-Decoding_strategies.html">
+      <span class="paper-title">Decoding strategies in large language models</span>
+      <span class="paper-meta">Maxime Labonne. Graphs and probability trees.</span>
+    </a>
+    <p class="paper-pitch">
+      The comparison across greedy, beam, top-k and nucleus drawn as trees of
+      branching token choices. This is the visual answer to "what is beam
+      search actually doing", which is the one thing this page deliberately
+      refused to explain.
+    </p>
+  </li>
+
+</ul>
+
+<div class="note">
+  <strong>Order I'd take them in:</strong> Hugging Face first, because it turns
+  these numbers back into sentences, then Holtzman for why, then Labonne if
+  beam search still bothers you. Fan et al. is optional context. On this site,
+  <a href="../gpt/">GPT</a> is where the temperature sweep came from and shows
+  the loop in a real generation loop; <a href="../structured-output/">constrained
+  decoding</a> is the sibling — it masks the same logits vector, but for
+  grammar rather than for quality; and <a href="../attention/">attention</a> is
+  where the logits are produced in the first place.
+</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+
+</body>
+</html>

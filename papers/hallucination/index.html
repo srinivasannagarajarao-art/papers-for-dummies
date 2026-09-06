@@ -1,0 +1,1212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hallucination and grounding — for programmers</title>
+<meta name="description" content="Hallucination explained as code. The objective was next-token likelihood, so truth was never a term in it. Runnable NumPy with no language model in it: reconstruction versus recall, the calibration trade, and grounding measured with its residual errors.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../../assets/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+
+<header class="masthead"><div class="inner">
+  <a class="masthead-name" href="../../">Papers for Dummies</a>
+  <nav class="masthead-nav" aria-label="Site">
+    <a href="../../">Home</a>
+    <a href="../" aria-current="page">Papers</a>
+    <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="main-content">
+
+  <div class="title-block">
+    <h1>Hallucination and grounding: the model was never trying to be right</h1>
+    <p class="paper-meta">Ji et al., 2022 — with Kalai &amp; Vempala, 2023</p>
+    <p class="lede">The word makes it sound like a malfunction. It isn't one, and that's why the fix you're waiting for is not coming.</p>
+    <p>
+      <a href="hallucination_from_scratch.py" download>Download hallucination_from_scratch.py</a>
+      — everything below runs from it. NumPy only. <strong>There is no language model anywhere in it.</strong> What it runs is the <em>mechanism</em>: a store that keeps facts as overlapping features instead of as records, so answering is reconstruction rather than lookup. Every demo says so on the line above, the way the <a href="../chain-of-thought/">chain-of-thought</a> and <a href="../rag/">RAG</a> pages label their stand-ins.
+    </p>
+  </div>
+
+  <div class="langbar" role="tablist" aria-label="Language">
+    <button role="tab" data-lang="en" aria-selected="true">English</button>
+    <button role="tab" data-lang="ta" aria-selected="false" lang="ta">தமிழ்</button>
+    <button role="tab" data-lang="hi" aria-selected="false" lang="hi">हिंदी</button>
+  </div>
+
+<!-- ==================== ENGLISH ==================== -->
+<section data-panel="en">
+  <p>
+    I shipped a support assistant that invented a refund policy. Beautifully. Correct tone, correct format, a policy that has never existed. I filed it as a bug, went looking for the setting that turns it off, and slowly worked out there isn't one — because nothing in that model's training ever rewarded being right. It was rewarded for producing likely text. On that question the likely text and the true text were different strings, and it picked the one it was trained to pick.
+  </p>
+  <p>
+    Everybody had told me "it hallucinates", which frames it as a component misbehaving. It isn't. It's the component working.
+  </p>
+
+  <h2>It's an autocomplete that read everything and remembers nothing</h2>
+
+  <p>You know the difference between these two:</p>
+
+<pre><code>facts["pellucid"]["licence"]     # a record. Exact, or KeyError.
+autocomplete("pellucid is licensed under ")   # a continuation. Always something.</code></pre>
+
+  <p>
+    The first has a row per fact, so a fact seen once is as retrievable as a fact seen a million times. The second has no rows. It has weights — one smear of overlapping features that every fact was added into during training — and asking it a question doesn't look anything up. It <em>reconstructs</em> a plausible answer out of the smear.
+    That is the whole page. Reconstruction is confident by construction, because a blend always produces a value. There is no cache miss. There is no <code>KeyError</code>. The <code>None</code> branch you'd have written by hand does not exist in the architecture.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Term</th><th>Means</th><th>Programmer's analogy</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Hallucination</strong></td><td>Fluent output the source or the world doesn't support</td><td>A cache that synthesises a value on a miss and never tells you</td></tr>
+      <tr><td><strong>Grounding</strong></td><td>Putting the fact in the context so it's copied, not recalled</td><td>Passing the config in instead of hard-coding a default</td></tr>
+      <tr><td><strong>Calibration</strong></td><td>Stated confidence matching observed accuracy</td><td>A p99 estimate that's actually right 99% of the time</td></tr>
+      <tr><td><strong>Abstention</strong></td><td>Refusing to answer below a confidence threshold</td><td>Returning 503 instead of a guess</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The one formula, and what's missing from it</h2>
+
+  <div class="formula">θ* = argmax<sub>θ</sub> Σ<sub>t</sub> log P<sub>θ</sub>(x<sub>t</sub> | x<sub>&lt;t</sub>)</div>
+
+  <p>Read it as pipeline stages:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>What it is</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>x<sub>&lt;t</sub></code></td><td>the prefix</td><td>Everything so far — prompt plus what's been generated</td></tr>
+      <tr><td><code>P<sub>θ</sub>(x<sub>t</sub> | …)</code></td><td>a distribution</td><td>How likely each next token is, given that prefix</td></tr>
+      <tr><td><code>log</code></td><td>a log</td><td>So multiplying probabilities becomes adding them. Float hygiene</td></tr>
+      <tr><td><code>Σ<sub>t</sub></code></td><td>a sum over tokens</td><td>Score the whole corpus, one token at a time</td></tr>
+      <tr><td><code>argmax<sub>θ</sub></code></td><td>the training loop</td><td>Move the weights until the corpus looks as likely as possible</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note"><strong>There is no term in that formula for "true".</strong> Not hidden in the log, not implied by the sum. The objective is a fit to what the corpus said. Where the corpus was right, fitting it produces right answers as a side effect — and that side effect is the entire basis of the thing you shipped.</div>
+
+  <p>
+    Ji et al. split it into <em>intrinsic</em> hallucination, output that contradicts its own source, and <em>extrinsic</em>, output the source neither supports nor contradicts. Worth having straight: the second kind is the one nobody's eval catches, because it isn't wrong against the passage, it's unverifiable from it.
+  </p>
+
+  <h2>Reconstruction is not recall, and confidence can't tell</h2>
+
+  <p>
+    The script builds a store of 24 facts about eight fictional projects. Not a dict — one 64×64 matrix that every fact is added into, weighted by how often the toy corpus said it. Popular projects appear hundreds of times, obscure ones once. One project, <code>tessera</code>, is deliberately a fork of <code>lantern</code>: its feature vector is mostly lantern's, because a store like this has no notion of "different project", only "nearby vector".
+  </p>
+
+  <p><strong>Don't take my word for it. Here's the actual output:</strong></p>
+
+<pre><code>  dict lookup   ('lantern','licence')  -&gt; MIT   ('tessera','licence') -&gt; GPL-3
+  the store     ('lantern','licence')  -&gt; MIT   conf 1.000   truth MIT    correct
+  the store     ('tessera','licence')  -&gt; MIT   conf 0.999   truth GPL-3  <span class="hl">WRONG</span>
+
+  licence question, projects ordered by how loud the corpus was:
+  lantern   count  220  answered MIT         conf 1.000  truth MIT         correct
+  quarry    count   90  answered Apache-2.0  conf 0.970  truth Apache-2.0  correct
+  halyard   count   40  answered MIT         conf 0.991  truth MIT         correct
+  marlin    count   12  answered Apache-2.0  conf 0.886  truth Apache-2.0  correct
+  cobble    count    3  answered BSD-3       conf 0.624  truth BSD-3       correct
+  pellucid  count    1  answered MIT         conf 0.398  truth GPL-3       WRONG
+  tessera   count    1  answered MIT         conf <span class="hl">0.999</span>  truth GPL-3       WRONG
+
+  over all 24 questions: accuracy 0.708
+  mean confidence when RIGHT 0.950 | when WRONG 0.701
+  highest confidence on a WRONG answer: <span class="hl">1.000</span>
+  lowest confidence on a RIGHT answer : <span class="ok">0.624</span></code></pre>
+
+  <p>
+    Read the last two lines together. The ranges <strong>overlap</strong>. Confidence is not useless — 0.950 when right against 0.701 when wrong is real signal — but there's a wrong answer at 1.000 sitting above a right answer at 0.624, so any threshold you pick cuts through both piles. Confidence measures how much support the reconstruction found. Support correlates with truth and is not truth.
+  </p>
+
+  <h2>The likely continuation and the true one are different strings</h2>
+
+  <p>This is the central claim, so here it is as one printed table. Left: what the objective prefers. Right: what's true.</p>
+
+<pre><code>  question                  most likely   p       true         p
+  --------------------------------------------------------------
+  tessera.licence           MIT         0.999   GPL-3       0.000   <span class="hl">&lt;- differ</span>
+  tessera.language          Python      1.000   Rust        0.000   <span class="hl">&lt;- differ</span>
+  pellucid.port             6379        0.488   9200        0.340   <span class="hl">&lt;- differ</span>
+  cobble.language           Python      0.641   Java        0.337   <span class="hl">&lt;- differ</span>
+  lantern.licence           MIT         1.000   MIT         1.000   <span class="ok">✓</span>
+
+  and the corpus prior the objective is actually fitting:
+    P(answer | licence ) argmax = MIT         0.804  all [0.804 0.186 0.005 0.004]
+    P(answer | language) argmax = Python      0.568  all [0.568 0.351 0.074 0.006]
+    P(answer | port    ) argmax = 8080        0.728  all [0.728 0.174 0.073 0.025]</code></pre>
+
+  <p>
+    80.4% of licence mentions in the toy corpus are MIT, and the objective's job is to reproduce that. Answering "MIT" for a project it saw once isn't a failure of the job — it's the job, on a question where doing the job gives the wrong answer. A fluent wrong answer is a correctly executed argmax over the wrong quantity.
+  </p>
+
+  <h2>Calibration makes some hallucination unavoidable</h2>
+
+  <p>
+    This is the part almost nobody covers, and it's the one that changed how I argue in planning meetings. A calibrated model is one whose stated confidence matches its observed accuracy: of the things it says at 70%, about 70% are true. That's a property you <em>want</em>. Now take facts that appeared exactly once in training. A calibrated model can't assign them probability 1, because the evidence isn't there — so it spreads probability over plausible alternatives, and some of that lands on statements that are false. Kalai &amp; Vempala (2023) turn that into a theorem: for facts with no more support than a single mention, a calibrated model's hallucination rate is bounded <em>below</em> by roughly the fraction of such singleton facts. Not "tends to". Must.
+  </p>
+
+  <p>The script calibrates its toy the standard way, one temperature scalar, then sweeps the abstention threshold:</p>
+
+<pre><code>  raw:  mean confidence 0.877  vs accuracy 0.708  -&gt; overconfident by 0.169
+  calibrated temperature 1.35 -&gt; mean confidence 0.712  vs accuracy 0.708 <span class="ok">✓</span>
+
+  facts attested exactly once in the corpus: 6/24 = 0.250
+
+  threshold   answered   refused   errors   err|answered   wrong/100q
+  --------------------------------------------------------------------
+    0.00       24/24      0       7       0.292        29.17
+    0.40       20/24      4       4       0.200        16.67
+    0.50       18/24      6       3       0.167        12.50
+    0.60       16/24      8       3       0.188        12.50
+    0.70       15/24      9       3       0.200        12.50
+    0.80       12/24     12       3       0.250        12.50
+    0.90        8/24     16       2       0.250         8.33
+    0.95        0/24     24       0           -         <span class="hl">0.00</span>
+    0.99        0/24     24       0           -         <span class="hl">0.00</span></code></pre>
+
+  <p>
+    Look at the last two rows before you celebrate the zero. Zero errors, because zero answers. That's the product decision this section is about, and it's why the column worth watching is <code>wrong/100q</code> rather than <code>err|answered</code> — the second flatters a system that has quietly stopped working.
+  </p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 250" role="img" aria-labelledby="d1t d1d">
+      <title id="d1t">Abstention trade-off at five confidence thresholds</title>
+      <desc id="d1d">Five bars, one per confidence threshold, each 24 questions wide. As the threshold rises from 0.00 to 0.95 the right-answer segment shrinks from 17 to 0, the wrong-answer segment from 7 to 0, and the refused segment grows from 0 to 24.</desc>
+      <text x="0" y="14" class="d-title">24 questions, split by what the system did</text>
+      <text x="0" y="32" class="d-muted">green outline = right · red outline = WRONG · dashed = refused</text>
+      <text x="0" y="62" class="d-mono">0.00</text>
+      <rect x="42" y="50" width="340" height="16" class="d-works"/><rect x="382" y="50" width="140" height="16" class="d-broke"/><text x="530" y="62" class="d-mono">17 · 7 · 0</text>
+      <text x="0" y="94" class="d-mono">0.50</text>
+      <rect x="42" y="82" width="300" height="16" class="d-works"/><rect x="342" y="82" width="60" height="16" class="d-broke"/><rect x="402" y="82" width="120" height="16" class="d-box-open d-dashed"/><text x="530" y="94" class="d-mono">15 · 3 · 6</text>
+      <text x="0" y="126" class="d-mono">0.80</text>
+      <rect x="42" y="114" width="180" height="16" class="d-works"/><rect x="222" y="114" width="60" height="16" class="d-broke"/><rect x="282" y="114" width="240" height="16" class="d-box-open d-dashed"/><text x="530" y="126" class="d-mono">9 · 3 · 12</text>
+      <text x="0" y="158" class="d-mono">0.90</text>
+      <rect x="42" y="146" width="120" height="16" class="d-works"/><rect x="162" y="146" width="40" height="16" class="d-broke"/><rect x="202" y="146" width="320" height="16" class="d-box-open d-dashed"/><text x="530" y="158" class="d-mono">6 · 2 · 16</text>
+      <text x="0" y="190" class="d-mono">0.95</text>
+      <rect x="42" y="178" width="480" height="16" class="d-box-open d-dashed"/><text x="530" y="190" class="d-mono">0 · 0 · 24</text>
+      <text x="0" y="222" class="d-muted">threshold</text>
+      <text x="530" y="222" class="d-muted">right · WRONG · refused</text>
+      <text x="0" y="242" class="d-muted">Zero errors arrives on the same row as zero answers.</text>
+    </svg>
+    <figcaption>The knob has one setting that eliminates error, and it also eliminates the product. Every number here is printed by demo 3.</figcaption>
+  </figure>
+
+  <p>
+    To be explicit: my toy's numbers are not evidence about any real model, and this sweep shows only the <em>shape</em> of the trade. The theorem is theirs; the eight fictional projects are mine.
+  </p>
+
+  <h2>Grounding: stop asking it to recall</h2>
+
+  <p>
+    The engineering answer isn't clever. If the failure is that recall reconstructs, don't ask it to recall — put the fact in the context, where copying it is the likely continuation. That's all retrieval-augmented generation does. The <a href="../rag/">RAG page</a> builds the retriever half; this is what the retriever is <em>for</em>.
+  </p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="d2t d2d">
+      <title id="d2t">Two paths to an answer, and where a wrong answer enters each</title>
+      <desc id="d2d">Left path: the question goes straight to the weights and out as an answer, with one error entry point, A, where the fact was rare or absent in training. Right path: the question goes to a retriever, then passages, then the weights, with three entry points, B, C and D: the retriever misses the answer, the prior overrides the passage, and two passages disagree.</desc>
+      <marker id="d2arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="d-fill-key"/></marker>
+      <text x="0" y="14" class="d-title">Path 1 — from the weights</text>
+      <text x="330" y="14" class="d-title">Path 2 — retrieved, then answered</text>
+      <rect x="0" y="30" width="140" height="30" rx="3" class="d-box"/><text x="12" y="50">question</text>
+      <path d="M 70 60 L 70 92" class="d-line-key" marker-end="url(#d2arr)"/>
+      <rect x="0" y="94" width="140" height="34" rx="3" class="d-box-key"/><text x="12" y="116">the weights</text>
+      <text x="0" y="150" class="d-broke-t">A</text><text x="16" y="150" class="d-muted">fact rare or absent</text><text x="16" y="166" class="d-muted">→ reconstructed</text>
+      <path d="M 70 128 L 70 196" class="d-line-key" marker-end="url(#d2arr)"/>
+      <rect x="0" y="198" width="140" height="30" rx="3" class="d-box"/><text x="12" y="218">answer</text>
+      <text x="0" y="252" class="d-muted">1 place to go wrong,</text><text x="0" y="268" class="d-muted">no way to check it</text>
+      <rect x="330" y="30" width="140" height="30" rx="3" class="d-box"/><text x="342" y="50">question</text>
+      <path d="M 400 60 L 400 78" class="d-line-key" marker-end="url(#d2arr)"/>
+      <rect x="330" y="80" width="140" height="30" rx="3" class="d-box"/><text x="342" y="100">retriever</text>
+      <text x="486" y="94" class="d-broke-t">B</text><text x="502" y="94" class="d-muted">no passage holds</text><text x="502" y="110" class="d-muted">the answer</text>
+      <path d="M 400 110 L 400 128" class="d-line-key" marker-end="url(#d2arr)"/>
+      <rect x="330" y="130" width="140" height="30" rx="3" class="d-box"/><text x="342" y="150">passages</text>
+      <text x="486" y="144" class="d-broke-t">D</text><text x="502" y="144" class="d-muted">two passages</text><text x="502" y="160" class="d-muted">disagree</text>
+      <path d="M 400 160 L 400 178" class="d-line-key" marker-end="url(#d2arr)"/>
+      <rect x="330" y="180" width="140" height="34" rx="3" class="d-box-key"/><text x="342" y="202">the weights</text>
+      <text x="486" y="196" class="d-broke-t">C</text><text x="502" y="196" class="d-muted">prior overrides</text><text x="502" y="212" class="d-muted">the passage</text>
+      <path d="M 400 214 L 400 236" class="d-line-key" marker-end="url(#d2arr)"/>
+      <rect x="330" y="238" width="140" height="30" rx="3" class="d-box"/><text x="342" y="258">answer</text>
+      <text x="330" y="292" class="d-muted">4 places to go wrong, 3 of them checkable</text>
+    </svg>
+    <figcaption>Grounding doesn't take the weights out of the path — it adds a stage in front of them. That's why the number of failure modes goes up while the error rate goes down.</figcaption>
+  </figure>
+
+  <p>In the script, grounding is one line: a fact present in the context adds a fixed boost to that answer's score before the softmax. Same store, same questions, with and without:</p>
+
+<pre><code>  from the weights alone : 17/24 = 0.708
+  with the fact in context: 21/24 = <span class="ok">0.875</span>
+  errors removed by grounding: 4
+
+  residual errors WITH the fact present: <span class="hl">3</span>
+    tessera.licence: said MIT (conf 0.996), passage said GPL-3
+    tessera.language: said Python (conf 0.978), passage said Rust
+    tessera.port: said 8080 (conf 0.997), passage said 6379
+
+    GAMMA 0.5 -&gt; grounded accuracy 0.875
+    GAMMA 1.0 -&gt; grounded accuracy 0.875
+    GAMMA 3.0 -&gt; grounded accuracy 0.875
+    GAMMA 6.0 -&gt; grounded accuracy 0.917
+    GAMMA 10.0 -&gt; grounded accuracy 0.958
+    GAMMA 20.0 -&gt; grounded accuracy 1.000</code></pre>
+
+  <p>
+    The residual block is the half everyone omits. Three answers contradict a passage that was <em>right there in the context</em>, at confidence 0.98 and above, and all three are the fork — the case where the prior is loudest. In a real system that prior is "what the internet mostly says", and it does not stand down because you pasted a document above it.
+    The GAMMA sweep is the honest version of "just use RAG". How hard a model prefers context over its own weights is a continuous property set by pretraining and instruction tuning, and you mostly don't control it. It is not a boolean you flipped on when you added a vector database.
+  </p>
+
+  <h2>Three ways a grounded answer is still wrong</h2>
+
+  <p>Same store, a simulated retriever, all 24 questions, three failure modes measured separately:</p>
+
+<pre><code>  failure mode                  wrong / asked   rate
+  ----------------------------------------------------
+  passage lacks the answer        10 /  24     <span class="hl">0.417</span>
+  answer contradicts passage       3 /  24     0.125
+  two passages disagree            6 /  24     0.250
+
+  Mode (a) is a RETRIEVAL bug. The generator behaved correctly:
+  it was handed nothing about the subject and filled the gap.
+    tessera.licence with only a lantern passage -&gt; MIT (conf 1.000), truth GPL-3</code></pre>
+
+  <div class="note"><strong>Mode (a) is a retrieval bug that gets logged as a model bug.</strong> It's the most common of the three here at 0.417, and it's exactly what the <a href="../rag/">RAG page's</a> break-it table already shows you doing to yourself with <code>k=1</code> and oversized chunks. Fix the retriever, not the prompt. Only the middle mode is arguably the model's fault; the third is a corpus problem wearing a model's face.</div>
+
+  <h2>Detecting it without a ground truth</h2>
+
+  <p>
+    In production you don't have the answer key. What you do have is the ability to sample the same question several times. If the model reconstructed from thin evidence the samples scatter; if it's copying something solid they agree. That's self-consistency, and it costs you k times the tokens.
+  </p>
+
+<pre><code>  mean agreement when the modal answer is RIGHT <span class="ok">0.941</span>
+  mean agreement when it is WRONG               0.714
+  correlation(agreement, correctness) = 0.522  -&gt; a real signal
+
+  and the cases it misses -- agreement &gt;= 0.875 and still wrong: <span class="hl">3</span>
+    tessera.licence: said MIT 8/8 times, truth GPL-3
+    tessera.language: said Python 8/8 times, truth Rust
+    tessera.port: said 8080 8/8 times, truth 6379</code></pre>
+
+  <p>
+    A real signal and a real ceiling in one block. Agreement separates the two populations — and then the fork answers wrongly <strong>8 times out of 8</strong>, because its error is structural. The features say lantern, so every sample says lantern. Sampling variance cannot detect a bias.
+    Use it as a flag, never as a gate. Finding out how well it works on your data is an eval problem, and that's the <a href="../evals/">evals page's</a> job — including the part where a metric that looks fine on aggregate is useless on the slice you care about. On the published side, Min et al.'s FActScore is the sane framing: split a long answer into atomic claims and score each against a source, rather than grading the paragraph as a unit.
+  </p>
+
+  <div class="note"><strong>A citation is not a proof.</strong> A model can produce a citation that exists, is retrievable, and does not support the sentence attached to it. Citations make an answer <em>checkable by a human</em>, which is worth a lot, and they do not make it true. Product copy that says "grounded, with citations" claims the first thing and is heard as the second.</div>
+
+</section>
+
+<!-- ==================== TAMIL ==================== -->
+<section data-panel="ta" hidden lang="ta">
+
+  <p>
+    நான் ship செய்த ஒரு support assistant ஒரு refund policy-யை கண்டுபிடித்துச்
+    சொன்னது. மிக அழகாக. சரியான tone, சரியான format, ஆனால் அப்படி ஒரு policy
+    எப்போதுமே இருந்ததில்லை. அதை ஒரு bug-ஆக file செய்தேன், அதை off செய்யும்
+    setting-ஐத் தேடினேன், மெதுவாகப் புரிந்தது — அப்படி ஒன்று இல்லை. ஏனெனில்
+    அந்த model-இன் training-ல் <em>சரியாக இருப்பதற்கு</em> எந்த reward-ம்
+    இல்லை. அதற்கு reward கிடைத்தது likely text உருவாக்கியதற்கு. அந்தக்
+    கேள்வியில் likely text-ம் true text-ம் வெவ்வேறு strings; தான் பயிற்சி
+    பெற்ற ஒன்றைத்தான் அது எடுத்தது.
+  </p>
+  <p>
+    எல்லோரும் "it hallucinates" என்று சொன்னார்கள் — அது ஒரு component
+    தவறாக நடந்துகொள்வது போலத் தோன்றும். இல்லை. அது அந்த component
+    <em>சரியாக</em> வேலை செய்வது.
+  </p>
+
+  <div class="note">
+    <strong>குறிப்பு:</strong> English technical words (hallucination,
+    grounding, calibration, abstention, retrieval, self-consistency,
+    confidence, reconstruction, recall…) அப்படியே வைத்திருக்கிறேன். ஏனென்றால்
+    code-லும் மற்ற papers-லும் நீங்கள் அந்த வார்த்தைகளைத்தான் பார்ப்பீர்கள்.
+    <strong>புரிதல் தமிழில், சொல்லகராதி English-ல்.</strong>
+  </div>
+
+  <h2>எல்லாவற்றையும் படித்து, எதையும் நினைவில் வைக்காத ஒரு autocomplete</h2>
+
+  <p>இந்த இரண்டுக்கும் உள்ள வித்தியாசம் உங்களுக்குத் தெரியும்:</p>
+
+<pre><code>facts["pellucid"]["licence"]     # ஒரு record. சரியாக, இல்லையேல் KeyError.
+autocomplete("pellucid is licensed under ")   # தொடர்ச்சி. எப்போதும் ஏதோ ஒன்று.</code></pre>
+
+  <p>
+    முதலாவதில் ஒவ்வொரு fact-க்கும் ஒரு row இருக்கிறது; ஒரு முறை பார்த்த
+    fact-ம் கோடி முறை பார்த்த fact-ம் ஒரே அளவு retrievable. இரண்டாவதில்
+    row-க்களே இல்லை. weights மட்டும்தான் — training-ன் போது ஒவ்வொரு fact-ம்
+    சேர்க்கப்பட்ட, ஒன்றின்மேல் ஒன்று படிந்த features-ன் ஒரு பூச்சு — கேள்வி
+    கேட்டால் அது எதையும் தேடிப் பார்ப்பதில்லை. அந்தப் பூச்சிலிருந்து ஒரு
+    நம்பத்தகுந்த பதிலை அது <em>reconstruct</em> செய்கிறது.
+    இதுதான் இந்தப் பக்கம் முழுவதும். Reconstruction கட்டமைப்பாலேயே
+    நம்பிக்கையுடன் இருக்கிறது, ஏனெனில் ஒரு கலவை எப்போதும் ஒரு மதிப்பைத்
+    தரும். cache miss இல்லை. <code>KeyError</code> இல்லை. நீங்கள் கையால்
+    எழுதியிருப்பீர்களே அந்த <code>None</code> branch — அது இந்த
+    architecture-ல் இல்லவே இல்லை.
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>சொல்</th><th>அர்த்தம்</th><th>Programmer-க்கான உதாரணம்</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Hallucination</strong></td><td>source-ம் உலகமும் ஆதரிக்காத, ஆனால் சரளமான output</td><td>miss-ல் ஒரு மதிப்பை உருவாக்கி, அதைச் சொல்லாத cache</td></tr>
+      <tr><td><strong>Grounding</strong></td><td>fact-ஐ context-ல் வைப்பது, அதனால் recall அல்ல, copy</td><td>default-ஐ hard-code செய்யாமல் config-ஐ pass செய்வது</td></tr>
+      <tr><td><strong>Calibration</strong></td><td>சொல்லப்பட்ட confidence, கண்ட accuracy-உடன் பொருந்துவது</td><td>உண்மையிலேயே 99% நேரம் சரியாக இருக்கும் p99 மதிப்பீடு</td></tr>
+      <tr><td><strong>Abstention</strong></td><td>ஒரு confidence threshold-க்குக் கீழே பதில் மறுப்பது</td><td>ஊகத்திற்குப் பதிலாக 503 திருப்பித் தருவது</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>அந்த ஒரு சூத்திரம், அதில் இல்லாதது</h2>
+
+  <div class="formula">θ* = argmax<sub>θ</sub> Σ<sub>t</sub> log P<sub>θ</sub>(x<sub>t</sub> | x<sub>&lt;t</sub>)</div>
+
+  <p>இதை pipeline stages-ஆகப் படியுங்கள்:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>படி</th><th>என்ன</th><th>என்ன செய்கிறது</th></tr></thead>
+    <tbody>
+      <tr><td><code>x<sub>&lt;t</sub></code></td><td>prefix</td><td>இதுவரை உள்ள அனைத்தும் — prompt மற்றும் generate ஆனது</td></tr>
+      <tr><td><code>P<sub>θ</sub>(x<sub>t</sub> | …)</code></td><td>ஒரு distribution</td><td>அந்த prefix-க்குப் பிறகு ஒவ்வொரு token-ம் எவ்வளவு likely</td></tr>
+      <tr><td><code>log</code></td><td>ஒரு log</td><td>probabilities-ஐப் பெருக்குவது கூட்டலாக மாறும். Float சுகாதாரம்</td></tr>
+      <tr><td><code>Σ<sub>t</sub></code></td><td>tokens மேல் கூட்டல்</td><td>முழு corpus-க்கும் மதிப்பெண், ஒரு token ஒரு முறை</td></tr>
+      <tr><td><code>argmax<sub>θ</sub></code></td><td>training loop</td><td>corpus முடிந்தவரை likely-ஆகத் தெரியும் வரை weights-ஐ நகர்த்து</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note"><strong>அந்தச் சூத்திரத்தில் "உண்மை" என்பதற்கு ஒரு term-ஏ இல்லை.</strong> log-ல் மறைந்தும் இல்லை, கூட்டலில் உட்பொருளாகவும் இல்லை. objective என்பது corpus சொன்னதற்கு ஒரு fit மட்டுமே. corpus சரியாக இருந்த இடங்களில், அதை fit செய்வது ஒரு பக்கவிளைவாகச் சரியான பதில்களைத் தருகிறது — நீங்கள் ship செய்த பொருள் முழுவதும் அந்தப் பக்கவிளைவின் மேல்தான் நிற்கிறது.</div>
+
+  <p>
+    Ji et al. இதை இரண்டாகப் பிரிக்கிறார்கள்: <em>intrinsic</em>
+    hallucination — தன் source-ஐயே முரண்படும் output; <em>extrinsic</em> —
+    source ஆதரிக்கவும் இல்லை, மறுக்கவும் இல்லாத output. இதைத் தெளிவாக
+    வைத்திருங்கள்: இரண்டாவது வகையைத்தான் யாருடைய eval-ம் பிடிப்பதில்லை,
+    ஏனெனில் அது passage-க்கு எதிராகத் தவறு அல்ல, passage-ல் இருந்து
+    சரிபார்க்க முடியாதது.
+  </p>
+
+  <p class="thanglish">
+    Store-la row illa, weights dhaan. Kelvi kettaa, adhu edhaiyum thedala —
+    oru plausible badhil-a reconstruct pannudhu. Andhaala cache miss-um illa,
+    KeyError-um illa: "theriyala" nu solra branch architecture-la illave illa.
+  </p>
+
+  <h2>Reconstruction என்பது recall அல்ல, confidence-ஆல் சொல்ல முடியாது</h2>
+
+  <p>
+    Script எட்டு கற்பனை projects பற்றிய 24 facts-ஐக் கொண்ட ஒரு store-ஐக்
+    கட்டுகிறது. dict அல்ல — ஒரே 64×64 matrix, அதில் ஒவ்வொரு fact-ம்
+    toy corpus எத்தனை முறை சொன்னது என்ற எடையுடன் சேர்க்கப்படுகிறது. பிரபல
+    projects நூற்றுக்கணக்கான முறை வருகின்றன, மறைவானவை ஒரு முறை. ஒரு project,
+    <code>tessera</code>, வேண்டுமென்றே <code>lantern</code>-ன் fork: அதன்
+    feature vector பெரும்பாலும் lantern-ன்தான், ஏனெனில் இப்படி ஒரு store-க்கு
+    "வேறு project" என்ற கருத்தே இல்லை, "அருகிலுள்ள vector" மட்டும்தான்.
+  </p>
+
+  <p><strong>என்னை நம்ப வேண்டாம். இதோ உண்மையான output:</strong></p>
+
+<pre><code>  dict lookup   ('lantern','licence')  -&gt; MIT   ('tessera','licence') -&gt; GPL-3
+  the store     ('lantern','licence')  -&gt; MIT   conf 1.000   truth MIT    correct
+  the store     ('tessera','licence')  -&gt; MIT   conf 0.999   truth GPL-3  <span class="hl">WRONG</span>
+
+  licence question, projects ordered by how loud the corpus was:
+  lantern   count  220  answered MIT         conf 1.000  truth MIT         correct
+  quarry    count   90  answered Apache-2.0  conf 0.970  truth Apache-2.0  correct
+  halyard   count   40  answered MIT         conf 0.991  truth MIT         correct
+  marlin    count   12  answered Apache-2.0  conf 0.886  truth Apache-2.0  correct
+  cobble    count    3  answered BSD-3       conf 0.624  truth BSD-3       correct
+  pellucid  count    1  answered MIT         conf 0.398  truth GPL-3       WRONG
+  tessera   count    1  answered MIT         conf <span class="hl">0.999</span>  truth GPL-3       WRONG
+
+  over all 24 questions: accuracy 0.708
+  mean confidence when RIGHT 0.950 | when WRONG 0.701
+  highest confidence on a WRONG answer: <span class="hl">1.000</span>
+  lowest confidence on a RIGHT answer : <span class="ok">0.624</span></code></pre>
+
+  <p>
+    கடைசி இரண்டு வரிகளையும் சேர்த்துப் படியுங்கள். இரு வரம்புகளும்
+    <strong>ஒன்றின்மேல் ஒன்று படிகின்றன</strong>. Confidence பயனற்றது அல்ல —
+    சரியாக இருக்கும்போது 0.950, தவறாக இருக்கும்போது 0.701 என்பது உண்மையான
+    signal — ஆனால் 1.000-ல் ஒரு தவறான பதில், 0.624-ல் உள்ள ஒரு சரியான
+    பதிலுக்கு மேலே அமர்ந்திருக்கிறது. அதனால் நீங்கள் தேர்ந்தெடுக்கும் எந்த
+    threshold-ம் இரண்டு குவியல்களையும் வெட்டிச் செல்லும். Confidence
+    அளப்பது, reconstruction எவ்வளவு ஆதரவைக் கண்டது என்பதை. ஆதரவு
+    உண்மையுடன் தொடர்புடையது; அது உண்மை அல்ல.
+  </p>
+
+  <h2>Likely தொடர்ச்சியும் உண்மையான தொடர்ச்சியும் வெவ்வேறு strings</h2>
+
+  <p>இதுதான் மையக் கூற்று, அதனால் இதோ ஒரே printed table-ஆக. இடது: objective எதை விரும்புகிறது. வலது: உண்மை என்ன.</p>
+
+<pre><code>  question                  most likely   p       true         p
+  --------------------------------------------------------------
+  tessera.licence           MIT         0.999   GPL-3       0.000   <span class="hl">&lt;- differ</span>
+  tessera.language          Python      1.000   Rust        0.000   <span class="hl">&lt;- differ</span>
+  pellucid.port             6379        0.488   9200        0.340   <span class="hl">&lt;- differ</span>
+  cobble.language           Python      0.641   Java        0.337   <span class="hl">&lt;- differ</span>
+  lantern.licence           MIT         1.000   MIT         1.000   <span class="ok">✓</span>
+
+  and the corpus prior the objective is actually fitting:
+    P(answer | licence ) argmax = MIT         0.804  all [0.804 0.186 0.005 0.004]
+    P(answer | language) argmax = Python      0.568  all [0.568 0.351 0.074 0.006]
+    P(answer | port    ) argmax = 8080        0.728  all [0.728 0.174 0.073 0.025]</code></pre>
+
+  <p>
+    toy corpus-ல் licence குறிப்புகளில் 80.4% MIT; objective-ன் வேலை அதை
+    மறுஉருவாக்கம் செய்வது. ஒரு முறை மட்டும் பார்த்த project-க்கு "MIT" என்று
+    பதில் சொல்வது அந்த வேலையின் தோல்வி அல்ல — அது அந்த வேலைதான், வேலையைச்
+    சரியாகச் செய்வதே தவறான பதிலைத் தரும் ஒரு கேள்வியில். சரளமான தவறான பதில்
+    என்பது, தவறான அளவின் மேல் சரியாக நிறைவேற்றப்பட்ட ஒரு argmax.
+  </p>
+
+  <h2>Calibration சில hallucination-ஐத் தவிர்க்க முடியாததாக்குகிறது</h2>
+
+  <p>
+    இந்தப் பகுதியை யாரும் பேசுவதில்லை, planning meetings-ல் நான் வாதிடும்
+    விதத்தையே இதுதான் மாற்றியது. Calibrated model என்பது, சொல்லும்
+    confidence கண்ட accuracy-உடன் பொருந்தும் ஒன்று: 70% என்று சொல்லும்
+    விஷயங்களில் சுமார் 70% உண்மையாக இருக்கும். இது நீங்கள்
+    <em>விரும்பும்</em> ஒரு பண்பு. இப்போது training-ல் சரியாக ஒரு முறை மட்டும்
+    வந்த facts-ஐ எடுத்துக்கொள்ளுங்கள். ஒரு calibrated model அவற்றுக்கு
+    probability 1 தர முடியாது, ஏனெனில் அதற்கான ஆதாரம் இல்லை — எனவே அது
+    நம்பத்தகுந்த மாற்றுகளின் மேல் probability-ஐப் பரப்புகிறது, அதில் கொஞ்சம்
+    தவறான statements மேல் விழுகிறது. Kalai &amp; Vempala (2023) இதை ஒரு
+    theorem ஆக்குகிறார்கள்: ஒரே ஒரு குறிப்புக்கு மேல் ஆதரவு இல்லாத
+    facts-க்கு, ஒரு calibrated model-ன் hallucination rate-க்கு, அப்படிப்பட்ட
+    singleton facts-ன் விகிதம் அளவுக்கு ஒரு <em>கீழ்</em> எல்லை உண்டு.
+    "பொதுவாக அப்படி இருக்கும்" அல்ல. கட்டாயம்.
+  </p>
+
+  <p>Script தன் toy-ஐ வழக்கமான முறையில், ஒரே temperature scalar-ஆல் calibrate செய்து, பிறகு abstention threshold-ஐ sweep செய்கிறது:</p>
+
+<pre><code>  raw:  mean confidence 0.877  vs accuracy 0.708  -&gt; overconfident by 0.169
+  calibrated temperature 1.35 -&gt; mean confidence 0.712  vs accuracy 0.708 <span class="ok">✓</span>
+
+  facts attested exactly once in the corpus: 6/24 = 0.250
+
+  threshold   answered   refused   errors   err|answered   wrong/100q
+  --------------------------------------------------------------------
+    0.00       24/24      0       7       0.292        29.17
+    0.40       20/24      4       4       0.200        16.67
+    0.50       18/24      6       3       0.167        12.50
+    0.60       16/24      8       3       0.188        12.50
+    0.70       15/24      9       3       0.200        12.50
+    0.80       12/24     12       3       0.250        12.50
+    0.90        8/24     16       2       0.250         8.33
+    0.95        0/24     24       0           -         <span class="hl">0.00</span>
+    0.99        0/24     24       0           -         <span class="hl">0.00</span></code></pre>
+
+  <p>
+    அந்தப் பூஜ்ஜியத்தைக் கொண்டாடும் முன் கடைசி இரண்டு rows-ஐப் பாருங்கள்.
+    பூஜ்ஜிய errors, ஏனெனில் பூஜ்ஜிய பதில்கள். இந்தப் பகுதி பேசும் product
+    முடிவு அதுதான், அதனால்தான் கவனிக்க வேண்டிய column
+    <code>err|answered</code> அல்ல, <code>wrong/100q</code> — இரண்டாவது,
+    அமைதியாக வேலை செய்வதை நிறுத்திய ஒரு system-ஐ அழகுபடுத்திக் காட்டும்.
+  </p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 250" role="img" aria-labelledby="d1t-ta d1d-ta">
+      <title id="d1t-ta">ஐந்து confidence threshold-களில் abstention சமரசம்</title>
+      <desc id="d1d-ta">ஒவ்வொரு confidence threshold-க்கும் ஒரு bar, ஐந்து bars, ஒவ்வொன்றும் 24 கேள்வி அகலம். threshold 0.00-லிருந்து 0.95 வரை உயரும்போது சரியான பதிகளின் பகுதி 17-லிருந்து 0 ஆகச் சுருங்குகிறது, தவறான பதில்களின் பகுதி 7-லிருந்து 0 ஆக, மறுக்கப்பட்ட பகுதி 0-லிருந்து 24 ஆக வளர்கிறது.</desc>
+      <text x="0" y="14" class="d-title">24 கேள்விகள், system என்ன செய்தது என்பதன்படி</text>
+      <text x="0" y="32" class="d-muted">பச்சை = சரி · சிவப்பு = WRONG · புள்ளிக்கோடு = refused</text>
+      <text x="0" y="62" class="d-mono">0.00</text>
+      <rect x="42" y="50" width="340" height="16" class="d-works"/><rect x="382" y="50" width="140" height="16" class="d-broke"/><text x="530" y="62" class="d-mono">17 · 7 · 0</text>
+      <text x="0" y="94" class="d-mono">0.50</text>
+      <rect x="42" y="82" width="300" height="16" class="d-works"/><rect x="342" y="82" width="60" height="16" class="d-broke"/><rect x="402" y="82" width="120" height="16" class="d-box-open d-dashed"/><text x="530" y="94" class="d-mono">15 · 3 · 6</text>
+      <text x="0" y="126" class="d-mono">0.80</text>
+      <rect x="42" y="114" width="180" height="16" class="d-works"/><rect x="222" y="114" width="60" height="16" class="d-broke"/><rect x="282" y="114" width="240" height="16" class="d-box-open d-dashed"/><text x="530" y="126" class="d-mono">9 · 3 · 12</text>
+      <text x="0" y="158" class="d-mono">0.90</text>
+      <rect x="42" y="146" width="120" height="16" class="d-works"/><rect x="162" y="146" width="40" height="16" class="d-broke"/><rect x="202" y="146" width="320" height="16" class="d-box-open d-dashed"/><text x="530" y="158" class="d-mono">6 · 2 · 16</text>
+      <text x="0" y="190" class="d-mono">0.95</text>
+      <rect x="42" y="178" width="480" height="16" class="d-box-open d-dashed"/><text x="530" y="190" class="d-mono">0 · 0 · 24</text>
+      <text x="0" y="222" class="d-muted">threshold</text>
+      <text x="530" y="222" class="d-muted">சரி · WRONG · refused</text>
+      <text x="0" y="242" class="d-muted">பூஜ்ஜிய error-ம் பூஜ்ஜிய பதிலும் ஒரே row-ல் வருகின்றன.</text>
+    </svg>
+    <figcaption>இந்த knob-க்கு error-ஐ ஒழிக்கும் ஒரு setting உண்டு; அது product-ஐயும் ஒழிக்கிறது. இங்குள்ள ஒவ்வொரு எண்ணையும் demo 3 print செய்கிறது.</figcaption>
+  </figure>
+
+  <p>
+    தெளிவாகச் சொல்கிறேன்: என் toy-ன் எண்கள் எந்த உண்மையான model பற்றியும்
+    ஆதாரம் அல்ல, இந்த sweep காட்டுவது அந்தச் சமரசத்தின் <em>வடிவம்</em>
+    மட்டுமே. theorem அவர்களுடையது; எட்டு கற்பனை projects என்னுடையவை.
+  </p>
+
+  <h2>Grounding: recall செய்யச் சொல்வதை நிறுத்துங்கள்</h2>
+
+  <p>
+    Engineering பதில் புத்திசாலித்தனமானது அல்ல. recall reconstruct
+    செய்வதுதான் பிரச்சனை என்றால், recall செய்யச் சொல்லாதீர்கள் — fact-ஐ
+    context-ல் வையுங்கள், அங்கே அதை copy செய்வதுதான் likely தொடர்ச்சி.
+    retrieval-augmented generation செய்வது அவ்வளவுதான். <a href="../rag/">RAG
+    பக்கம்</a> retriever பாதியைக் கட்டுகிறது; retriever <em>எதற்காக</em>
+    என்பது இதுதான்.
+  </p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="d2t-ta d2d-ta">
+      <title id="d2t-ta">ஒரு பதிலுக்கான இரு பாதைகள், தவறு எங்கே நுழைகிறது</title>
+      <desc id="d2d-ta">இடது பாதை: கேள்வி நேராக weights-க்குச் சென்று பதிலாக வெளிவருகிறது, ஒரே ஒரு தவறு நுழையும் இடம் A — fact training-ல் அரிதாக அல்லது இல்லாமல் இருந்தது. வலது பாதை: கேள்வி retriever-க்கு, பிறகு passages, பிறகு weights; மூன்று நுழைவிடங்கள் B, C, D: retriever பதிலைத் தவறவிடுகிறது, prior passage-ஐ மீறுகிறது, இரு passages முரண்படுகின்றன.</desc>
+      <marker id="d2arr-ta" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="d-fill-key"/></marker>
+      <text x="0" y="14" class="d-title">பாதை 1 — weights-லிருந்து</text>
+      <text x="330" y="14" class="d-title">பாதை 2 — retrieve, பிறகு பதில்</text>
+      <rect x="0" y="30" width="140" height="30" rx="3" class="d-box"/><text x="12" y="50">கேள்வி</text>
+      <path d="M 70 60 L 70 92" class="d-line-key" marker-end="url(#d2arr-ta)"/>
+      <rect x="0" y="94" width="140" height="34" rx="3" class="d-box-key"/><text x="12" y="116">weights</text>
+      <text x="0" y="150" class="d-broke-t">A</text><text x="16" y="150" class="d-muted">fact அரிது / இல்லை</text><text x="16" y="166" class="d-muted">→ reconstructed</text>
+      <path d="M 70 128 L 70 196" class="d-line-key" marker-end="url(#d2arr-ta)"/>
+      <rect x="0" y="198" width="140" height="30" rx="3" class="d-box"/><text x="12" y="218">பதில்</text>
+      <text x="0" y="252" class="d-muted">தவறு நேர 1 இடம்,</text><text x="0" y="268" class="d-muted">சரிபார்க்க வழி இல்லை</text>
+      <rect x="330" y="30" width="140" height="30" rx="3" class="d-box"/><text x="342" y="50">கேள்வி</text>
+      <path d="M 400 60 L 400 78" class="d-line-key" marker-end="url(#d2arr-ta)"/>
+      <rect x="330" y="80" width="140" height="30" rx="3" class="d-box"/><text x="342" y="100">retriever</text>
+      <text x="486" y="94" class="d-broke-t">B</text><text x="502" y="94" class="d-muted">எந்த passage-லும்</text><text x="502" y="110" class="d-muted">பதில் இல்லை</text>
+      <path d="M 400 110 L 400 128" class="d-line-key" marker-end="url(#d2arr-ta)"/>
+      <rect x="330" y="130" width="140" height="30" rx="3" class="d-box"/><text x="342" y="150">passages</text>
+      <text x="486" y="144" class="d-broke-t">D</text><text x="502" y="144" class="d-muted">இரு passages</text><text x="502" y="160" class="d-muted">முரண்படுகின்றன</text>
+      <path d="M 400 160 L 400 178" class="d-line-key" marker-end="url(#d2arr-ta)"/>
+      <rect x="330" y="180" width="140" height="34" rx="3" class="d-box-key"/><text x="342" y="202">weights</text>
+      <text x="486" y="196" class="d-broke-t">C</text><text x="502" y="196" class="d-muted">prior, passage-ஐ</text><text x="502" y="212" class="d-muted">மீறுகிறது</text>
+      <path d="M 400 214 L 400 236" class="d-line-key" marker-end="url(#d2arr-ta)"/>
+      <rect x="330" y="238" width="140" height="30" rx="3" class="d-box"/><text x="342" y="258">பதில்</text>
+      <text x="330" y="292" class="d-muted">தவறு நேர 4 இடம், அதில் 3 சரிபார்க்கக்கூடியவை</text>
+    </svg>
+    <figcaption>Grounding weights-ஐப் பாதையிலிருந்து நீக்குவதில்லை — அதற்கு முன் ஒரு stage-ஐச் சேர்க்கிறது. அதனால்தான் failure modes-ன் எண்ணிக்கை கூடும் அதே நேரம் error rate குறைகிறது.</figcaption>
+  </figure>
+
+  <p>Script-ல் grounding ஒரே ஒரு வரி: context-ல் இருக்கும் ஒரு fact, softmax-க்கு முன் அந்தப் பதிலின் score-க்கு ஒரு நிலையான boost சேர்க்கிறது. அதே store, அதே கேள்விகள், grounding-உடன் மற்றும் இல்லாமல்:</p>
+
+<pre><code>  from the weights alone : 17/24 = 0.708
+  with the fact in context: 21/24 = <span class="ok">0.875</span>
+  errors removed by grounding: 4
+
+  residual errors WITH the fact present: <span class="hl">3</span>
+    tessera.licence: said MIT (conf 0.996), passage said GPL-3
+    tessera.language: said Python (conf 0.978), passage said Rust
+    tessera.port: said 8080 (conf 0.997), passage said 6379
+
+    GAMMA 0.5 -&gt; grounded accuracy 0.875
+    GAMMA 1.0 -&gt; grounded accuracy 0.875
+    GAMMA 3.0 -&gt; grounded accuracy 0.875
+    GAMMA 6.0 -&gt; grounded accuracy 0.917
+    GAMMA 10.0 -&gt; grounded accuracy 0.958
+    GAMMA 20.0 -&gt; grounded accuracy 1.000</code></pre>
+
+  <p>
+    residual block-தான் எல்லோரும் விட்டுவிடும் பாதி. மூன்று பதில்கள்,
+    <em>context-ல் அங்கேயே இருந்த</em> ஒரு passage-ஐ முரண்படுகின்றன, 0.98-க்கு
+    மேல் confidence-உடன், மூன்றுமே fork — prior மிக உரக்கப் பேசும் வழக்கு.
+    ஒரு உண்மையான system-ல் அந்த prior என்பது "internet பெரும்பாலும்
+    சொல்வது", நீங்கள் ஒரு document-ஐ மேலே paste செய்ததற்காக அது பணிந்து
+    விலகாது.
+    GAMMA sweep என்பது "just use RAG" என்பதன் நேர்மையான வடிவம். ஒரு model
+    தன் weights-ஐ விட context-ஐ எவ்வளவு வலுவாக விரும்பும் என்பது
+    pretraining-ம் instruction tuning-ம் நிர்ணயிக்கும் ஒரு தொடர்ச்சியான
+    பண்பு, அது பெரும்பாலும் உங்கள் கட்டுப்பாட்டில் இல்லை. ஒரு vector
+    database சேர்த்ததால் நீங்கள் on செய்த boolean அல்ல அது.
+  </p>
+
+  <p class="thanglish">
+    Grounding-kku aprom-um moonu badhil passage-ai muranpaduthudhu — ellaame
+    fork case, conf 0.98-kku mela. GAMMA sweep dhaan "just use RAG"-oda nejam:
+    context-ai prefer panradhu oru continuous property, neenga podura switch illa.
+  </p>
+
+  <h2>Grounded பதில் இன்னும் தவறாக இருக்கும் மூன்று வழிகள்</h2>
+
+  <p>அதே store, ஒரு simulated retriever, 24 கேள்விகளும், மூன்று failure modes தனித்தனியாக அளக்கப்படுகின்றன:</p>
+
+<pre><code>  failure mode                  wrong / asked   rate
+  ----------------------------------------------------
+  passage lacks the answer        10 /  24     <span class="hl">0.417</span>
+  answer contradicts passage       3 /  24     0.125
+  two passages disagree            6 /  24     0.250
+
+  Mode (a) is a RETRIEVAL bug. The generator behaved correctly:
+  it was handed nothing about the subject and filled the gap.
+    tessera.licence with only a lantern passage -&gt; MIT (conf 1.000), truth GPL-3</code></pre>
+
+  <div class="note"><strong>Mode (a) ஒரு retrieval bug, ஆனால் அது model bug-ஆக log ஆகிறது.</strong> இங்குள்ள மூன்றில் இதுதான் அதிகம், 0.417; <a href="../rag/">RAG பக்கத்தின்</a> break-it table <code>k=1</code>-ஆலும் அளவுக்கு அதிகமான chunks-ஆலும் நீங்களே உங்களுக்குச் செய்துகொள்வதை ஏற்கனவே காட்டுகிறது. prompt-ஐ அல்ல, retriever-ஐச் சரிசெய்யுங்கள். நடுவிலுள்ள mode மட்டுமே model-ன் தவறு எனச் சொல்லலாம்; மூன்றாவது, model-ன் முகமூடி அணிந்த ஒரு corpus பிரச்சனை.</div>
+
+  <h2>ground truth இல்லாமல் இதைக் கண்டறிவது</h2>
+
+  <p>
+    Production-ல் உங்களிடம் விடைத்தாள் இல்லை. இருப்பது ஒன்றுதான்: அதே
+    கேள்வியை பல முறை sample செய்யும் திறன். மெலிந்த ஆதாரத்திலிருந்து model
+    reconstruct செய்திருந்தால் samples சிதறும்; உறுதியான ஒன்றை copy
+    செய்திருந்தால் அவை ஒத்துப்போகும். அதுதான் self-consistency, அதற்கு
+    k மடங்கு tokens செலவாகும்.
+  </p>
+
+<pre><code>  mean agreement when the modal answer is RIGHT <span class="ok">0.941</span>
+  mean agreement when it is WRONG               0.714
+  correlation(agreement, correctness) = 0.522  -&gt; a real signal
+
+  and the cases it misses -- agreement &gt;= 0.875 and still wrong: <span class="hl">3</span>
+    tessera.licence: said MIT 8/8 times, truth GPL-3
+    tessera.language: said Python 8/8 times, truth Rust
+    tessera.port: said 8080 8/8 times, truth 6379</code></pre>
+
+  <p>
+    ஒரே block-ல் ஒரு உண்மையான signal-ம் ஒரு உண்மையான உச்சவரம்பும்.
+    Agreement இரு கூட்டங்களைப் பிரிக்கிறது — பிறகு fork
+    <strong>8-க்கு 8 முறை</strong> தவறாகப் பதில் சொல்கிறது, ஏனெனில் அதன்
+    தவறு கட்டமைப்பு சார்ந்தது. features lantern என்று சொல்கின்றன, எனவே
+    ஒவ்வொரு sample-ம் lantern என்று சொல்கிறது. Sampling variance ஒரு
+    bias-ஐக் கண்டுபிடிக்க முடியாது.
+    இதை ஒரு flag-ஆகப் பயன்படுத்துங்கள், ஒருபோதும் ஒரு gate-ஆக அல்ல. உங்கள்
+    data-வில் இது எவ்வளவு நன்றாக வேலை செய்கிறது என்பதைக் கண்டறிவது ஒரு eval
+    பிரச்சனை, அது <a href="../evals/">evals பக்கத்தின்</a> வேலை — aggregate-ல்
+    நன்றாகத் தெரியும் ஒரு metric, நீங்கள் கவலைப்படும் slice-ல் பயனற்றதாக
+    இருக்கும் பகுதி உட்பட. வெளியிடப்பட்ட பக்கத்தில், Min et al.-ன் FActScore
+    தான் நியாயமான வடிவம்: நீண்ட பதிலை atomic claims-ஆகப் பிரித்து,
+    ஒவ்வொன்றையும் ஒரு source-க்கு எதிராக மதிப்பிடுங்கள்; பத்தியை ஒரு
+    அலகாக மதிப்பிடாதீர்கள்.
+  </p>
+
+  <div class="note"><strong>ஒரு citation என்பது ஒரு நிரூபணம் அல்ல.</strong> ஒரு model, உண்மையிலேயே இருக்கும், retrieve செய்யக்கூடிய, ஆனால் தன்னுடன் இணைந்த வாக்கியத்தை ஆதரிக்காத ஒரு citation-ஐ உருவாக்க முடியும். Citations ஒரு பதிலை <em>மனிதனால் சரிபார்க்கக்கூடியதாக</em> ஆக்குகின்றன, அது பெரிய மதிப்புள்ளது; ஆனால் அவை அதை உண்மையாக்குவதில்லை. "grounded, with citations" என்று சொல்லும் product copy முதலாவதைக் கூறுகிறது, இரண்டாவதாகக் கேட்கப்படுகிறது.</div>
+
+</section>
+
+<!-- ==================== HINDI ==================== -->
+<section data-panel="hi" hidden lang="hi">
+
+  <p>
+    मैंने एक support assistant ship किया जिसने एक refund policy गढ़ दी।
+    बहुत ख़ूबसूरती से। सही tone, सही format, और ऐसी policy कभी थी ही नहीं।
+    मैंने उसे bug की तरह file किया, वह setting ढूँढने लगा जो इसे बंद करती है,
+    और धीरे-धीरे समझ आया कि ऐसी कोई setting है ही नहीं — क्योंकि उस model की
+    training में कहीं भी <em>सही होने</em> का कोई reward नहीं था। reward था
+    likely text बनाने का। उस सवाल पर likely text और true text दो अलग strings
+    थे, और उसने वही चुना जिसके लिए उसे train किया गया था।
+  </p>
+  <p>
+    सबने मुझसे कहा था "it hallucinates", जो ऐसा लगता है जैसे कोई component
+    ग़लत बर्ताव कर रहा हो। ऐसा नहीं है। यह component का <em>काम करना</em> है।
+  </p>
+
+  <div class="note">
+    <strong>ध्यान दें:</strong> English technical words (hallucination,
+    grounding, calibration, abstention, retrieval, self-consistency,
+    confidence, reconstruction, recall…) मैंने वैसे ही रखे हैं। क्योंकि
+    code में और बाक़ी papers में आपको वही शब्द दिखेंगे।
+    <strong>समझ हिंदी में, शब्दावली English में।</strong>
+  </div>
+
+  <h2>यह एक autocomplete है जिसने सब पढ़ा और कुछ याद नहीं रखा</h2>
+
+  <p>इन दोनों का फ़र्क़ आप जानते हैं:</p>
+
+<pre><code>facts["pellucid"]["licence"]     # एक record. ठीक-ठीक, वरना KeyError.
+autocomplete("pellucid is licensed under ")   # एक continuation. हमेशा कुछ न कुछ.</code></pre>
+
+  <p>
+    पहले में हर fact के लिए एक row है, इसलिए एक बार देखा गया fact भी उतना ही
+    retrievable है जितना दस लाख बार देखा गया। दूसरे में rows हैं ही नहीं।
+    उसके पास weights हैं — एक-दूसरे पर चढ़े features की एक लीपी हुई परत,
+    जिसमें training के दौरान हर fact जोड़ा गया — और सवाल पूछने पर वह कुछ
+    ढूँढता नहीं। वह उस परत से एक plausible जवाब <em>reconstruct</em> करता है।
+    यही पूरा पन्ना है। Reconstruction बनावट से ही आश्वस्त है, क्योंकि मिश्रण
+    हमेशा कोई न कोई value देता है। कोई cache miss नहीं है। कोई
+    <code>KeyError</code> नहीं है। वह <code>None</code> branch जो आपने हाथ से
+    लिखी होती — वह इस architecture में मौजूद ही नहीं है।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>शब्द</th><th>मतलब</th><th>Programmer की उपमा</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Hallucination</strong></td><td>धाराप्रवाह output जिसे source या दुनिया सहारा नहीं देती</td><td>वह cache जो miss पर value गढ़ ले और बताए भी नहीं</td></tr>
+      <tr><td><strong>Grounding</strong></td><td>fact को context में रखना, ताकि वह copy हो, recall नहीं</td><td>default hard-code करने की जगह config pass करना</td></tr>
+      <tr><td><strong>Calibration</strong></td><td>बताई गई confidence का देखी गई accuracy से मेल</td><td>वह p99 अनुमान जो सचमुच 99% बार सही होता है</td></tr>
+      <tr><td><strong>Abstention</strong></td><td>एक confidence threshold से नीचे जवाब देने से मना करना</td><td>अंदाज़े की जगह 503 लौटाना</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>वह एक सूत्र, और उसमें जो नहीं है</h2>
+
+  <div class="formula">θ* = argmax<sub>θ</sub> Σ<sub>t</sub> log P<sub>θ</sub>(x<sub>t</sub> | x<sub>&lt;t</sub>)</div>
+
+  <p>इसे pipeline stages की तरह पढ़िए:</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>चरण</th><th>यह क्या है</th><th>यह क्या करता है</th></tr></thead>
+    <tbody>
+      <tr><td><code>x<sub>&lt;t</sub></code></td><td>prefix</td><td>अब तक का सब कुछ — prompt और जो generate हुआ</td></tr>
+      <tr><td><code>P<sub>θ</sub>(x<sub>t</sub> | …)</code></td><td>एक distribution</td><td>उस prefix के बाद हर अगला token कितना likely है</td></tr>
+      <tr><td><code>log</code></td><td>एक log</td><td>ताकि probabilities का गुणा जोड़ बन जाए। Float स्वच्छता</td></tr>
+      <tr><td><code>Σ<sub>t</sub></code></td><td>tokens पर योग</td><td>पूरे corpus को स्कोर करो, एक बार में एक token</td></tr>
+      <tr><td><code>argmax<sub>θ</sub></code></td><td>training loop</td><td>weights तब तक हिलाओ जब तक corpus ज़्यादा से ज़्यादा likely न दिखे</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note"><strong>उस सूत्र में "सच" के लिए कोई term ही नहीं है।</strong> न log में छिपा, न योग में निहित। objective सिर्फ़ इस बात का fit है कि corpus ने क्या कहा। जहाँ corpus सही था, वहाँ उसे fit करना एक side effect के रूप में सही जवाब देता है — और वही side effect उस चीज़ का पूरा आधार है जो आपने ship की।</div>
+
+  <p>
+    Ji et al. इसे दो हिस्सों में बाँटते हैं: <em>intrinsic</em> hallucination,
+    यानी वह output जो अपने ही source का खंडन करे; और <em>extrinsic</em>, वह
+    output जिसे source न सहारा देता है न काटता है। यह साफ़ रखने लायक़ है:
+    दूसरी क़िस्म वही है जो किसी का eval नहीं पकड़ता, क्योंकि वह passage के
+    ख़िलाफ़ ग़लत नहीं है, बल्कि उससे जाँची ही नहीं जा सकती।
+  </p>
+
+  <h2>Reconstruction, recall नहीं — और confidence यह नहीं बता सकती</h2>
+
+  <p>
+    Script आठ काल्पनिक projects के बारे में 24 facts का एक store बनाता है।
+    dict नहीं — एक ही 64×64 matrix, जिसमें हर fact इस भार के साथ जोड़ा जाता
+    है कि toy corpus ने उसे कितनी बार कहा। लोकप्रिय projects सैकड़ों बार आते
+    हैं, गुमनाम एक बार। एक project, <code>tessera</code>, जान-बूझकर
+    <code>lantern</code> का fork है: उसका feature vector ज़्यादातर lantern का
+    ही है, क्योंकि ऐसे store के पास "अलग project" जैसी कोई धारणा नहीं है,
+    सिर्फ़ "पास का vector" है।
+  </p>
+
+  <p><strong>मेरी बात पर भरोसा मत कीजिए। यह रहा असली output:</strong></p>
+
+<pre><code>  dict lookup   ('lantern','licence')  -&gt; MIT   ('tessera','licence') -&gt; GPL-3
+  the store     ('lantern','licence')  -&gt; MIT   conf 1.000   truth MIT    correct
+  the store     ('tessera','licence')  -&gt; MIT   conf 0.999   truth GPL-3  <span class="hl">WRONG</span>
+
+  licence question, projects ordered by how loud the corpus was:
+  lantern   count  220  answered MIT         conf 1.000  truth MIT         correct
+  quarry    count   90  answered Apache-2.0  conf 0.970  truth Apache-2.0  correct
+  halyard   count   40  answered MIT         conf 0.991  truth MIT         correct
+  marlin    count   12  answered Apache-2.0  conf 0.886  truth Apache-2.0  correct
+  cobble    count    3  answered BSD-3       conf 0.624  truth BSD-3       correct
+  pellucid  count    1  answered MIT         conf 0.398  truth GPL-3       WRONG
+  tessera   count    1  answered MIT         conf <span class="hl">0.999</span>  truth GPL-3       WRONG
+
+  over all 24 questions: accuracy 0.708
+  mean confidence when RIGHT 0.950 | when WRONG 0.701
+  highest confidence on a WRONG answer: <span class="hl">1.000</span>
+  lowest confidence on a RIGHT answer : <span class="ok">0.624</span></code></pre>
+
+  <p>
+    आख़िरी दो पंक्तियाँ साथ पढ़िए। दोनों ranges <strong>overlap</strong> करती
+    हैं। Confidence बेकार नहीं है — सही होने पर 0.950 बनाम ग़लत होने पर
+    0.701 एक असली signal है — लेकिन 1.000 पर एक ग़लत जवाब 0.624 पर बैठे एक
+    सही जवाब से ऊपर है, इसलिए आप जो भी threshold चुनें वह दोनों ढेरों को
+    काटता है। Confidence यह नापती है कि reconstruction को कितना सहारा मिला।
+    सहारा सच से सम्बन्धित है, सच नहीं है।
+  </p>
+
+  <h2>likely continuation और सच्ची continuation अलग strings हैं</h2>
+
+  <p>यही केंद्रीय दावा है, इसलिए यह रहा एक printed table के रूप में। बाएँ: objective क्या पसंद करता है। दाएँ: सच क्या है।</p>
+
+<pre><code>  question                  most likely   p       true         p
+  --------------------------------------------------------------
+  tessera.licence           MIT         0.999   GPL-3       0.000   <span class="hl">&lt;- differ</span>
+  tessera.language          Python      1.000   Rust        0.000   <span class="hl">&lt;- differ</span>
+  pellucid.port             6379        0.488   9200        0.340   <span class="hl">&lt;- differ</span>
+  cobble.language           Python      0.641   Java        0.337   <span class="hl">&lt;- differ</span>
+  lantern.licence           MIT         1.000   MIT         1.000   <span class="ok">✓</span>
+
+  and the corpus prior the objective is actually fitting:
+    P(answer | licence ) argmax = MIT         0.804  all [0.804 0.186 0.005 0.004]
+    P(answer | language) argmax = Python      0.568  all [0.568 0.351 0.074 0.006]
+    P(answer | port    ) argmax = 8080        0.728  all [0.728 0.174 0.073 0.025]</code></pre>
+
+  <p>
+    toy corpus में licence के 80.4% ज़िक्र MIT हैं, और objective का काम उसी को
+    दोहराना है। जिस project को उसने एक बार देखा उसके लिए "MIT" कहना काम की
+    नाकामी नहीं है — यही काम है, बस ऐसे सवाल पर जहाँ काम करना ही ग़लत जवाब
+    देता है। एक धाराप्रवाह ग़लत जवाब, ग़लत राशि पर ठीक-ठीक चलाया गया argmax है।
+  </p>
+
+  <h2>Calibration कुछ hallucination को अपरिहार्य बना देती है</h2>
+
+  <p>
+    यह हिस्सा लगभग कोई नहीं बताता, और यही वह हिस्सा है जिसने planning
+    meetings में मेरी दलील बदल दी। Calibrated model वह है जिसकी बताई
+    confidence उसकी देखी गई accuracy से मेल खाती है: जो बातें वह 70% पर कहता
+    है, उनमें से लगभग 70% सच होती हैं। यह गुण आप <em>चाहते</em> हैं। अब वे
+    facts लीजिए जो training में ठीक एक बार आए। एक calibrated model उन्हें
+    probability 1 नहीं दे सकता, क्योंकि सबूत ही नहीं है — इसलिए वह probability
+    को plausible विकल्पों पर फैलाता है, और उसमें से कुछ ऐसे statements पर गिरती
+    है जो झूठे हैं। Kalai &amp; Vempala (2023) इसे theorem बना देते हैं: जिन
+    facts का सहारा एक अकेले ज़िक्र से ज़्यादा नहीं है, उनके लिए एक calibrated
+    model की hallucination rate की एक <em>निचली</em> सीमा है, जो मोटे तौर पर
+    ऐसे singleton facts के अनुपात के बराबर है। "आमतौर पर ऐसा होता है" नहीं।
+    होना ही है।
+  </p>
+
+  <p>Script अपने toy को मानक तरीक़े से, एक ही temperature scalar से calibrate करता है, फिर abstention threshold को sweep करता है:</p>
+
+<pre><code>  raw:  mean confidence 0.877  vs accuracy 0.708  -&gt; overconfident by 0.169
+  calibrated temperature 1.35 -&gt; mean confidence 0.712  vs accuracy 0.708 <span class="ok">✓</span>
+
+  facts attested exactly once in the corpus: 6/24 = 0.250
+
+  threshold   answered   refused   errors   err|answered   wrong/100q
+  --------------------------------------------------------------------
+    0.00       24/24      0       7       0.292        29.17
+    0.40       20/24      4       4       0.200        16.67
+    0.50       18/24      6       3       0.167        12.50
+    0.60       16/24      8       3       0.188        12.50
+    0.70       15/24      9       3       0.200        12.50
+    0.80       12/24     12       3       0.250        12.50
+    0.90        8/24     16       2       0.250         8.33
+    0.95        0/24     24       0           -         <span class="hl">0.00</span>
+    0.99        0/24     24       0           -         <span class="hl">0.00</span></code></pre>
+
+  <p>
+    शून्य का जश्न मनाने से पहले आख़िरी दो rows देखिए। शून्य errors, क्योंकि
+    शून्य जवाब। यही वह product फ़ैसला है जिसकी यह section बात कर रही है, और
+    इसीलिए देखने लायक़ column <code>err|answered</code> नहीं,
+    <code>wrong/100q</code> है — दूसरा उस system को सजा-धजा कर दिखाता है जो
+    चुपचाप काम करना बंद कर चुका है।
+  </p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 250" role="img" aria-labelledby="d1t-hi d1d-hi">
+      <title id="d1t-hi">पाँच confidence thresholds पर abstention का सौदा</title>
+      <desc id="d1d-hi">हर confidence threshold के लिए एक bar, कुल पाँच, हर एक 24 सवाल चौड़ी। threshold 0.00 से 0.95 तक बढ़ने पर सही जवाबों का हिस्सा 17 से घटकर 0, ग़लत जवाबों का हिस्सा 7 से घटकर 0, और मना किए गए हिस्से 0 से बढ़कर 24 हो जाता है।</desc>
+      <text x="0" y="14" class="d-title">24 सवाल, system ने क्या किया उसके हिसाब से</text>
+      <text x="0" y="32" class="d-muted">हरा = सही · लाल = WRONG · बिंदुदार = refused</text>
+      <text x="0" y="62" class="d-mono">0.00</text>
+      <rect x="42" y="50" width="340" height="16" class="d-works"/><rect x="382" y="50" width="140" height="16" class="d-broke"/><text x="530" y="62" class="d-mono">17 · 7 · 0</text>
+      <text x="0" y="94" class="d-mono">0.50</text>
+      <rect x="42" y="82" width="300" height="16" class="d-works"/><rect x="342" y="82" width="60" height="16" class="d-broke"/><rect x="402" y="82" width="120" height="16" class="d-box-open d-dashed"/><text x="530" y="94" class="d-mono">15 · 3 · 6</text>
+      <text x="0" y="126" class="d-mono">0.80</text>
+      <rect x="42" y="114" width="180" height="16" class="d-works"/><rect x="222" y="114" width="60" height="16" class="d-broke"/><rect x="282" y="114" width="240" height="16" class="d-box-open d-dashed"/><text x="530" y="126" class="d-mono">9 · 3 · 12</text>
+      <text x="0" y="158" class="d-mono">0.90</text>
+      <rect x="42" y="146" width="120" height="16" class="d-works"/><rect x="162" y="146" width="40" height="16" class="d-broke"/><rect x="202" y="146" width="320" height="16" class="d-box-open d-dashed"/><text x="530" y="158" class="d-mono">6 · 2 · 16</text>
+      <text x="0" y="190" class="d-mono">0.95</text>
+      <rect x="42" y="178" width="480" height="16" class="d-box-open d-dashed"/><text x="530" y="190" class="d-mono">0 · 0 · 24</text>
+      <text x="0" y="222" class="d-muted">threshold</text>
+      <text x="530" y="222" class="d-muted">सही · WRONG · refused</text>
+      <text x="0" y="242" class="d-muted">शून्य error और शून्य जवाब एक ही row पर आते हैं।</text>
+    </svg>
+    <figcaption>इस knob की एक setting error मिटा देती है, और product भी मिटा देती है। यहाँ का हर आँकड़ा demo 3 print करता है।</figcaption>
+  </figure>
+
+  <p>
+    साफ़ कह दूँ: मेरे toy के आँकड़े किसी असली model के बारे में सबूत नहीं हैं,
+    और यह sweep सिर्फ़ इस सौदे का <em>आकार</em> दिखाता है। theorem उनका है;
+    आठ काल्पनिक projects मेरे हैं।
+  </p>
+
+  <h2>Grounding: उससे recall करवाना बंद कीजिए</h2>
+
+  <p>
+    Engineering का जवाब चालाक नहीं है। अगर दिक़्क़त यह है कि recall
+    reconstruct करता है, तो उससे recall मत करवाइए — fact को context में
+    रखिए, जहाँ उसे copy करना ही likely continuation है। retrieval-augmented
+    generation इतना ही करता है। <a href="../rag/">RAG पन्ना</a> retriever वाला
+    आधा हिस्सा बनाता है; retriever <em>किसलिए</em> है, यह वही है।
+  </p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="d2t-hi d2d-hi">
+      <title id="d2t-hi">जवाब तक दो रास्ते, और ग़लत जवाब हर एक में कहाँ घुसता है</title>
+      <desc id="d2d-hi">बायाँ रास्ता: सवाल सीधे weights तक जाता है और जवाब बनकर निकलता है, ग़लती का एक ही प्रवेश-बिंदु A, जहाँ fact training में दुर्लभ या ग़ैरहाज़िर था। दायाँ रास्ता: सवाल retriever तक, फिर passages, फिर weights; तीन प्रवेश-बिंदु B, C और D: retriever जवाब चूक जाता है, prior passage को दबा देता है, और दो passages आपस में टकराते हैं।</desc>
+      <marker id="d2arr-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="d-fill-key"/></marker>
+      <text x="0" y="14" class="d-title">रास्ता 1 — weights से</text>
+      <text x="330" y="14" class="d-title">रास्ता 2 — retrieve, फिर जवाब</text>
+      <rect x="0" y="30" width="140" height="30" rx="3" class="d-box"/><text x="12" y="50">सवाल</text>
+      <path d="M 70 60 L 70 92" class="d-line-key" marker-end="url(#d2arr-hi)"/>
+      <rect x="0" y="94" width="140" height="34" rx="3" class="d-box-key"/><text x="12" y="116">weights</text>
+      <text x="0" y="150" class="d-broke-t">A</text><text x="16" y="150" class="d-muted">fact दुर्लभ / ग़ैरहाज़िर</text><text x="16" y="166" class="d-muted">→ reconstructed</text>
+      <path d="M 70 128 L 70 196" class="d-line-key" marker-end="url(#d2arr-hi)"/>
+      <rect x="0" y="198" width="140" height="30" rx="3" class="d-box"/><text x="12" y="218">जवाब</text>
+      <text x="0" y="252" class="d-muted">ग़लती की 1 जगह,</text><text x="0" y="268" class="d-muted">जाँचने का कोई रास्ता नहीं</text>
+      <rect x="330" y="30" width="140" height="30" rx="3" class="d-box"/><text x="342" y="50">सवाल</text>
+      <path d="M 400 60 L 400 78" class="d-line-key" marker-end="url(#d2arr-hi)"/>
+      <rect x="330" y="80" width="140" height="30" rx="3" class="d-box"/><text x="342" y="100">retriever</text>
+      <text x="486" y="94" class="d-broke-t">B</text><text x="502" y="94" class="d-muted">किसी passage में</text><text x="502" y="110" class="d-muted">जवाब नहीं</text>
+      <path d="M 400 110 L 400 128" class="d-line-key" marker-end="url(#d2arr-hi)"/>
+      <rect x="330" y="130" width="140" height="30" rx="3" class="d-box"/><text x="342" y="150">passages</text>
+      <text x="486" y="144" class="d-broke-t">D</text><text x="502" y="144" class="d-muted">दो passages</text><text x="502" y="160" class="d-muted">टकराते हैं</text>
+      <path d="M 400 160 L 400 178" class="d-line-key" marker-end="url(#d2arr-hi)"/>
+      <rect x="330" y="180" width="140" height="34" rx="3" class="d-box-key"/><text x="342" y="202">weights</text>
+      <text x="486" y="196" class="d-broke-t">C</text><text x="502" y="196" class="d-muted">prior, passage को</text><text x="502" y="212" class="d-muted">दबा देता है</text>
+      <path d="M 400 214 L 400 236" class="d-line-key" marker-end="url(#d2arr-hi)"/>
+      <rect x="330" y="238" width="140" height="30" rx="3" class="d-box"/><text x="342" y="258">जवाब</text>
+      <text x="330" y="292" class="d-muted">ग़लती की 4 जगह, उनमें से 3 जाँची जा सकती हैं</text>
+    </svg>
+    <figcaption>Grounding weights को रास्ते से हटाती नहीं — उनके आगे एक stage जोड़ती है। इसीलिए failure modes की गिनती बढ़ती है जबकि error rate घटती है।</figcaption>
+  </figure>
+
+  <p>Script में grounding एक ही लाइन है: context में मौजूद fact, softmax से पहले उस जवाब के score में एक तय boost जोड़ देता है। वही store, वही सवाल, grounding के साथ और बिना:</p>
+
+<pre><code>  from the weights alone : 17/24 = 0.708
+  with the fact in context: 21/24 = <span class="ok">0.875</span>
+  errors removed by grounding: 4
+
+  residual errors WITH the fact present: <span class="hl">3</span>
+    tessera.licence: said MIT (conf 0.996), passage said GPL-3
+    tessera.language: said Python (conf 0.978), passage said Rust
+    tessera.port: said 8080 (conf 0.997), passage said 6379
+
+    GAMMA 0.5 -&gt; grounded accuracy 0.875
+    GAMMA 1.0 -&gt; grounded accuracy 0.875
+    GAMMA 3.0 -&gt; grounded accuracy 0.875
+    GAMMA 6.0 -&gt; grounded accuracy 0.917
+    GAMMA 10.0 -&gt; grounded accuracy 0.958
+    GAMMA 20.0 -&gt; grounded accuracy 1.000</code></pre>
+
+  <p>
+    residual वाला block ही वह आधा हिस्सा है जिसे सब छोड़ देते हैं। तीन जवाब
+    उस passage का खंडन करते हैं जो <em>context में ठीक वहीं मौजूद था</em>,
+    0.98 और उससे ऊपर की confidence पर, और तीनों वही fork हैं — वह मामला जहाँ
+    prior सबसे तेज़ बोलता है। किसी असली system में वह prior है "internet
+    ज़्यादातर जो कहता है", और वह इसलिए पीछे नहीं हटता कि आपने ऊपर एक document
+    चिपका दिया।
+    GAMMA sweep "just use RAG" का ईमानदार रूप है। कोई model अपने weights के
+    मुक़ाबले context को कितनी मज़बूती से पसंद करता है, यह pretraining और
+    instruction tuning से तय होने वाला एक निरंतर गुण है, और वह ज़्यादातर
+    आपके नियंत्रण में नहीं होता। यह कोई boolean नहीं है जिसे आपने vector
+    database जोड़कर on कर दिया।
+  </p>
+
+  <h2>grounded जवाब के फिर भी ग़लत होने के तीन तरीक़े</h2>
+
+  <p>वही store, एक simulated retriever, सभी 24 सवाल, और तीन failure modes अलग-अलग नापे गए:</p>
+
+<pre><code>  failure mode                  wrong / asked   rate
+  ----------------------------------------------------
+  passage lacks the answer        10 /  24     <span class="hl">0.417</span>
+  answer contradicts passage       3 /  24     0.125
+  two passages disagree            6 /  24     0.250
+
+  Mode (a) is a RETRIEVAL bug. The generator behaved correctly:
+  it was handed nothing about the subject and filled the gap.
+    tessera.licence with only a lantern passage -&gt; MIT (conf 1.000), truth GPL-3</code></pre>
+
+  <div class="note"><strong>Mode (a) एक retrieval bug है जो model bug के रूप में log होता है।</strong> यहाँ तीनों में यह सबसे आम है, 0.417 पर, और यह ठीक वही है जो <a href="../rag/">RAG पन्ने की</a> break-it table आपको दिखाती है कि <code>k=1</code> और बड़े-बड़े chunks के साथ आप ख़ुद अपने साथ कर रहे हैं। prompt नहीं, retriever ठीक कीजिए। सिर्फ़ बीच वाले mode को model की ग़लती कहा जा सकता है; तीसरा तो model का चेहरा पहने एक corpus की समस्या है।</div>
+
+  <h2>ground truth के बिना इसे पकड़ना</h2>
+
+  <p>
+    Production में आपके पास answer key नहीं होती। जो होता है वह यह है कि आप
+    एक ही सवाल कई बार sample कर सकते हैं। अगर model ने पतले सबूत से
+    reconstruct किया है तो samples बिखर जाते हैं; अगर वह कुछ ठोस copy कर रहा
+    है तो वे आपस में मिलते हैं। यही self-consistency है, और इसकी क़ीमत है
+    k गुना tokens।
+  </p>
+
+<pre><code>  mean agreement when the modal answer is RIGHT <span class="ok">0.941</span>
+  mean agreement when it is WRONG               0.714
+  correlation(agreement, correctness) = 0.522  -&gt; a real signal
+
+  and the cases it misses -- agreement &gt;= 0.875 and still wrong: <span class="hl">3</span>
+    tessera.licence: said MIT 8/8 times, truth GPL-3
+    tessera.language: said Python 8/8 times, truth Rust
+    tessera.port: said 8080 8/8 times, truth 6379</code></pre>
+
+  <p>
+    एक ही block में एक असली signal और एक असली छत। Agreement दोनों आबादियों को
+    अलग करती है — और फिर fork वाला जवाब <strong>8 में से 8 बार</strong> ग़लत
+    आता है, क्योंकि उसकी ग़लती संरचनात्मक है। features कहते हैं lantern,
+    इसलिए हर sample कहता है lantern। Sampling variance किसी bias को पकड़ नहीं
+    सकती।
+    इसे flag की तरह इस्तेमाल कीजिए, gate की तरह कभी नहीं। आपके data पर यह
+    कितना काम करता है, यह पता लगाना एक eval समस्या है, और वह <a
+    href="../evals/">evals पन्ने</a> का काम है — उस हिस्से समेत जहाँ aggregate
+    पर ठीक दिखने वाला metric उस slice पर बेकार होता है जिसकी आपको परवाह है।
+    प्रकाशित साहित्य में Min et al. का FActScore समझदार ढाँचा है: लम्बे जवाब
+    को atomic claims में बाँटिए और हर एक को किसी source के ख़िलाफ़ जाँचिए,
+    बजाय पूरे पैराग्राफ़ को एक इकाई मानकर आँकने के।
+  </p>
+
+  <div class="note"><strong>citation कोई सबूत नहीं है।</strong> एक model ऐसा citation बना सकता है जो सचमुच मौजूद है, retrieve भी हो जाता है, और फिर भी उस वाक्य को सहारा नहीं देता जिसके साथ वह लगा है। Citations जवाब को <em>इंसान द्वारा जाँचने लायक़</em> बनाती हैं, जो बहुत क़ीमती है, पर वे उसे सच नहीं बनातीं। "grounded, with citations" कहने वाली product copy पहली बात कहती है और दूसरी सुनी जाती है।</div>
+
+</section>
+
+<hr>
+
+<h2>The code</h2>
+<p class="muted">Pure NumPy. No torch, no autograd, no training, and no language model — just a store, a reconstruction and a softmax, so you can watch the numbers move. Every function under 15 lines.</p>
+<p>
+  <a href="hallucination_from_scratch.py" download><strong>Download the full script</strong></a>
+  — 412 lines plus 6 runnable demos. Then:
+</p>
+<pre><code>python3 hallucination_from_scratch.py</code></pre>
+
+<pre><code># One row per project: (licence, count), (language, count), (port, count).
+# `count` is how many times that fact appeared in the toy corpus.
+CORPUS = {
+    "lantern":  (("MIT", 220),        ("Python", 190), ("8080", 140)),
+    "beacon":   (("MIT", 180),        ("Go", 160),     ("8080", 120)),
+    "quarry":   (("Apache-2.0", 90),  ("Python", 85),  ("5432", 60)),
+    "halyard":  (("MIT", 40),         ("Rust", 35),    ("6379", 25)),
+    "marlin":   (("Apache-2.0", 12),  ("Go", 10),      ("9200", 8)),
+    "cobble":   (("BSD-3", 3),        ("Java", 2),     ("5432", 2)),
+    "pellucid": (("GPL-3", 1),        ("Java", 1),     ("9200", 1)),
+    "tessera":  (("GPL-3", 1),        ("Rust", 1),     ("6379", 1)),
+}
+
+
+# tessera is a fork of lantern. A store like this has no notion of "different
+# project"; it only has "nearby vector", so lantern's answers leak into it.
+# This is the one hand-placed similarity in the script, and it is the whole
+# confidently-wrong case.
+SUBJ_VEC["tessera"] = 0.88 * SUBJ_VEC["lantern"] + 0.12 * SUBJ_VEC["tessera"]
+
+
+def key(subject, relation):
+    """Question -&gt; a feature vector. The relation contributes less than the
+    subject, so two questions about the same project overlap most."""
+    k = SUBJ_VEC[subject] + 0.35 * REL_VEC[relation]
+    return k / np.linalg.norm(k)
+
+
+def build_store(facts):
+    """Superpose every fact into one matrix. No per-fact slot exists after."""
+    M = np.zeros((D, D))
+    for s, r, o, c in facts:
+        M += np.log1p(c) * np.outer(key(s, r), OBJ_VEC[o])   # log: frequency
+    return M                                                  # with diminishing
+                                                              # returns
+
+
+def answer(subject, relation, passages=(), gamma=GAMMA, temp=TEMP):
+    """Returns (best answer, confidence, full distribution over candidates)."""
+    recalled = STORE.T @ key(subject, relation)      # a blend, not a record
+    cands = RELATIONS[relation]
+    scores = np.array([OBJ_VEC[o] @ recalled for o in cands])
+
+    for p_subj, p_rel, p_obj in passages:            # grounding: copy, not recall
+        if p_rel == relation and p_obj in cands:
+            match = 1.0 if p_subj == subject else 0.6   # off-subject counts less
+            scores[cands.index(p_obj)] += gamma * match
+
+    probs = softmax(scores / temp)
+    i = int(np.argmax(probs))
+    return cands[i], float(probs[i]), probs</code></pre>
+
+<h2>Now break it</h2>
+<p>
+  This is the part that makes it stick. Reading won't do it. You debug for a living — and every row here is a mistake I have watched a team make in a review.
+</p>
+
+<div class="tablewrap">
+<table class="breaks">
+  <thead><tr><th>Break this</th><th>Watch for</th></tr></thead>
+  <tbody>
+    <tr><td>Ask for a fact in neither the weights nor the context: set marlin's language count to <code>0</code> in <code>CORPUS</code>, then call <code>answer("marlin", "language", passages=[])</code></td><td><code>Python, conf 0.649</code>, truth <code>Go</code>. The fact is gone from the store and it still answers — with the corpus's favourite language, at a confidence that looks like every other answer. It never returns "I don't know", because that branch does not exist.</td></tr>
+    <tr><td>Trust demo 5's mode-(a) output: <code>answer("tessera", "licence", [("lantern", "licence", "MIT")])</code></td><td><code>MIT (conf 1.000), truth GPL-3</code>. The passage was about a different project. <strong>This is a retrieval bug, not a model bug</strong> — the generator was handed nothing about tessera and filled the gap, which is what it is for.</td></tr>
+    <tr><td>Take confidence as correctness: gate on <code>conf &gt;= 0.95</code> and ship whatever passes</td><td><code>tessera.licence</code> sails through at 0.999 and is wrong, while <code>cobble.licence</code> is <em>right</em> at 0.624 and gets thrown away. The ranges overlap; the threshold cuts through both.</td></tr>
+    <tr><td>Set demo 3's threshold to <code>0.95</code> and read only the error column</td><td><code>0/24 answered, 24 refused, 0 errors</code>. A perfect hallucination rate on a product that answers nothing — the metric-gaming failure your dashboard will not flag.</td></tr>
+    <tr><td>Judge groundedness by whether the answer sounds like the passage: compare demo 4's residual lines to their passages</td><td><code>said MIT (conf 0.996), passage said GPL-3</code> — same question, same format, same vocabulary, opposite fact. Style similarity is not entailment, and an LLM judge asked "does this look supported?" scores it as supported.</td></tr>
+    <tr><td>In demo 5, drop mode (b)'s copy strength from <code>gamma=0.8</code> to <code>gamma=0.3</code></td><td>"answer contradicts passage" goes 0.125 → 0.208, and at 0.1 it reaches 0.250 — the passage is present and correct every time. How hard a model prefers context over its own prior is a continuous property you inherit, not a switch you flipped by adding retrieval.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note"><strong>Then</strong> read the papers — Ji et al. for the taxonomy (the intrinsic/extrinsic definitions and the metrics section are the useful parts; the per-task chapters are a reference, not a read), and Kalai &amp; Vempala for the calibration argument, which is short and mostly readable if you skip the proofs. You'll find they're the comments you've already read, with real models where my 64×64 matrix is.</div>
+
+<h2>On the maths anxiety</h2>
+<p>
+  There's less here than the word "theorem" suggests. The objective is a sum of logs — a log so multiplying probabilities becomes adding them, the same trick you use to stop a float underflowing. The store is an outer product added into a matrix, the crudest possible associative memory, about four lines. Reading from it is a matrix-vector multiply, which is a weighted average wearing a hat.
+</p>
+<p>
+  Calibration needs one idea: bucket your predictions by stated confidence, then check observed accuracy in each bucket. If the 0.7 bucket is right 70% of the time, you're calibrated. That's a <code>groupby</code> and a mean. The Kalai &amp; Vempala result is a real proof and you don't need to follow it to use it — you need the statement, which is that calibration and a zero hallucination rate on rare facts are incompatible.
+</p>
+<p>
+  What separates engineers on this topic isn't maths. It's knowing that "reduce hallucination" decomposes into retrieval quality, context adherence, abstention policy and eval design — four different teams' worth of work — and being able to say which one your incident belongs to. The interview question is "how would you stop the model making things up", and the answer that lands is: you can't stop it. You can move where the facts come from, measure what's left, and decide what confidence you'll refuse below.
+</p>
+
+<h2>Where to go next</h2>
+<p>
+  This page gave you one thing: why hallucination is the objective working rather than failing, in code you can break. It skipped the taxonomy, the metrics, the detection literature, and everything about how real models behave.
+</p>
+
+<ul class="paper-list">
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2202.03629">
+      <span class="paper-title">Survey of Hallucination in Natural Language Generation</span>
+      <span class="paper-meta">Ji et al., 2022. The original survey.</span>
+    </a>
+    <p class="paper-pitch">Read the definitions for the intrinsic/extrinsic split and the metrics section for what people actually measure. The rest is organised by task — summarisation, dialogue, translation — and is a reference you dip into when your product is one of them, not a front-to-back read.</p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2311.14648">
+      <span class="paper-title">Calibrated Language Models Must Hallucinate</span>
+      <span class="paper-meta">Kalai &amp; Vempala, 2023. Short; the proof is skippable.</span>
+    </a>
+    <p class="paper-pitch">The result my calibration section leans on, stated properly. Worth it for the singleton-facts framing alone: it gives you a defensible answer to "why can't you just fix it", which is a question you'll be asked by someone who doesn't want a technical answer.</p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://arxiv.org/abs/2305.14251">
+      <span class="paper-title">FActScore</span>
+      <span class="paper-meta">Min et al., 2023. Evaluation, with code.</span>
+    </a>
+    <p class="paper-pitch">How to score a long answer that's 90% right: break it into atomic claims and check each against a source. This is the measurement half I only gestured at, and it's the design you'll copy the first time someone asks for a hallucination number on a paragraph rather than a fact.</p>
+  </li>
+
+  <li class="paper">
+    <a class="paper-link" href="https://lilianweng.github.io/posts/2024-07-07-hallucination/">
+      <span class="paper-title">Extrinsic Hallucinations in LLMs</span>
+      <span class="paper-meta">Lilian Weng. Long, current, heavily cited.</span>
+    </a>
+    <p class="paper-pitch">The best single map of the detection and mitigation literature: sampling methods, retrieval-based checks, fine-tuning for factuality, calibration. Where I have one toy self-consistency demo, this has the real versions and says which held up.</p>
+  </li>
+
+</ul>
+
+<div class="note"><strong>Order I'd take them in:</strong> Kalai &amp; Vempala first, because it reframes everything and takes an evening; then Weng for the map; then FActScore when you need a number; Ji as a reference you keep open. Read the <a href="../rag/">RAG page</a> before any of them if you haven't — grounding is the whole engineering answer here, and <a href="../evals/">evals</a> is how you find out whether it worked. <a href="../gpt/">GPT</a> is where the next-token objective comes from, and <a href="../chain-of-thought/">chain-of-thought</a> is the other page about what that objective does and doesn't buy you.</div>
+
+  <footer class="site-footer">
+    <span class="site-footer-owner">Papers for Dummies is written by Srinivasan Nagaraja Rao.</span>
+    <span class="site-footer-credits">
+      Source on <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies">GitHub</a>.
+      If something here is wrong,
+      <a href="https://github.com/srinivasannagarajarao-art/papers-for-dummies/issues">open an issue</a>
+      — I'd rather be corrected than confident.
+    </span>
+  </footer>
+
+</main>
+
+<script>
+// Language tabs. Remembers your choice, and respects ?lang= in the URL.
+(function () {
+  var buttons = document.querySelectorAll('.langbar button');
+  var panels  = document.querySelectorAll('[data-panel]');
+
+  function show(lang) {
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.lang === lang));
+    });
+    panels.forEach(function (p) {
+      p.hidden = p.dataset.panel !== lang;
+    });
+    try { localStorage.setItem('pfd-lang', lang); } catch (e) {}
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.lang); });
+  });
+
+  var urlLang = new URLSearchParams(location.search).get('lang');
+  var saved = null;
+  try { saved = localStorage.getItem('pfd-lang'); } catch (e) {}
+
+  var initial = urlLang || saved;
+  if (initial && document.querySelector('[data-panel="' + initial + '"]')) {
+    show(initial);
+  }
+})();
+</script>
+</body>
+</html>

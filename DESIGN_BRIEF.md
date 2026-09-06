@@ -17,7 +17,7 @@ The audience is one person: a working engineer, self-taught, skeptical of hype, 
 Pages that exist:
 - **Homepage** — bio + the paper list, grouped by theme
 - **Papers index** — same list, standalone
-- **Paper pages** — thirty-four of them, each an essay in English, Tamil and Hindi via in-page tabs, with a runnable Python script alongside
+- **Paper pages** — thirty-seven of them, each an essay in English, Tamil and Hindi via in-page tabs, with a runnable Python script alongside and, where one earns its place, an inline SVG diagram
 
 Design the system so a new paper page is easy to add by copying the template — no CMS, no data layer, just a new HTML file.
 
@@ -76,6 +76,7 @@ Decided and implemented (replacing an earlier Cayman-theme pass, which read as "
 - `.hero-code` — a `pre` promoted to the page's opening visual (homepage only)
 - `.langbar` — text tabs with an ink underline on the active one
 - `.note`, `.formula`, `.thanglish`, `.tablewrap`, `table.breaks` — content blocks on paper pages
+- `figure.diagram` — an inline SVG plus a `figcaption`. Diagrams are drawn with the page's own palette through the `d-` classes in the stylesheet, never with hard-coded colour, so a diagram is part of the type system rather than a picture dropped into it. Red and green keep their meaning: broke and held. Every SVG carries `role="img"` and a `<title>`, uses a `viewBox` with no width or height so it scales with the column, and holds real selectable text rather than paths. A diagram earns its place only by showing a mechanism the prose and the code cannot; two or three per page is plenty, and decoration is not a reason
 - `.site-footer` — `.site-footer-owner` (who writes this) and `.site-footer-credits` (source, corrections)
 
 Built in `assets/style.css`, applied to `index.html`, `papers/index.html`, `papers/attention/index.html`, and `404.html`. A new paper page copies the attention page's shell.
